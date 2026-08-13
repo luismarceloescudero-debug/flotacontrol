@@ -1,0 +1,135 @@
+/* ============================================================ */
+/* UPLOAD VIEW STYLES                                           */
+/* ============================================================ */
+
+.upload-container {
+    background: var(--bg-card);
+    border: 2px dashed var(--border-color);
+    border-radius: 16px;
+    padding: 4rem 2rem;
+    text-align: center;
+    transition: var(--transition-normal);
+    cursor: pointer;
+    margin-bottom: 2rem;
+    position: relative;
+    overflow: hidden;
+}
+
+.upload-container::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--accent-blue-glow);
+    opacity: 0;
+    transition: var(--transition-normal);
+    pointer-events: none;
+}
+
+.upload-container.dragover {
+    border-color: var(--accent-blue);
+    transform: scale(1.01);
+}
+
+.upload-container.dragover::before {
+    opacity: 0.2;
+}
+
+.upload-icon {
+    font-size: 4rem;
+    color: var(--accent-blue);
+    margin-bottom: 1.5rem;
+    transition: var(--transition-normal);
+}
+
+.upload-container.dragover .upload-icon {
+    transform: translateY(-10px);
+}
+
+.file-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+
+.file-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-card);
+    padding: 1rem 1.5rem;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+.file-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.file-icon {
+    font-size: 1.5rem;
+}
+
+.file-icon.excel { color: var(--accent-green); }
+.file-icon.pdf { color: var(--accent-red); }
+.file-icon.csv { color: var(--accent-amber); }
+.file-icon.json { color: var(--accent-purple); }
+
+.file-details h4 {
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+    font-size: 0.95rem;
+}
+
+.file-details p {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.file-status {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.badge.pending { background: rgba(148, 163, 184, 0.1); color: var(--text-secondary); }
+.badge.processing { background: var(--accent-blue-glow); color: var(--accent-blue); }
+.badge.done { background: var(--accent-green-glow); color: var(--accent-green); }
+.badge.error { background: var(--accent-red-glow); color: var(--accent-red); }
+
+.btn-icon {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: var(--transition-fast);
+    padding: 0.5rem;
+    border-radius: 8px;
+}
+
+.btn-icon:hover {
+    color: var(--accent-red);
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.upload-actions {
+    display: flex;
+    justify-content: flex-end;
+    border-top: 1px solid var(--border-color);
+    padding-top: 1.5rem;
+}

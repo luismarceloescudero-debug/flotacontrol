@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+.env
+.vercel/
+
+# Logs and temp files
+*.log
+matches*.txt
+out*.txt
+temp.js
+test_js*.js
+current_js.js
+localhost-*.log
+*.bak
+*_bak.xlsx
+*_Normalizado.xlsx
+*_CORREGIDO.xlsx
+FlotaControl_fixed.html
+FlotaControl_math_fixed.html
+
+# Ignore Excel files if they contain sensible data, but allow templates if any
+# We'll ignore big data files, keep the ones we need
+Cargas_Combustible_*.xlsx
+Consumos Estimados*.xlsx
+EQUIPOS PARA COTIZAR*.xlsx
+Equipos HSV*.xlsx
+Resumen de Flota*.xlsx
+ARCHIVOS/
+
+# Datos internos de la flota (decidir conscientemente si algún día se quieren versionar)
+Flota_Master_DB.json
+masters_seed.json
+Plantilla_Consumos_Oficiales.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Screenshots / temp images
+error_screenshot.png
+
+# Scratch / test artifacts
+scratch/
+test_browser.js
+test_cm43.js
+test_parser.js
+_tmp_inspect.js
+inspect_data.js
+extract_app_state.js
+roo-code-init.js
+
+# Carpetas de trabajo/experimentales sin destino claro (ver CORRECCIONES_APLICADAS.md)
+_archive/
+v2/
+
+# Librerías vendored que ya no se usan (index.html las carga por CDN)
+chart.umd.min.js
+xlsx.full.min.js
+
+# IDE / System
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Antigravity agent artifacts
+implementation_plan.md
