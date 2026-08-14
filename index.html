@@ -4,21 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FlotaControl</title>
-    <!-- Dependencies.
-         SheetJS se carga desde la copia LOCAL del repo, no desde un CDN: si el CDN está
-         bloqueado (red corporativa, sin internet, caída del proveedor) `XLSX` queda sin
-         definir y la app no puede leer ni un solo archivo — falla con
-         "ReferenceError: XLSX is not defined" al procesar. El archivo ya estaba en el repo. -->
+    <!-- SheetJS local: si se cargara desde un CDN y este falla, la app no puede leer
+         ni un solo archivo ("XLSX is not defined"). El archivo ya vive en el repo. -->
     <script src="xlsx.full.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-
-    <!-- CSS -->
     <link rel="stylesheet" href="styles/main.css">
     <link rel="stylesheet" href="styles/upload.css">
     <link rel="stylesheet" href="styles/components.css">
     <link rel="stylesheet" href="styles/panel.css">
-
-    <!-- JS App Entry Point -->
     <script type="module" src="js/app.js" defer></script>
 </head>
 <body class="theme-dark">
@@ -28,30 +21,32 @@
             <span>FlotaControl</span>
         </div>
         <nav class="app-nav">
-            <button id="nav-upload" class="active"><i class="fa-solid fa-cloud-arrow-up"></i> Carga de Datos</button>
-            <button id="nav-panel"><i class="fa-solid fa-gauge-high"></i> Panel de Flota</button>
+            <button id="nav-upload"><i class="fa-solid fa-cloud-arrow-up"></i> <span>Carga de Datos</span></button>
+            <button id="nav-panel" class="active"><i class="fa-solid fa-gauge-high"></i> <span>Panel</span></button>
+            <button id="nav-datos"><i class="fa-solid fa-table-list"></i> <span>Base de Datos</span></button>
         </nav>
         <div class="header-actions">
-            <button id="btn-reanalizar" title="Borrar los datos guardados y volver a procesar los archivos">
-                <i class="fa-solid fa-rotate"></i> <span class="btn-label">Re-analizar</span>
+            <button id="btn-reanalizar" title="Borrar los datos guardados y volver a procesar">
+                <i class="fa-solid fa-rotate"></i><span class="btn-label">Re-analizar</span>
             </button>
-            <button id="btn-config" title="Configuración"><i class="fa-solid fa-gear"></i></button>
+            <button id="btn-config" class="btn-icon" title="Configuración"><i class="fa-solid fa-gear"></i></button>
         </div>
     </header>
 
     <main id="app-content">
-        <!-- ============ Vista: Carga de Datos ============ -->
-        <section id="view-upload" class="view-section active">
+        <!-- ============ Carga de Datos ============ -->
+        <section id="view-upload" class="view-section hidden">
             <div id="db-status" class="db-status"></div>
 
             <div class="upload-container" id="drop-zone">
                 <i class="fa-solid fa-file-import upload-icon"></i>
-                <h2>Arrastrá tus archivos aquí</h2>
-                <p>Equipos · Cargas de Combustible · Resumen de Flota (GPS) · Consumos Estimados</p>
-                <input type="file" id="file-input" multiple accept=".xlsx, .xls, .csv, .json" hidden>
-                <button class="btn-primary" onclick="document.getElementById('file-input').click()">
-                    Seleccionar Archivos
-                </button>
+                <h2>Arrastrá tus planillas aquí</h2>
+                <p>
+                    <strong>Base maestra:</strong> Equipos · Consumos Estimados<br>
+                    <strong>Movimientos:</strong> Cargas de Combustible · Resumen de Flota (GPS) · cubiertas, insumos, filtros y cualquier otra planilla que tenga interno o dominio
+                </p>
+                <input type="file" id="file-input" multiple accept=".xlsx, .xls, .csv" hidden>
+                <button class="btn-primary" onclick="document.getElementById('file-input').click()">Seleccionar Archivos</button>
             </div>
 
             <div id="file-list" class="file-list"></div>
@@ -59,7 +54,7 @@
             <div class="upload-actions">
                 <label class="checkbox-line">
                     <input type="checkbox" id="chk-limpiar" checked>
-                    Borrar los datos anteriores antes de procesar (recomendado)
+                    Borrar los movimientos anteriores antes de procesar (la base maestra y tus ediciones se conservan)
                 </label>
                 <button id="btn-process-all" class="btn-success" disabled>
                     <i class="fa-solid fa-rocket"></i> Procesar y Analizar
@@ -67,25 +62,25 @@
             </div>
         </section>
 
-        <!-- ============ Vista: Panel (KPIs + Tarjetas juntos) ============ -->
-        <section id="view-panel" class="view-section hidden">
+        <!-- ============ Panel ============ -->
+        <section id="view-panel" class="view-section active">
             <div id="panel-kpis"></div>
+            <div id="panel-diagnostico"></div>
 
             <div class="cards-toolbar">
-                <div class="toolbar-left">
+                <div class="toolbar-row">
                     <div class="search-wrap">
                         <i class="fa-solid fa-magnifying-glass"></i>
                         <input type="text" id="search-equip" placeholder="Buscar interno, dominio, marca...">
                     </div>
-                    <select id="filter-denominacion">
-                        <option value="ALL">Todas las denominaciones</option>
-                    </select>
+                    <select id="filter-denominacion"><option value="ALL">Todas las denominaciones</option></select>
                     <select id="filter-estado">
                         <option value="ALL">Todos los estados</option>
                         <option value="CON_CONSUMO">Con consumo calculado</option>
                         <option value="SOBRE">Sobre la meta (+15%)</option>
                         <option value="OK">Dentro de la meta</option>
                         <option value="SIN_DATOS">Sin consumo calculable</option>
+                        <option value="SIN_META">Sin meta cargada</option>
                     </select>
                     <select id="sort-by">
                         <option value="litros">Ordenar por litros</option>
@@ -94,55 +89,65 @@
                         <option value="interno">Ordenar por interno</option>
                     </select>
                 </div>
-                <div class="toolbar-right">
+                <div class="toolbar-row toolbar-periodo">
+                    <span class="toolbar-tag"><i class="fa-solid fa-calendar-days"></i> Período</span>
+                    <select id="filter-anio"><option value="">Todos los años</option></select>
+                    <select id="filter-mes"><option value="">Todos los meses</option></select>
+                    <button id="btn-limpiar-periodo" class="btn-secondary btn-sm">Auto</button>
                     <span id="cards-count" class="cards-count"></span>
-                    <button class="btn-secondary" onclick="window.showDataTable('equipos')">
-                        <i class="fa-solid fa-table"></i> Ver tablas
-                    </button>
                 </div>
             </div>
 
             <div id="cards-container" class="cards-grid"></div>
+        </section>
 
-            <!-- Visor de base de datos -->
-            <div id="dashboard-table-container" style="display:none; margin-top: 2rem;">
-                <div class="table-head">
-                    <h3 id="table-title">Visor de Base de Datos</h3>
-                    <div>
-                        <button class="btn-secondary" onclick="window.exportTableToXLSX()"><i class="fa-solid fa-file-excel"></i> Exportar a Excel</button>
-                        <button class="btn-icon" onclick="document.getElementById('dashboard-table-container').style.display='none'"><i class="fa-solid fa-xmark"></i></button>
-                    </div>
+        <!-- ============ Base de Datos ============ -->
+        <section id="view-datos" class="view-section hidden">
+            <div class="table-head">
+                <div>
+                    <h2 id="table-title">Base de Datos</h2>
+                    <p id="table-desc" class="table-desc"></p>
                 </div>
-
-                <div class="tabs">
-                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('carga')">Cargas de Combustible</button>
-                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('gps')">Resumen de Flota (GPS)</button>
-                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('equipos')">Equipos</button>
-                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('estimados')">Consumos Estimados</button>
-                </div>
-
-                <div class="table-responsive">
-                    <table class="data-table" id="data-table">
-                        <thead><tr id="table-header"></tr></thead>
-                        <tbody id="table-body"></tbody>
-                    </table>
+                <div class="table-head-actions">
+                    <button id="btn-add-col" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Columna</button>
+                    <button id="btn-add-row" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Equipo</button>
+                    <button class="btn-secondary btn-sm" onclick="window.exportTableToXLSX()"><i class="fa-solid fa-file-excel"></i> Exportar</button>
                 </div>
             </div>
+
+            <div id="tabla-tabs" class="tabs"></div>
+
+            <div class="tabla-filtros">
+                <div class="search-wrap">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input type="text" id="tabla-buscar" placeholder="Buscar en la tabla...">
+                </div>
+                <select id="tabla-anio"><option value="">Todos los años</option></select>
+                <select id="tabla-mes"><option value="">Todos los meses</option></select>
+                <span id="tabla-count" class="cards-count"></span>
+            </div>
+
+            <div class="table-responsive">
+                <table class="data-table" id="data-table">
+                    <thead><tr id="table-header"></tr></thead>
+                    <tbody id="table-body"></tbody>
+                </table>
+            </div>
+            <div id="tabla-paginacion" class="tabla-paginacion"></div>
         </section>
     </main>
 
-    <!-- AI Chat Panel -->
     <aside id="ai-panel" class="ai-panel collapsed">
         <div class="ai-header">
-            <h3><i class="fa-solid fa-robot"></i> Asistente Antigravity</h3>
-            <button id="btn-toggle-ai"><i class="fa-solid fa-chevron-down"></i></button>
+            <h3><i class="fa-solid fa-robot"></i> Asistente de Flota</h3>
+            <button id="btn-toggle-ai" class="btn-icon"><i class="fa-solid fa-chevron-up"></i></button>
         </div>
         <div class="ai-chat-area" id="ai-chat-history">
-            <div class="ai-msg system">Hola, soy tu asistente de flota. Puedo analizar consumos, comparar equipos contra su meta y buscar datos actuales en internet. ¿Qué querés ver?</div>
+            <div class="ai-msg system">Soy el asistente de FlotaControl. El diagnóstico del panel ya te da los desvíos calculados; a mí preguntame lo que no sale de tus datos, como la ficha técnica de un modelo o el precio actual del gasoil.</div>
         </div>
         <div class="ai-input-area">
-            <input type="text" id="ai-input" placeholder="Preguntame algo sobre la flota...">
-            <button id="btn-send-ai"><i class="fa-solid fa-paper-plane"></i></button>
+            <input type="text" id="ai-input" placeholder="Preguntame algo...">
+            <button id="btn-send-ai" class="btn-icon"><i class="fa-solid fa-paper-plane"></i></button>
         </div>
     </aside>
 

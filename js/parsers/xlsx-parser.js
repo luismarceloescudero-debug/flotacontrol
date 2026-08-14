@@ -1,191 +1,291 @@
 /**
- * XLSX Parser wrapper using SheetJS
- * Maneja 4 formatos: Equipos, Cargas de Combustible, GPS (Resumen de Flota), Consumos Estimados.
+ * Importador de planillas.
+ *
+ * Reconoce cuatro formatos conocidos (Equipos, Cargas, Resumen de Flota, Consumos Estimados)
+ * y acepta CUALQUIER otra planilla mediante un importador genérico, con la única condición de
+ * que tenga una columna que identifique al equipo por interno o por dominio. Eso permite
+ * sumar cubiertas, insumos, filtros o lo que venga después sin tocar el código.
+ *
+ * Dos decisiones de diseño importantes:
+ *  1. INTERNO + DOMINIO como doble clave. Hay planillas que traen solo el interno y otras
+ *     solo la patente; guardando ambas normalizadas, el cruce contra el maestro funciona con
+ *     cualquiera de las dos y dejan de perderse registros.
+ *  2. Se preservan TODAS las columnas originales en `datos`. Los campos que el sistema
+ *     entiende (litros, km, horas...) se extraen aparte, pero nada del Excel se descarta.
  */
-import { insertEquipos, insertRawRecords, insertEstimados, insertPrecios, registrarArchivo } from '../data/database.js';
 import {
-    extractDataFromString, parseDate, parseNumber, normalizeString,
-    normalizeEquipoKey, aggregateHours, getDenominacion, parseConsumoEstimado
+    upsertEquipos, insertRawRecords, insertEstimados, insertPrecios, registrarArchivo, getMapeo
+} from '../data/database.js';
+import {
+    parseDate, parseNumber, normalizeString, normalizeEquipoKey, aggregateHours,
+    getDenominacion, parseConsumoEstimado, extraerIdentidad, partesFecha, slugCampo
 } from '../data/normalizer.js';
+
+// Nombres de columna que identifican al equipo, en orden de preferencia.
+const COLS_IDENTIDAD = ['INTERNO-DOMINIO', 'INTERNO', 'UNIDAD', 'MOVIL', 'EQUIPO', 'DOMINIO', 'PATENTE', 'MATRICULA', 'VEHICULO'];
 
 export async function parseXLSX(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = async (e) => {
             try {
-                const data = new Uint8Array(e.target.result);
-                const workbook = XLSX.read(data, { type: 'array' });
-                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-
-                const rawRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
-                if (rawRows.length === 0) throw new Error('Excel vacío');
-
-                let fileType = 'UNKNOWN';
-                let headerRowIdx = -1;
-
-                // 1. Consumos Estimados
-                for (let i = 0; i < Math.min(5, rawRows.length); i++) {
-                    if (normalizeString(rawRows[i].join('|')).includes('CONSUMO ESTIMADO')) {
-                        fileType = 'ESTIMADOS';
-                        headerRowIdx = i;
-                        break;
-                    }
-                }
-
-                // 2. Cargas de Combustible
-                if (fileType === 'UNKNOWN') {
-                    for (let i = 0; i < Math.min(5, rawRows.length); i++) {
-                        const t = normalizeString(rawRows[i].join('|'));
-                        if (t.includes('LITROS') && t.includes('LUGAR DE CARGA')) {
-                            fileType = 'CARGAS';
-                            headerRowIdx = i;
-                            break;
-                        }
-                    }
-                }
-
-                // 3. Equipos
-                if (fileType === 'UNKNOWN') {
-                    for (let i = 0; i < Math.min(10, rawRows.length); i++) {
-                        const t = normalizeString(rawRows[i].join('|'));
-                        if (t.includes('TIPO') && t.includes('MARCA') && t.includes('POTENCIA') && t.includes('INTERNO')) {
-                            fileType = 'EQUIPOS';
-                            headerRowIdx = i;
-                            break;
-                        }
-                    }
-                }
-
-                let gpsDesde = null;
-                let gpsHasta = null;
-
-                // 4. GPS / Resumen de Flota
-                if (fileType === 'UNKNOWN') {
-                    for (let i = 0; i < Math.min(12, rawRows.length); i++) {
-                        const t = normalizeString(rawRows[i].join('|'));
-                        if (headerRowIdx === -1 && (t.includes('KILOMETROS RECORRIDOS') || t.includes('TIEMPO EN MOVIMIENTO'))) {
-                            fileType = 'GPS';
-                            headerRowIdx = i;
-                        }
-                        const c0 = normalizeString(rawRows[i][0]);
-                        if (c0.includes('DESDE')) gpsDesde = parseDate(rawRows[i][1]);
-                        if (c0.includes('HASTA')) gpsHasta = parseDate(rawRows[i][1]);
-                    }
-                }
-
-                if (headerRowIdx === -1) {
-                    console.warn('No se pudo detectar el formato del archivo:', file.name);
-                    resolve({ tipo: 'DESCONOCIDO', filas: 0, archivo: file.name });
-                    return;
-                }
-
-                // Encabezados. Las columnas repetidas (el Excel de Equipos trae "TIPO" dos
-                // veces) se renombran TIPO, TIPO_2... para que la segunda no pise a la primera.
-                const headerCounts = {};
-                const headers = rawRows[headerRowIdx].map(h => {
-                    const base = normalizeString(h).trim();
-                    if (!base) return base;
-                    headerCounts[base] = (headerCounts[base] || 0) + 1;
-                    return headerCounts[base] === 1 ? base : `${base}_${headerCounts[base]}`;
-                });
-
-                const jsonData = [];
-                for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
-                    const obj = {};
-                    let hasData = false;
-                    for (let j = 0; j < headers.length; j++) {
-                        if (headers[j]) {
-                            obj[headers[j]] = rawRows[i][j];
-                            if (rawRows[i][j] !== '') hasData = true;
-                        }
-                    }
-                    if (hasData) jsonData.push(obj);
-                }
-
-                let filas = 0;
-                if (fileType === 'EQUIPOS') filas = await handleEquipos(jsonData, file.name);
-                else if (fileType === 'CARGAS') {
-                    filas = await handleCargas(jsonData, file.name);
-                    await handlePrecios(workbook, file.name); // 2da hoja "Precios", si existe
-                }
-                else if (fileType === 'GPS') filas = await handleGPS(jsonData, file.name, gpsDesde, gpsHasta);
-                else if (fileType === 'ESTIMADOS') filas = await handleEstimados(jsonData, file.name);
-
-                const meta = { filename: file.name, tipo: fileType, filas, procesado: new Date().toISOString(), periodo_desde: gpsDesde, periodo_hasta: gpsHasta };
-                await registrarArchivo(meta);
-                console.log(`[${fileType}] ${file.name}: ${filas} filas procesadas`);
-                resolve(meta);
-            } catch (err) {
-                reject(err);
-            }
+                resolve(await procesarLibro(new Uint8Array(e.target.result), file.name));
+            } catch (err) { reject(err); }
         };
-        reader.onerror = (err) => reject(err);
+        reader.onerror = reject;
         reader.readAsArrayBuffer(file);
     });
 }
 
-async function handleEquipos(data, filename) {
-    // Se agrupa por clave normalizada en vez de empujar una fila por renglón.
-    //
-    // Por qué: el Excel real lista cada bomba de hormigón DOS veces con el mismo interno —
-    // una fila como chasis (tiene el dominio, ej "BM09 / JNU923 / 31320") y otra como el
-    // equipo bomba montado encima (sin dominio, ej "BM09 / - / BSF 38Z 12L"). Como el store
-    // usa `interno` como clave, la segunda fila pisaba a la primera y el equipo terminaba
-    // SIN DOMINIO. Eso a su vez disparaba la vieja regla "BM sin dominio = No Aplica" y
-    // dejaba 10 bombas fuera del control de combustible.
-    // Ahora las filas del mismo interno se fusionan: se conserva el dominio del chasis y se
-    // combinan los modelos (chasis + bomba), que es la información real de la unidad.
+async function procesarLibro(data, filename) {
+    const workbook = XLSX.read(data, { type: 'array' });
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rawRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+    if (!rawRows.length) throw new Error('El archivo está vacío');
+
+    const det = detectarFormato(rawRows, filename);
+    if (det.headerRowIdx === -1) {
+        return await registrar({ filename, tipo: 'DESCONOCIDO', filas: 0, motivo: 'No se encontró una fila de encabezados con una columna de interno o dominio.' });
+    }
+
+    const headers = extraerHeaders(rawRows[det.headerRowIdx]);
+    const filas = filasComoObjetos(rawRows, det.headerRowIdx, headers);
+
+    // Mapeo guardado por el usuario para este tipo (si corrigió alguna columna alguna vez).
+    const mapeoGuardado = await getMapeo(det.tipo).catch(() => null);
+    const mapeo = (mapeoGuardado && mapeoGuardado.columnas) || {};
+
+    let n = 0;
+    if (det.tipo === 'EQUIPOS') n = await handleEquipos(filas, filename, mapeo);
+    else if (det.tipo === 'ESTIMADOS') n = await handleEstimados(filas, filename, mapeo);
+    else if (det.tipo === 'CARGAS') { n = await handleCargas(filas, filename, mapeo); await handlePrecios(workbook, filename); }
+    else if (det.tipo === 'GPS') n = await handleGPS(filas, filename, det.desde, det.hasta, mapeo);
+    else n = await handleGenerico(filas, filename, det, mapeo);
+
+    return await registrar({
+        filename, tipo: det.tipo, etiqueta: det.etiqueta, filas: n,
+        columnas: headers.filter(Boolean),
+        periodo_desde: det.desde || null, periodo_hasta: det.hasta || null
+    });
+}
+
+async function registrar(meta) {
+    meta.procesado = new Date().toISOString();
+    await registrarArchivo(meta);
+    console.log(`[${meta.tipo}] ${meta.filename}: ${meta.filas} filas`);
+    return meta;
+}
+
+// ---------------------------------------------------------------- detección
+
+function detectarFormato(rawRows, filename) {
+    const out = { tipo: 'UNKNOWN', etiqueta: '', headerRowIdx: -1, desde: null, hasta: null };
+    const limite = Math.min(15, rawRows.length);
+
+    for (let i = 0; i < limite; i++) {
+        const t = normalizeString(rawRows[i].join('|'));
+
+        if (out.headerRowIdx === -1) {
+            if (t.includes('CONSUMO ESTIMADO')) { out.tipo = 'ESTIMADOS'; out.etiqueta = 'Consumos Estimados'; out.headerRowIdx = i; }
+            else if (t.includes('LITROS') && t.includes('LUGAR DE CARGA')) { out.tipo = 'CARGAS'; out.etiqueta = 'Cargas de Combustible'; out.headerRowIdx = i; }
+            else if (t.includes('TIPO') && t.includes('MARCA') && t.includes('POTENCIA') && t.includes('INTERNO')) { out.tipo = 'EQUIPOS'; out.etiqueta = 'Equipos'; out.headerRowIdx = i; }
+            else if (t.includes('KILOMETROS RECORRIDOS') || t.includes('TIEMPO EN MOVIMIENTO')) { out.tipo = 'GPS'; out.etiqueta = 'Resumen de Flota (GPS)'; out.headerRowIdx = i; }
+        }
+        // Los metadatos de período del reporte GPS pueden estar antes o después del encabezado.
+        const c0 = normalizeString(rawRows[i][0]);
+        if (c0.includes('DESDE')) out.desde = parseDate(rawRows[i][1]);
+        if (c0.includes('HASTA')) out.hasta = parseDate(rawRows[i][1]);
+    }
+
+    if (out.headerRowIdx !== -1) return out;
+
+    // ---- Importador genérico: buscar la primera fila que tenga una columna de identidad ----
+    for (let i = 0; i < limite; i++) {
+        const celdas = rawRows[i].map(c => normalizeString(c).replace(/\s+/g, ''));
+        const tieneId = celdas.some(c => c && COLS_IDENTIDAD.some(k => c.includes(k.replace(/[\s-]/g, ''))));
+        const suficientes = celdas.filter(Boolean).length >= 2;
+        if (tieneId && suficientes) {
+            out.tipo = slugCampo(filename.replace(/\.(xlsx|xls|csv)$/i, '').replace(/[\d_\-.]+$/g, ''));
+            out.etiqueta = tituloDesdeArchivo(filename);
+            out.headerRowIdx = i;
+            return out;
+        }
+    }
+    return out;
+}
+
+function tituloDesdeArchivo(filename) {
+    return filename
+        .replace(/\.(xlsx|xls|csv)$/i, '')
+        .replace(/[_]+/g, ' ')
+        .replace(/\s*\d{4}\s*$/, '')
+        .replace(/\s+/g, ' ')
+        .trim() || 'Planilla';
+}
+
+/** Encabezados normalizados; las columnas repetidas se numeran para que no se pisen. */
+function extraerHeaders(fila) {
+    const cuenta = {};
+    return fila.map(h => {
+        const base = normalizeString(h).trim();
+        if (!base) return '';
+        cuenta[base] = (cuenta[base] || 0) + 1;
+        return cuenta[base] === 1 ? base : `${base}_${cuenta[base]}`;
+    });
+}
+
+function filasComoObjetos(rawRows, headerRowIdx, headers) {
+    const out = [];
+    for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
+        const obj = {};
+        let hayDatos = false;
+        for (let j = 0; j < headers.length; j++) {
+            if (!headers[j]) continue;
+            obj[headers[j]] = rawRows[i][j];
+            if (rawRows[i][j] !== '' && rawRows[i][j] !== null) hayDatos = true;
+        }
+        if (hayDatos) out.push(obj);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- helpers de fila
+
+/** Busca un valor por nombre de columna, respetando primero el mapeo elegido por el usuario. */
+function val(row, campo, candidatos, mapeo) {
+    if (mapeo && mapeo[campo] && row[mapeo[campo]] !== undefined) return row[mapeo[campo]];
+    return getValFuzzy(row, candidatos);
+}
+
+function getValFuzzy(row, possibleKeys) {
+    const keys = Object.keys(row).map(k => ({ original: k, norm: normalizeString(k).replace(/\s+/g, '') }));
+    for (const pk of possibleKeys) {
+        const normPk = normalizeString(pk).replace(/\s+/g, '');
+        const m = keys.find(rk => rk.norm.includes(normPk));
+        if (m) return row[m.original];
+    }
+    return null;
+}
+
+/** Identidad (interno + dominio) de una fila, mirando todas las columnas candidatas. */
+function identidadDeFila(row, mapeo) {
+    const candidatas = [];
+    if (mapeo && mapeo.interno && row[mapeo.interno] !== undefined) candidatas.push(row[mapeo.interno]);
+    if (mapeo && mapeo.dominio && row[mapeo.dominio] !== undefined) candidatas.push(row[mapeo.dominio]);
+    COLS_IDENTIDAD.forEach(c => {
+        const v = getValFuzzy(row, [c]);
+        if (v) candidatas.push(v);
+    });
+    return extraerIdentidad(...candidatas);
+}
+
+/** Campos comunes a todo movimiento: identidad, fecha desglosada y columnas originales. */
+function baseMovimiento(row, id, fecha, filename) {
+    const p = partesFecha(fecha);
+    return {
+        interno: id.interno,
+        dominio: id.dominio,
+        interno_key: id.interno_key,
+        dominio_key: id.dominio_key,
+        fecha,
+        anio: p.anio,
+        mes: p.mes,
+        dia: p.dia,
+        periodo: p.ym,
+        datos: { ...row },   // todas las columnas del Excel, sin descartar nada
+        source_file: filename
+    };
+}
+
+// ---------------------------------------------------------------- maestro
+
+async function handleEquipos(filas, filename, mapeo) {
     const porKey = new Map();
 
-    data.forEach(row => {
-        const internoRaw = getValFuzzy(row, ['INTERNO', 'NRO', 'ID']);
-        const dominio = getValFuzzy(row, ['DOMINIO', 'PATENTE']);
-        const tipoExcel = getValFuzzy(row, ['TIPO', 'CATEGORIA']);
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
 
-        const idData = extractDataFromString(internoRaw || dominio);
-        if (!idData.interno && !idData.dominio) return;
-
-        const interno = (idData.interno || idData.dominio).toUpperCase();
+        const interno = id.interno || id.dominio;
         const key = normalizeEquipoKey(interno);
-        const marca = normalizeString(getValFuzzy(row, ['MARCA'])) || '';
-        const modelo = normalizeString(getValFuzzy(row, ['MODELO'])) || '';
+        const marca = normalizeString(val(row, 'marca', ['MARCA'], mapeo)) || '';
+        const modelo = normalizeString(val(row, 'modelo', ['MODELO'], mapeo)) || '';
+        const tipoExcel = val(row, 'tipo', ['TIPO', 'CATEGORIA'], mapeo);
 
         const prev = porKey.get(key);
         if (!prev) {
             porKey.set(key, {
                 interno,
                 interno_key: key,
-                dominio: idData.dominio || normalizeString(dominio) || '',
-                marca,
-                modelo,
-                // Denominación canónica por prefijo: la columna TIPO del Excel trae valores
-                // erróneos (los TR figuran como "CAMION" siendo tractores, los MX mezclan
-                // mixer/volcador/regador). Se guarda igual el original para trazabilidad.
+                dominio: id.dominio,
+                dominio_key: id.dominio_key,
                 denominacion: getDenominacion(interno, tipoExcel),
+                marca, modelo,
                 tipo: normalizeString(tipoExcel) || '',
-                ubicacion: normalizeString(getValFuzzy(row, ['UBICACION'])) || '',
-                anio: parseNumber(getValFuzzy(row, ['ANO', 'AÑO'])) || null,
-                filas_origen: 1,
-                source_file: filename
+                ubicacion: normalizeString(val(row, 'ubicacion', ['UBICACION'], mapeo)) || '',
+                anio: parseNumber(val(row, 'anio', ['ANO', 'AÑO'], mapeo)) || null,
+                origen: [filename]
             });
         } else {
-            // Fusionar: se completa lo que falte y se acumulan marca/modelo distintos.
-            prev.dominio = prev.dominio || idData.dominio || normalizeString(dominio) || '';
+            // El Excel lista cada bomba dos veces (chasis con dominio + equipo bomba sin él).
+            // Se fusionan para no perder la patente ni el modelo del equipo montado.
+            prev.dominio = prev.dominio || id.dominio;
+            prev.dominio_key = prev.dominio_key || id.dominio_key;
             prev.marca = unirDistinto(prev.marca, marca);
             prev.modelo = unirDistinto(prev.modelo, modelo);
-            prev.tipo = prev.tipo || normalizeString(tipoExcel) || '';
-            prev.ubicacion = prev.ubicacion || normalizeString(getValFuzzy(row, ['UBICACION'])) || '';
-            prev.anio = prev.anio || parseNumber(getValFuzzy(row, ['ANO', 'AÑO'])) || null;
-            prev.filas_origen++;
         }
     });
 
     const equipos = [...porKey.values()];
-    if (equipos.length > 0) await insertEquipos(equipos);
+    if (equipos.length) await upsertEquipos(equipos);
     return equipos.length;
 }
 
-/** Une dos valores de texto sin repetir (para fusionar marca/modelo de chasis + equipo). */
+/**
+ * Los consumos estimados se escriben SOBRE el maestro (misma fila del equipo), no en una
+ * tabla aparte. Si el equipo todavía no existe (se subió esta planilla primero), se crea la
+ * fila igual: el orden en que se carguen los archivos no debe importar.
+ */
+async function handleEstimados(filas, filename, mapeo) {
+    const equipos = [];
+    const legacy = [];
+
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
+
+        const interno = id.interno || id.dominio;
+        const p = parseConsumoEstimado(val(row, 'meta', ['CONSUMO ESTIMADO', 'ESTIMADO', 'META'], mapeo));
+        const tipoExcel = val(row, 'tipo', ['TIPO'], mapeo);
+
+        equipos.push({
+            interno,
+            interno_key: normalizeEquipoKey(interno),
+            dominio: id.dominio,
+            dominio_key: id.dominio_key,
+            denominacion: getDenominacion(interno, tipoExcel),
+            marca: normalizeString(val(row, 'marca', ['MARCA'], mapeo)) || '',
+            modelo: normalizeString(val(row, 'modelo', ['MODELO'], mapeo)) || '',
+            meta_valor: p.valor,
+            meta_unidad: p.unidad,
+            meta_texto: p.texto,
+            origen: [filename]
+        });
+
+        legacy.push({
+            interno, interno_key: normalizeEquipoKey(interno),
+            consumo_estimado: p.texto, consumo_estimado_valor: p.valor,
+            consumo_estimado_unidad: p.unidad, source_file: filename
+        });
+    });
+
+    if (equipos.length) {
+        await upsertEquipos(equipos);
+        await insertEstimados(legacy); // compatibilidad con la vista de tablas anterior
+    }
+    return equipos.length;
+}
+
 function unirDistinto(a, b) {
     if (!b) return a;
     if (!a) return b;
@@ -193,107 +293,97 @@ function unirDistinto(a, b) {
     return `${a} / ${b}`;
 }
 
-async function handleEstimados(data, filename) {
-    const estimados = [];
-    data.forEach(row => {
-        const internoRaw = getValFuzzy(row, ['INTERNO']);
-        if (!internoRaw) return;
-        const idData = extractDataFromString(internoRaw);
-        if (!idData.interno) return;
+// ---------------------------------------------------------------- movimientos
 
-        // El valor viene como texto con unidad: " 3 L/hora ", " 7 L/100km ".
-        // Se guarda el texto original (para mostrar), el número (para comparar) y la
-        // UNIDAD, que es lo que define si el equipo se mide por hora o por distancia.
-        const parsed = parseConsumoEstimado(getValFuzzy(row, ['CONSUMO ESTIMADO', 'ESTIMADO']));
-        const interno = idData.interno.toUpperCase();
+async function handleCargas(filas, filename, mapeo) {
+    const recs = [];
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
 
-        estimados.push({
-            interno,
-            interno_key: normalizeEquipoKey(interno),
-            consumo_estimado: parsed.texto,
-            consumo_estimado_valor: parsed.valor,
-            consumo_estimado_unidad: parsed.unidad,
-            source_file: filename
-        });
-    });
-
-    if (estimados.length > 0) await insertEstimados(estimados);
-    return estimados.length;
-}
-
-async function handleCargas(data, filename) {
-    const records = [];
-    data.forEach(row => {
-        const identRaw = getValFuzzy(row, ['INTERNO-DOMINIO', 'INTERNO', 'PATENTE', 'DOMINIO', 'VEHICULO']);
-        const idData = extractDataFromString(identRaw);
-        if (!idData.interno) return;
-
-        const interno = idData.interno.toUpperCase();
-        records.push({
+        const fecha = parseDate(val(row, 'fecha', ['FECHA', 'DATE'], mapeo));
+        recs.push({
+            ...baseMovimiento(row, id, fecha, filename),
             type: 'carga',
-            interno,
-            interno_key: normalizeEquipoKey(interno),
-            dominio: idData.dominio || '',
-            fecha: parseDate(getValFuzzy(row, ['FECHA', 'DATE'])),
-            litros: parseNumber(getValFuzzy(row, ['LITROS', 'CANTIDAD'])),
-            importe: parseNumber(getValFuzzy(row, ['COSTO TOTAL', 'IMPORTE', 'MONTO'])),
-            precio_unitario: parseNumber(getValFuzzy(row, ['PRECIO UNITARIO'])),
-            combustible: normalizeString(getValFuzzy(row, ['TIPO DE COMBUSTIBLE'])) || '',
-            chofer: normalizeString(getValFuzzy(row, ['CHOFER'])) || '',
-            sector: normalizeString(getValFuzzy(row, ['SECTOR'])) || '',
-            centro_costo: normalizeString(getValFuzzy(row, ['CENTRO DE COSTO', 'C. COSTO'])) || '',
-            lugar_carga: normalizeString(getValFuzzy(row, ['LUGAR DE CARGA', 'LUGAR', 'SURTIDOR'])) || '',
-            source_file: filename
+            type_label: 'Cargas de Combustible',
+            litros: parseNumber(val(row, 'litros', ['LITROS', 'CANTIDAD'], mapeo)),
+            importe: parseNumber(val(row, 'importe', ['COSTO TOTAL', 'IMPORTE', 'MONTO'], mapeo)),
+            precio_unitario: parseNumber(val(row, 'precio', ['PRECIO UNITARIO'], mapeo)),
+            combustible: normalizeString(val(row, 'combustible', ['TIPO DE COMBUSTIBLE'], mapeo)) || '',
+            chofer: normalizeString(val(row, 'chofer', ['CHOFER'], mapeo)) || '',
+            sector: normalizeString(val(row, 'sector', ['SECTOR'], mapeo)) || '',
+            centro_costo: normalizeString(val(row, 'centro_costo', ['CENTRO DE COSTO', 'C. COSTO'], mapeo)) || '',
+            lugar_carga: normalizeString(val(row, 'lugar', ['LUGAR DE CARGA', 'LUGAR', 'SURTIDOR'], mapeo)) || ''
         });
     });
-
-    if (records.length > 0) await insertRawRecords(records);
-    return records.length;
+    if (recs.length) await insertRawRecords(recs);
+    return recs.length;
 }
 
-async function handleGPS(data, filename, gpsDesde, gpsHasta) {
-    const records = [];
-    data.forEach(row => {
-        const identRaw = getValFuzzy(row, ['UNIDAD', 'MATRICULA', 'INTERNO', 'DOMINIO']);
-        const idData = extractDataFromString(identRaw);
-        if (!idData.interno) return;
+async function handleGPS(filas, filename, desde, hasta, mapeo) {
+    const recs = [];
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
 
-        // El reporte real trae DOS columnas de tiempo ("Tiempo en ralentí" y "Tiempo en
-        // movimiento"). Antes se leía solo una como número plano y se perdían las horas de
-        // ralentí. aggregateHours() suma ambas y convierte el valor que entrega SheetJS
-        // (fracción de día de Excel) a horas reales.
+        // El reporte trae dos columnas de tiempo (ralentí y movimiento) como fracción de día
+        // de Excel. aggregateHours() las suma y las convierte a horas reales.
         const horas = aggregateHours({
-            ralenti: getValFuzzy(row, ['TIEMPO EN RALENTI', 'RALENTI']),
-            movimiento: getValFuzzy(row, ['TIEMPO EN MOVIMIENTO', 'HORAS', 'HS']),
-            parado: getValFuzzy(row, ['TIEMPO PARADO', 'TIEMPO DETENIDO'])
+            ralenti: val(row, 'ralenti', ['TIEMPO EN RALENTI', 'RALENTI'], mapeo),
+            movimiento: val(row, 'movimiento', ['TIEMPO EN MOVIMIENTO', 'HORAS', 'HS'], mapeo),
+            parado: val(row, 'parado', ['TIEMPO PARADO', 'TIEMPO DETENIDO'], mapeo)
         });
 
-        const interno = idData.interno.toUpperCase();
-        records.push({
+        const fecha = parseDate(val(row, 'fecha', ['FECHA'], mapeo)) || desde || '';
+        recs.push({
+            ...baseMovimiento(row, id, fecha, filename),
             type: 'gps',
-            interno,
-            interno_key: normalizeEquipoKey(interno),
-            fecha: parseDate(getValFuzzy(row, ['FECHA'])) || gpsDesde || '',
-            fecha_hasta: gpsHasta || null,
-            distancia: parseNumber(getValFuzzy(row, ['KILOMETROS RECORRIDOS', 'KILOMETROS', 'DISTANCIA'])),
+            type_label: 'Resumen de Flota (GPS)',
+            fecha_hasta: hasta || null,
+            distancia: parseNumber(val(row, 'km', ['KILOMETROS RECORRIDOS', 'KILOMETROS', 'DISTANCIA'], mapeo)),
             horas,
-            odometro: parseNumber(getValFuzzy(row, ['ODOMETRO'])),
-            horometro: parseNumber(getValFuzzy(row, ['HOROMETRO'])),
-            vel_max: parseNumber(getValFuzzy(row, ['MAXIMA VELOCIDAD'])),
-            grupo: normalizeString(getValFuzzy(row, ['GRUPO'])) || '',
-            source_file: filename
+            odometro: parseNumber(val(row, 'odometro', ['ODOMETRO'], mapeo)),
+            horometro: parseNumber(val(row, 'horometro', ['HOROMETRO'], mapeo)),
+            grupo: normalizeString(val(row, 'grupo', ['GRUPO'], mapeo)) || ''
         });
     });
-
-    if (records.length > 0) await insertRawRecords(records);
-    return records.length;
+    if (recs.length) await insertRawRecords(recs);
+    return recs.length;
 }
 
 /**
- * La planilla de Cargas trae una segunda hoja "Precios" con el precio por litro de cada
- * tipo de combustible. Antes se ignoraba por completo; ahora se guarda para poder mostrar
- * el costo de referencia y detectar cargas con precio fuera de lista.
+ * Importador genérico: cubiertas, insumos, filtros y cualquier planilla futura.
+ * Guarda todas las columnas, detecta automáticamente la fecha y las columnas numéricas
+ * (para poder sumarlas), y cruza por interno o dominio contra el maestro.
  */
+async function handleGenerico(filas, filename, det, mapeo) {
+    const recs = [];
+    filas.forEach(row => {
+        const id = identidadDeFila(row, mapeo);
+        if (!id.interno && !id.dominio) return;
+
+        const fecha = parseDate(val(row, 'fecha', ['FECHA', 'DATE', 'DIA'], mapeo)) || '';
+        const numericos = {};
+        Object.entries(row).forEach(([col, v]) => {
+            if (v === '' || v === null || v === undefined) return;
+            const n = typeof v === 'number' ? v : parseNumber(v);
+            // Solo se toma como métrica si el valor original era realmente numérico.
+            if (n !== 0 && (typeof v === 'number' || /^[\d.,\s$]+$/.test(String(v)))) {
+                numericos[slugCampo(col)] = n;
+            }
+        });
+
+        recs.push({
+            ...baseMovimiento(row, id, fecha, filename),
+            type: det.tipo,
+            type_label: det.etiqueta,
+            numericos
+        });
+    });
+    if (recs.length) await insertRawRecords(recs);
+    return recs.length;
+}
+
 async function handlePrecios(workbook, filename) {
     const hoja = workbook.SheetNames.find(n => normalizeString(n).includes('PRECIO'));
     if (!hoja) return;
@@ -305,23 +395,8 @@ async function handlePrecios(workbook, filename) {
             const precio = parseNumber(rows[i][1]);
             if (tipo && precio > 0) precios.push({ combustible: tipo, precio, source_file: filename });
         }
-        if (precios.length > 0) await insertPrecios(precios);
+        if (precios.length) await insertPrecios(precios);
     } catch (e) {
         console.warn('No se pudo leer la hoja de Precios:', e);
     }
-}
-
-// Busca un valor en la fila por nombre de columna, ignorando mayúsculas/acentos/espacios.
-function getValFuzzy(row, possibleKeys) {
-    const normalizedRowKeys = Object.keys(row).map(k => ({
-        original: k,
-        norm: normalizeString(k).replace(/\s+/g, '')
-    }));
-
-    for (let pk of possibleKeys) {
-        const normPk = normalizeString(pk).replace(/\s+/g, '');
-        const match = normalizedRowKeys.find(rk => rk.norm.includes(normPk));
-        if (match) return row[match.original];
-    }
-    return null;
 }

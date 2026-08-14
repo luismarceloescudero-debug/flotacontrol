@@ -69,6 +69,31 @@ export function getDenominacion(interno, tipoExcel = '') {
  * @returns {{valor: Number, unidad: String|null, texto: String}}
  *          unidad: 'L/Hora' | 'L/100Km' | null
  */
+/**
+ * Descompone una fecha ISO (YYYY-MM-DD) en sus partes, para poder filtrar y agrupar por
+ * día, mes o año sin volver a parsear el string en cada cálculo.
+ */
+export function partesFecha(iso) {
+    if (!iso || typeof iso !== 'string' || iso.length < 7) return { anio: null, mes: null, dia: null, ym: null };
+    const [a, m, d] = iso.split('-');
+    return {
+        anio: parseInt(a, 10) || null,
+        mes: parseInt(m, 10) || null,
+        dia: parseInt(d, 10) || null,
+        ym: a && m ? `${a}-${m}` : null
+    };
+}
+
+export const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+
+/** Convierte un nombre de columna del Excel en una clave estable. */
+export function slugCampo(nombre) {
+    return normalizeString(nombre)
+        .replace(/[^A-Z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .toLowerCase() || 'campo';
+}
+
 export function parseConsumoEstimado(raw) {
     const texto = String(raw == null ? '' : raw).trim();
     if (!texto) return { valor: 0, unidad: null, texto: '' };
@@ -110,6 +135,70 @@ export function normalizeString(val) {
 export function normalizeEquipoKey(interno) {
     if (!interno) return '';
     return normalizeString(interno).replace(/[\s\-_]/g, '').trim();
+}
+
+/**
+ * Clasifica un token suelto como DOMINIO (patente) o INTERNO.
+ *
+ * Patentes argentinas:
+ *   - Formato viejo:     3 letras + 3 números   (JNU923, HHA905)
+ *   - Formato Mercosur:  2 letras + 3 números + 2 letras (AF809IC, AD031FG)
+ * Internos de la flota: 2 o más letras + 1 a 3 números (TR20, CM43, BM09, AE01).
+ *
+ * Distinguirlos importa porque en las planillas vienen mezclados en una sola celda
+ * ("BM09 JNU923") o repartidos en columnas distintas según el archivo.
+ */
+export function clasificarIdentificador(token) {
+    const t = normalizeString(token).replace(/[\s\-_.]/g, '');
+    if (!t) return { tipo: 'vacio', valor: '' };
+    if (/^[A-Z]{3}\d{3}$/.test(t)) return { tipo: 'dominio', valor: t };        // JNU923
+    if (/^[A-Z]{2}\d{3}[A-Z]{2}$/.test(t)) return { tipo: 'dominio', valor: t }; // AF809IC
+    if (/^[A-Z]{2,}\d{1,3}$/.test(t)) return { tipo: 'interno', valor: t };      // TR20, BM09
+    return { tipo: 'desconocido', valor: t };
+}
+
+/**
+ * Extrae INTERNO y DOMINIO a partir de uno o varios valores crudos de una fila.
+ *
+ * Este es el "común denominador" de todo el sistema: hay equipos que en una planilla figuran
+ * solo por interno y en otra solo por patente. Guardando ambas claves normalizadas, el cruce
+ * funciona con cualquiera de las dos y deja de perder registros.
+ *
+ * @param  {...any} valores  Celdas candidatas (ej: "BM09 JNU923", "BM-09", "JNU923")
+ * @returns {{interno, dominio, interno_key, dominio_key}}
+ */
+export function extraerIdentidad(...valores) {
+    let interno = '', dominio = '', sueltos = [];
+
+    valores.filter(Boolean).forEach(val => {
+        normalizeString(val).split(/[\s/|]+/).filter(Boolean).forEach(tok => {
+            const c = clasificarIdentificador(tok);
+            if (c.tipo === 'dominio' && !dominio) dominio = c.valor;
+            else if (c.tipo === 'interno' && !interno) interno = c.valor;
+            else if (c.tipo === 'desconocido') sueltos.push(c.valor);
+        });
+    });
+
+    // Si no se pudo clasificar nada (códigos atípicos como "CALDERA", "DEMO"), se usa el
+    // primer token como interno para no descartar la fila: son consumos reales que hay que
+    // poder ver aunque su código no siga la nomenclatura.
+    if (!interno && !dominio && sueltos.length) interno = sueltos[0];
+
+    return {
+        interno,
+        dominio,
+        interno_key: normalizeEquipoKey(interno),
+        dominio_key: normalizeEquipoKey(dominio)
+    };
+}
+
+/**
+ * Clave de cruce preferida de un registro: el interno si existe, si no la patente.
+ * Sirve para agrupar cuando no hay maestro contra el cual resolver.
+ */
+export function claveDe(idOrRecord) {
+    const o = idOrRecord || {};
+    return o.interno_key || o.dominio_key || '';
 }
 
 export function extractDataFromString(val) {

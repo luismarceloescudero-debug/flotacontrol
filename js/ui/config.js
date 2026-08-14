@@ -20,7 +20,7 @@ export function openConfigModal() {
                 </div>
                 <div class="modal-body">
                     <div style="margin-bottom: 1.5rem;">
-                        <label style="display:block; margin-bottom: 0.5rem; color: var(--text-secondary);">Asistente IA (Antigravity)</label>
+                        <label style="display:block; margin-bottom: 0.5rem; color: var(--text-secondary);">Asistente IA (Claude)</label>
                         <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">
                             El asistente usa Claude a través de un backend propio (<code>/api/chat</code>).
                             La API key vive en el servidor donde se despliega la app (variable de entorno

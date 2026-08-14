@@ -1,156 +1,204 @@
 /**
- * Lógica de Negocio y Análisis
+ * Lógica de Negocio, Análisis y TRAZABILIDAD DE CÁLCULOS.
  *
- * Regla central: el TIPO DE CÁLCULO (L/Hora vs L/100Km) se determina por la UNIDAD de la
- * meta declarada en "Consumos Estimados", no por listas de prefijos hardcodeadas.
- * Esa planilla ya declara explícitamente, equipo por equipo, si se mide por hora o por
- * distancia (91 equipos en L/hora, 43 en L/100km), y es la fuente de verdad del área.
- * Las listas de prefijos quedan solo como fallback para equipos sin meta cargada.
+ * Dos principios:
+ *
+ * 1. INTERNO + DOMINIO como doble clave. Hay planillas que identifican al equipo solo por
+ *    interno y otras solo por patente. El maestro se indexa por ambas, así un registro cruza
+ *    con cualquiera de las dos y dejan de perderse consumos.
+ *
+ * 2. Todo número que la app muestra puede explicar de dónde salió. Cada métrica viaja junto
+ *    con sus `pasos`: la secuencia de operaciones, con los valores intermedios y los archivos
+ *    de origen. La UI los muestra al hacer click, así ningún total es una caja negra.
  */
 
-import { normalizeEquipoKey, getPrefijo, getDenominacion } from './normalizer.js';
+import { normalizeEquipoKey, getPrefijo, getDenominacion, partesFecha } from './normalizer.js';
 
-// Fallbacks para equipos SIN meta declarada en Consumos Estimados.
-// Derivados de la unidad que el propio Excel de metas usa para cada familia.
 export const RULE_L_100KM = ['TR', 'CM', 'CH', 'FG', 'AU'];
 export const RULE_L_HORA = ['MX', 'CF', 'EX', 'TP', 'GE', 'BM', 'VL', 'AE', 'RE', 'MC', 'MT', 'MH', 'CL', 'MS'];
-// Equipos remolcados, sin motor propio -> no consumen combustible.
 export const RULE_NO_TANK = ['BA', 'CR', 'SR', 'TO'];
 
+const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+/** Construye un paso de cálculo trazable. */
+const paso = (texto, calculo, resultado, nota) => ({ texto, calculo, resultado, nota });
+
+// ============================================================ MAESTRO
+
 /**
- * Busca la meta de consumo de un equipo. Devuelve también la unidad parseada, que es lo
- * que define el tipo de cálculo.
+ * Indexa el maestro por interno Y por dominio. Devuelve un Map donde ambas claves apuntan
+ * al mismo equipo, de modo que un registro que solo trae la patente igual encuentra su ficha.
  */
-export function getConfirmedConsumption(interno, estimadosData = []) {
-    if (!interno) return null;
-    const key = normalizeEquipoKey(interno);
-
-    const estimado = estimadosData.find(e => normalizeEquipoKey(e.interno) === key);
-    if (!estimado) return null;
-
-    return {
-        value: estimado.consumo_estimado,                 // texto original, ej "3 L/hora"
-        valor: estimado.consumo_estimado_valor || 0,      // número puro, ej 3
-        unidad: estimado.consumo_estimado_unidad || null, // 'L/Hora' | 'L/100Km' | null
-        source: 'Consumos Estimados'
-    };
+export function indexarMaestro(equipos = []) {
+    const idx = new Map();
+    equipos.forEach(eq => {
+        const ik = eq.interno_key || normalizeEquipoKey(eq.interno);
+        const dk = eq.dominio_key || normalizeEquipoKey(eq.dominio);
+        if (ik) idx.set(ik, eq);
+        if (dk && !idx.has(dk)) idx.set(dk, eq);
+    });
+    return idx;
 }
 
-/**
- * Calcula el periodo de tiempo superpuesto (intersección) entre las cargas y los registros
- * de GPS, para que el cruce se haga sobre el lapso donde existen ambos datos.
- */
+/** Resuelve a qué equipo del maestro pertenece un registro, probando interno y luego dominio. */
+export function resolverEquipo(registro, idx) {
+    const ik = registro.interno_key || normalizeEquipoKey(registro.interno);
+    const dk = registro.dominio_key || normalizeEquipoKey(registro.dominio);
+    return (ik && idx.get(ik)) || (dk && idx.get(dk)) || null;
+}
+
+/** Meta de consumo del equipo (ya vive en el maestro, no en una tabla aparte). */
+export function getConfirmedConsumption(equipoOInterno, estimadosData = []) {
+    if (equipoOInterno && typeof equipoOInterno === 'object') {
+        const eq = equipoOInterno;
+        if (eq.meta_valor > 0) {
+            return { value: eq.meta_texto || `${eq.meta_valor} ${eq.meta_unidad || ''}`.trim(), valor: eq.meta_valor, unidad: eq.meta_unidad || null, source: 'Maestro' };
+        }
+        return null;
+    }
+    // Compatibilidad con la firma vieja (interno + array de estimados)
+    const key = normalizeEquipoKey(equipoOInterno);
+    const e = estimadosData.find(x => normalizeEquipoKey(x.interno) === key);
+    if (!e) return null;
+    return { value: e.consumo_estimado, valor: e.consumo_estimado_valor || 0, unidad: e.consumo_estimado_unidad || null, source: 'Consumos Estimados' };
+}
+
+// ============================================================ PERÍODOS
+
 export function calculateAlignedPeriod(cargas = [], gps = []) {
     let minC = null, maxC = null, minG = null, maxG = null;
-
     cargas.forEach(c => {
         if (!c.fecha) return;
         if (!minC || c.fecha < minC) minC = c.fecha;
         if (!maxC || c.fecha > maxC) maxC = c.fecha;
     });
-
     gps.forEach(g => {
         if (!g.fecha) return;
-        const dHasta = g.fecha_hasta || g.fecha;
+        const h = g.fecha_hasta || g.fecha;
         if (!minG || g.fecha < minG) minG = g.fecha;
-        if (!maxG || dHasta > maxG) maxG = dHasta;
+        if (!maxG || h > maxG) maxG = h;
     });
-
     let start = minC && minG ? (minC > minG ? minC : minG) : (minC || minG);
     let end = maxC && maxG ? (maxC < maxG ? maxC : maxG) : (maxC || maxG);
-
-    // Sin superposición matemática -> usar el rango completo como fallback.
     if (start && end && start > end) {
         start = minC && minG ? (minC < minG ? minC : minG) : (minC || minG);
         end = maxC && maxG ? (maxC > maxG ? maxC : maxG) : (maxC || maxG);
     }
-
     return { start, end };
 }
 
 /**
- * Determina el tipo de cálculo de consumo de un equipo.
- *
- * Prioridad:
- *   1. Override manual guardado por el usuario en la tarjeta (equipo.tipo_calculo_manual).
- *   2. Unidad de la meta en Consumos Estimados  <- fuente de verdad del área.
- *   3. Listas de prefijos (fallback para equipos sin meta).
- *
- * @returns {'L/100Km'|'L/Hora'|'No Aplica'|'Sin clasificar'}
+ * Filtra registros por año / mes / rango explícito.
+ * Un registro de GPS abarca un período (fecha..fecha_hasta), así que se considera incluido
+ * si ese período se superpone con el filtro, no solo si empieza dentro.
  */
+export function filtrarPorPeriodo(records = [], filtro = {}) {
+    const { anio, mes, desde, hasta } = filtro;
+    if (!anio && !mes && !desde && !hasta) return records;
+
+    return records.filter(r => {
+        if (anio && r.anio !== Number(anio)) return false;
+        if (mes && r.mes !== Number(mes)) return false;
+        if (desde || hasta) {
+            const ini = r.fecha || '';
+            const fin = r.fecha_hasta || r.fecha || '';
+            if (!ini) return false;
+            if (desde && fin < desde) return false;
+            if (hasta && ini > hasta) return false;
+        }
+        return true;
+    });
+}
+
+/** Años y meses presentes en los datos, para poblar los selectores de filtro. */
+export function periodosDisponibles(records = []) {
+    const anios = new Set();
+    const meses = new Set();
+    const yms = new Set();
+    records.forEach(r => {
+        if (r.anio) anios.add(r.anio);
+        if (r.mes) meses.add(r.mes);
+        if (r.periodo) yms.add(r.periodo);
+    });
+    return {
+        anios: [...anios].sort((a, b) => b - a),
+        meses: [...meses].sort((a, b) => a - b),
+        periodos: [...yms].sort()
+    };
+}
+
+// ============================================================ MÉTRICAS
+
 export function determineConsumptionType(equipo, cargas = [], confirmed = null) {
     if (!equipo) return 'Sin clasificar';
-
-    // 1. Override manual
     if (equipo.tipo_calculo_manual) return equipo.tipo_calculo_manual;
-
-    // 2. Unidad declarada en la meta
     if (confirmed && confirmed.unidad) return confirmed.unidad;
 
-    // 3. Fallback por prefijo
     const prefix = getPrefijo(equipo.interno);
     if (RULE_NO_TANK.includes(prefix)) return 'No Aplica';
     if (RULE_L_100KM.includes(prefix)) return 'L/100Km';
     if (RULE_L_HORA.includes(prefix)) return 'L/Hora';
-
     return 'Sin clasificar';
 }
 
-/**
- * Suma las horas de una lista de registros GPS, soportando el formato actual
- * (`horas` como objeto {ralenti, movimiento, parado, total}) y el viejo (número plano),
- * por si quedan registros de una versión anterior en IndexedDB.
- */
 export function sumHoras(gpsList = []) {
-    let total = 0;
-    gpsList.forEach(g => {
-        if (g.horas && typeof g.horas === 'object') total += g.horas.total || 0;
-        else total += parseFloat(g.horas) || 0;
-    });
-    return total;
+    let t = 0;
+    gpsList.forEach(g => { t += (g.horas && typeof g.horas === 'object') ? (g.horas.total || 0) : (parseFloat(g.horas) || 0); });
+    return t;
 }
 
-/** Desglose de horas por tipo (ralentí / movimiento), para mostrar en la tarjeta. */
 export function desgloseHoras(gpsList = []) {
-    const out = { ralenti: 0, movimiento: 0, parado: 0, total: 0 };
+    const o = { ralenti: 0, movimiento: 0, parado: 0, total: 0 };
     gpsList.forEach(g => {
         if (g.horas && typeof g.horas === 'object') {
-            out.ralenti += g.horas.ralenti || 0;
-            out.movimiento += g.horas.movimiento || 0;
-            out.parado += g.horas.parado || 0;
-            out.total += g.horas.total || 0;
+            o.ralenti += g.horas.ralenti || 0;
+            o.movimiento += g.horas.movimiento || 0;
+            o.parado += g.horas.parado || 0;
+            o.total += g.horas.total || 0;
         } else {
             const n = parseFloat(g.horas) || 0;
-            out.movimiento += n;
-            out.total += n;
+            o.movimiento += n; o.total += n;
         }
     });
-    return out;
+    return o;
 }
 
 /**
- * Calcula las métricas de consumo de un equipo, y explicita POR QUÉ un consumo no se pudo
- * calcular (antes todo caía en un genérico "sin datos suficientes" que no distinguía entre
- * "no cargó combustible", "no tiene GPS" o "es un acoplado sin motor").
+ * Métricas de un equipo, con los pasos del cálculo incluidos.
  */
 export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirmed = null) {
     const calcType = determineConsumptionType(equipo, cargasList, confirmed);
 
-    let totalLitros = 0;
-    let totalCosto = 0;
-    cargasList.forEach(c => {
-        totalLitros += (parseFloat(c.litros) || 0);
-        totalCosto += (parseFloat(c.importe) || 0);
-    });
+    let totalLitros = 0, totalCosto = 0;
+    cargasList.forEach(c => { totalLitros += parseFloat(c.litros) || 0; totalCosto += parseFloat(c.importe) || 0; });
 
     let totalKm = 0;
-    gpsList.forEach(g => { totalKm += (parseFloat(g.distancia) || 0); });
+    gpsList.forEach(g => { totalKm += parseFloat(g.distancia) || 0; });
 
     const horas = desgloseHoras(gpsList);
     const totalHoras = horas.total;
 
     let consumoReal = 0;
     let motivoSinCalculo = null;
+    const pasos = [];
+
+    // --- Paso 1: origen del tipo de cálculo ---
+    let fuenteTipo = 'regla por prefijo del interno';
+    if (equipo && equipo.tipo_calculo_manual) fuenteTipo = 'definido a mano en la tarjeta';
+    else if (confirmed && confirmed.unidad) fuenteTipo = `unidad de la meta ("${confirmed.value}")`;
+    pasos.push(paso(
+        'Determinar cómo se mide este equipo',
+        fuenteTipo,
+        calcType,
+        'La unidad declarada en Consumos Estimados manda; si no hay meta, se usa el prefijo del interno.'
+    ));
+
+    // --- Paso 2: litros ---
+    pasos.push(paso(
+        'Sumar los litros cargados en el período',
+        `${cargasList.length} ${cargasList.length === 1 ? 'carga' : 'cargas'} registradas`,
+        `${nf(totalLitros, 1)} L`
+    ));
 
     if (calcType === 'No Aplica') {
         motivoSinCalculo = 'Equipo remolcado, sin motor propio';
@@ -159,18 +207,40 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
     } else if (totalLitros <= 0) {
         motivoSinCalculo = 'Sin cargas de combustible en el período';
     } else if (calcType === 'L/100Km') {
-        if (totalKm > 0) consumoReal = (totalLitros / totalKm) * 100;
-        else motivoSinCalculo = 'Sin kilómetros de GPS en el período';
+        pasos.push(paso('Sumar los kilómetros del GPS', `${gpsList.length} ${gpsList.length === 1 ? 'registro' : 'registros'} de Resumen de Flota`, `${nf(totalKm)} km`));
+        if (totalKm > 0) {
+            consumoReal = (totalLitros / totalKm) * 100;
+            pasos.push(paso('Dividir litros por km y llevarlo a 100 km', `${nf(totalLitros, 1)} ÷ ${nf(totalKm)} × 100`, `${nf(consumoReal, 2)} L/100Km`));
+        } else motivoSinCalculo = 'Sin kilómetros de GPS en el período';
     } else if (calcType === 'L/Hora') {
-        if (totalHoras > 0) consumoReal = totalLitros / totalHoras;
-        else motivoSinCalculo = 'Sin horas de GPS en el período';
+        pasos.push(paso(
+            'Sumar las horas del GPS',
+            `${nf(horas.ralenti, 1)} hs ralentí + ${nf(horas.movimiento, 1)} hs movimiento`,
+            `${nf(totalHoras, 1)} hs`,
+            'Se suman ambos tipos de hora: el motor consume igual estando en ralentí.'
+        ));
+        if (totalHoras > 0) {
+            consumoReal = totalLitros / totalHoras;
+            pasos.push(paso('Dividir litros por horas', `${nf(totalLitros, 1)} ÷ ${nf(totalHoras, 1)}`, `${nf(consumoReal, 2)} L/Hora`));
+        } else motivoSinCalculo = 'Sin horas de GPS en el período';
     }
 
-    // Desvío contra la meta (solo si ambos valores existen y la unidad coincide)
+    // --- Paso final: comparación contra la meta ---
     let desvioPct = null;
     if (consumoReal > 0 && confirmed && confirmed.valor > 0) {
         desvioPct = ((consumoReal / confirmed.valor) - 1) * 100;
+        pasos.push(paso(
+            'Comparar contra la meta',
+            `(${nf(consumoReal, 2)} ÷ ${nf(confirmed.valor, 2)} − 1) × 100`,
+            `${desvioPct >= 0 ? '+' : ''}${nf(desvioPct, 1)}%`,
+            desvioPct > 15 ? 'Más de 15% por encima se marca como desvío.' : null
+        ));
     }
+    if (motivoSinCalculo) {
+        pasos.push(paso('No se puede completar el cálculo', motivoSinCalculo, '—'));
+    }
+
+    const fuentes = [...new Set([...cargasList, ...gpsList].map(r => r.source_file).filter(Boolean))];
 
     return {
         tipo_calculo: calcType,
@@ -184,117 +254,172 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
         desvio_pct: desvioPct,
         cantidad_cargas: cargasList.length,
         cantidad_gps: gpsList.length,
-        motivo_sin_calculo: motivoSinCalculo
+        motivo_sin_calculo: motivoSinCalculo,
+        pasos,
+        fuentes
     };
 }
 
 export function getCargasForEquipo(interno, rawRecords = []) {
     const key = normalizeEquipoKey(interno);
-    return rawRecords.filter(r => r.type === 'carga' && (r.interno_key || normalizeEquipoKey(r.interno)) === key);
+    return rawRecords.filter(r => r.type === 'carga' && ((r.interno_key || normalizeEquipoKey(r.interno)) === key || (r.dominio_key || '') === key));
 }
 
 export function getGPSForEquipo(interno, rawRecords = []) {
     const key = normalizeEquipoKey(interno);
-    return rawRecords.filter(r => r.type === 'gps' && (r.interno_key || normalizeEquipoKey(r.interno)) === key);
+    return rawRecords.filter(r => r.type === 'gps' && ((r.interno_key || normalizeEquipoKey(r.interno)) === key || (r.dominio_key || '') === key));
 }
 
+// ============================================================ FLOTA
+
 /**
- * Construye, en una sola pasada, el análisis completo de toda la flota: cruza las 4 fuentes
- * (Equipos + Cargas + GPS + Consumos Estimados) y devuelve tanto los totales globales del
- * dashboard como la fila de cada equipo para las tarjetas.
- *
- * Centralizar esto acá evita que el dashboard y las tarjetas calculen lo mismo por separado
- * (que fue exactamente el bug por el que mostraban números distintos) y hace una sola
- * lectura de IndexedDB por render.
+ * Análisis completo de la flota en una sola pasada, con trazabilidad.
+ * @param {Object} opts.filtro  { anio, mes, desde, hasta } — filtros de período
  */
-export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], filtroDesde = null, filtroHasta = null } = {}) {
+export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], filtro = {} } = {}) {
+    const idx = indexarMaestro(equipos);
+
     const allCargas = rawRecords.filter(r => r.type === 'carga');
     const allGps = rawRecords.filter(r => r.type === 'gps');
+    const allOtros = rawRecords.filter(r => r.type !== 'carga' && r.type !== 'gps');
 
     const auto = calculateAlignedPeriod(allCargas, allGps);
-    const start = filtroDesde || auto.start;
-    const end = filtroHasta || auto.end;
+    const usaFiltroManual = !!(filtro.anio || filtro.mes || filtro.desde || filtro.hasta);
 
-    const enRango = (r) => {
-        if (!start || !end || !r.fecha) return true;
-        const hasta = r.fecha_hasta || r.fecha;
-        return hasta >= start && r.fecha <= end;
+    let cargas, gps, otros, start, end, criterioPeriodo;
+    if (usaFiltroManual) {
+        cargas = filtrarPorPeriodo(allCargas, filtro);
+        gps = filtrarPorPeriodo(allGps, filtro);
+        otros = filtrarPorPeriodo(allOtros, filtro);
+        start = filtro.desde || null;
+        end = filtro.hasta || null;
+        criterioPeriodo = 'filtro manual';
+    } else {
+        start = auto.start; end = auto.end;
+        const dentro = r => {
+            if (!start || !end || !r.fecha) return true;
+            return (r.fecha_hasta || r.fecha) >= start && r.fecha <= end;
+        };
+        cargas = allCargas.filter(dentro);
+        gps = allGps.filter(dentro);
+        otros = allOtros.filter(dentro);
+        criterioPeriodo = 'superposición automática entre Cargas y GPS';
+    }
+
+    // Agrupar movimientos por equipo del maestro, resolviendo por interno O por dominio.
+    const porEquipo = new Map();      // clave del maestro -> {cargas, gps, otros}
+    const huerfanosMap = new Map();   // registros que no matchean ningún equipo
+
+    const asignar = (registro, campo) => {
+        const eq = resolverEquipo(registro, idx);
+        if (eq) {
+            const k = eq.interno;
+            if (!porEquipo.has(k)) porEquipo.set(k, { cargas: [], gps: [], otros: [] });
+            porEquipo.get(k)[campo].push(registro);
+        } else {
+            const k = registro.interno_key || registro.dominio_key || '?';
+            if (!huerfanosMap.has(k)) {
+                huerfanosMap.set(k, { interno: registro.interno || registro.dominio || k, dominio: registro.dominio || '', cargas: 0, gps: 0, otros: 0, litros: 0 });
+            }
+            const h = huerfanosMap.get(k);
+            h[campo]++;
+            if (campo === 'cargas') h.litros += parseFloat(registro.litros) || 0;
+        }
     };
-
-    const cargas = allCargas.filter(enRango);
-    const gps = allGps.filter(enRango);
-
-    // Indexar por clave normalizada: O(n) en vez de O(n*m) al recorrer 193 equipos
-    // contra ~3800 cargas (antes se filtraba el array completo una vez por equipo).
-    const cargasPorKey = new Map();
-    const gpsPorKey = new Map();
-    cargas.forEach(c => {
-        const k = c.interno_key || normalizeEquipoKey(c.interno);
-        if (!cargasPorKey.has(k)) cargasPorKey.set(k, []);
-        cargasPorKey.get(k).push(c);
-    });
-    gps.forEach(g => {
-        const k = g.interno_key || normalizeEquipoKey(g.interno);
-        if (!gpsPorKey.has(k)) gpsPorKey.set(k, []);
-        gpsPorKey.get(k).push(g);
-    });
+    cargas.forEach(r => asignar(r, 'cargas'));
+    gps.forEach(r => asignar(r, 'gps'));
+    otros.forEach(r => asignar(r, 'otros'));
 
     const filas = equipos.map(eq => {
-        const key = normalizeEquipoKey(eq.interno);
-        const eqCargas = cargasPorKey.get(key) || [];
-        const eqGps = gpsPorKey.get(key) || [];
-        const confirmed = getConfirmedConsumption(eq.interno, estimados);
-        const metrics = calculateMetrics(eq, eqCargas, eqGps, confirmed);
+        const g = porEquipo.get(eq.interno) || { cargas: [], gps: [], otros: [] };
+        const confirmed = getConfirmedConsumption(eq, estimados);
+        const metrics = calculateMetrics(eq, g.cargas, g.gps, confirmed);
         return {
             equipo: { ...eq, denominacion: eq.denominacion || getDenominacion(eq.interno, eq.tipo) },
             prefijo: getPrefijo(eq.interno),
-            metrics,
-            confirmed,
-            cargas: eqCargas,
-            gps: eqGps
+            metrics, confirmed,
+            cargas: g.cargas, gps: g.gps, otros: g.otros
         };
     });
 
-    // Equipos que aparecen en Cargas/GPS pero NO están en la planilla de Equipos:
-    // antes desaparecían en silencio; ahora se reportan para que se puedan dar de alta.
-    const keysEquipos = new Set(equipos.map(e => normalizeEquipoKey(e.interno)));
-    const huerfanos = [];
-    const vistos = new Set();
-    [...cargasPorKey.keys(), ...gpsPorKey.keys()].forEach(k => {
-        if (!keysEquipos.has(k) && !vistos.has(k)) {
-            vistos.add(k);
-            const c = cargasPorKey.get(k) || [];
-            const g = gpsPorKey.get(k) || [];
-            huerfanos.push({
-                interno: (c[0] && c[0].interno) || (g[0] && g[0].interno) || k,
-                cargas: c.length,
-                gps: g.length,
-                litros: c.reduce((s, x) => s + (parseFloat(x.litros) || 0), 0)
-            });
-        }
-    });
-    huerfanos.sort((a, b) => b.litros - a.litros);
+    const huerfanos = [...huerfanosMap.values()].sort((a, b) => b.litros - a.litros);
 
-    // Totales globales
+    const litrosTot = cargas.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0);
+    const costoTot = cargas.reduce((s, c) => s + (parseFloat(c.importe) || 0), 0);
+    const kmTot = gps.reduce((s, g) => s + (parseFloat(g.distancia) || 0), 0);
+    const hs = desgloseHoras(gps);
+
     const totales = {
-        periodo_desde: start,
-        periodo_hasta: end,
+        periodo_desde: start, periodo_hasta: end, criterio_periodo: criterioPeriodo,
         equipos: equipos.length,
         equipos_con_datos: filas.filter(f => f.metrics.cantidad_cargas > 0 || f.metrics.cantidad_gps > 0).length,
-        total_litros: cargas.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0),
-        total_costo: cargas.reduce((s, c) => s + (parseFloat(c.importe) || 0), 0),
-        total_km: gps.reduce((s, g) => s + (parseFloat(g.distancia) || 0), 0),
-        total_horas: sumHoras(gps),
-        cantidad_cargas: cargas.length,
-        cantidad_gps: gps.length,
+        total_litros: litrosTot, total_costo: costoTot, total_km: kmTot,
+        total_horas: hs.total, horas_ralenti: hs.ralenti, horas_movimiento: hs.movimiento,
+        cantidad_cargas: cargas.length, cantidad_gps: gps.length, cantidad_otros: otros.length,
         con_meta: filas.filter(f => f.confirmed).length,
         sobre_meta: filas.filter(f => f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15).length,
         sin_calculo: filas.filter(f => f.metrics.motivo_sin_calculo && f.metrics.tipo_calculo !== 'No Aplica').length,
+        costo_por_litro: litrosTot > 0 ? costoTot / litrosTot : 0,
         huerfanos
     };
-    totales.horas_ralenti = filas.reduce((s, f) => s + f.metrics.horas_ralenti, 0);
-    totales.horas_movimiento = filas.reduce((s, f) => s + f.metrics.horas_movimiento, 0);
-    totales.costo_por_litro = totales.total_litros > 0 ? totales.total_costo / totales.total_litros : 0;
 
-    return { filas, totales };
+    // ---- Trazabilidad de los totales del panel ----
+    totales.pasos = {
+        periodo: [
+            paso('Tomar el rango de fechas de las Cargas', `${allCargas.length} registros`, rangoTxt(allCargas)),
+            paso('Tomar el rango del Resumen de Flota', `${allGps.length} registros`, rangoTxt(allGps)),
+            paso(usaFiltroManual ? 'Aplicar el filtro elegido' : 'Quedarse con la superposición de ambos', criterioPeriodo, start && end ? `${start} → ${end}` : 'todo el histórico',
+                usaFiltroManual ? null : 'Comparar litros de un período contra km/horas de otro daría un consumo incorrecto.')
+        ],
+        litros: [
+            paso('Filtrar las cargas al período', `${allCargas.length} → ${cargas.length} registros`, `${cargas.length} cargas`),
+            paso('Sumar la columna LITROS', `${cargas.length} valores`, `${nf(litrosTot, 1)} L`)
+        ],
+        costo: [
+            paso('Sumar la columna COSTO TOTAL de las cargas', `${cargas.length} valores`, `$${nf(costoTot)}`),
+            paso('Dividir el costo por los litros', `${nf(costoTot)} ÷ ${nf(litrosTot, 1)}`, `$${nf(costoTot / (litrosTot || 1))} por litro`)
+        ],
+        km: [
+            paso('Filtrar el GPS al período', `${allGps.length} → ${gps.length} registros`, `${gps.length} registros`),
+            paso('Sumar KILÓMETROS RECORRIDOS', `${gps.length} valores`, `${nf(kmTot)} km`)
+        ],
+        horas: [
+            paso('Convertir cada tiempo de Excel a horas', 'valor × 24 (Excel guarda las horas como fracción de día)', 'horas reales'),
+            paso('Sumar tiempo en ralentí', `${gps.length} registros`, `${nf(hs.ralenti, 1)} hs`),
+            paso('Sumar tiempo en movimiento', `${gps.length} registros`, `${nf(hs.movimiento, 1)} hs`),
+            paso('Sumar ambos', `${nf(hs.ralenti, 1)} + ${nf(hs.movimiento, 1)}`, `${nf(hs.total, 1)} hs`)
+        ],
+        sobre_meta: [
+            paso('Calcular el consumo real de cada equipo', `${filas.length} equipos`, `${filas.filter(f => f.metrics.consumo_real > 0).length} con consumo calculable`),
+            paso('Comparar contra su meta', `${totales.con_meta} equipos con meta cargada`, `${totales.sobre_meta} superan la meta en más de 15%`)
+        ],
+        equipos: [
+            paso('Contar las filas del maestro', 'planilla de Equipos + Consumos Estimados', `${equipos.length} equipos`),
+            paso('Cruzar movimientos por interno o dominio', `${cargas.length + gps.length + otros.length} registros`, `${totales.equipos_con_datos} equipos con actividad`),
+            paso('Registros que no cruzaron con ningún equipo', `${huerfanos.length} códigos`, `${nf(huerfanos.reduce((s, h) => s + h.litros, 0))} L sin asignar`)
+        ]
+    };
+
+    return { filas, totales, movimientosOtros: otros };
+}
+
+function rangoTxt(recs) {
+    const f = recs.map(r => r.fecha).filter(Boolean).sort();
+    return f.length ? `${f[0]} → ${f[f.length - 1]}` : 'sin fechas';
+}
+
+/**
+ * Agrupa movimientos genéricos (cubiertas, insumos, filtros…) por tipo y por equipo,
+ * sumando automáticamente sus columnas numéricas.
+ */
+export function resumirMovimientosGenericos(otros = []) {
+    const porTipo = new Map();
+    otros.forEach(r => {
+        if (!porTipo.has(r.type)) porTipo.set(r.type, { tipo: r.type, etiqueta: r.type_label || r.type, registros: 0, equipos: new Set(), metricas: {} });
+        const t = porTipo.get(r.type);
+        t.registros++;
+        t.equipos.add(r.interno_key || r.dominio_key);
+        Object.entries(r.numericos || {}).forEach(([k, v]) => { t.metricas[k] = (t.metricas[k] || 0) + v; });
+    });
+    return [...porTipo.values()].map(t => ({ ...t, equipos: t.equipos.size }));
 }

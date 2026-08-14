@@ -25,7 +25,7 @@ export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps =
             <div class="modal-content modal-wide">
                 <div class="modal-header">
                     <div>
-                        <h2>${esc(equipo.interno)} ${equipo.dominio ? `<small>${esc(equipo.dominio)}</small>` : ''}</h2>
+                        <h2>${esc(equipo.interno)} ${equipo.dominio ? `<span class="card-dominio">${esc(equipo.dominio)}</span>` : '<span class="card-dominio"><em>sin dominio</em></span>'}</h2>
                         <p class="modal-sub">${esc(equipo.denominacion || '')} · ${esc([equipo.marca, equipo.modelo].filter(Boolean).join(' '))}</p>
                     </div>
                     <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
@@ -37,7 +37,24 @@ export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps =
                             <i class="fa-solid fa-triangle-exclamation"></i> ${esc(metrics.motivo_sin_calculo)}
                         </div>` : ''}
 
-                    <h3>Cómo se calcula el consumo</h3>
+                    <h3>Pasos del cálculo</h3>
+                    ${(metrics.pasos && metrics.pasos.length) ? `
+                    <ol class="calc-pasos" style="margin-bottom:1.25rem">
+                        ${metrics.pasos.map((p, i) => `
+                            <li>
+                                <span class="calc-paso-n">${i + 1}</span>
+                                <div class="calc-paso-cuerpo">
+                                    <span class="calc-paso-texto">${esc(p.texto)}</span>
+                                    ${p.calculo ? `<code class="calc-paso-formula">${esc(p.calculo)}</code>` : ''}
+                                    ${p.nota ? `<span class="calc-paso-nota">${esc(p.nota)}</span>` : ''}
+                                </div>
+                                <span class="calc-paso-res">${esc(p.resultado)}</span>
+                            </li>`).join('')}
+                    </ol>` : ''}
+                    ${metrics.fuentes && metrics.fuentes.length ? `
+                    <div class="calc-fuentes"><span>Datos tomados de:</span>${metrics.fuentes.map(f => `<code>${esc(f)}</code>`).join('')}</div>` : ''}
+
+                    <h3>Simular otro escenario</h3>
                     <div class="calc-flow">
                         <div class="calc-box">
                             <span class="calc-label">Combustible cargado</span>

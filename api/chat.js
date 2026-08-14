@@ -1,5 +1,5 @@
 /**
- * Proxy backend para el chat IA de FlotaControl ("Antigravity").
+ * Proxy backend para el chat IA de FlotaControl.
  *
  * Por qué existe este archivo: FlotaControl es una app 100% cliente (HTML/JS que corre en
  * el navegador de cada usuario, sin servidor propio). Llamar a la API de Anthropic
@@ -143,7 +143,7 @@ module.exports = async function handler(req, res) {
     const safeContext = typeof context === 'string' ? context.slice(0, MAX_CONTEXT_CHARS) : '';
 
     const systemPrompt = [
-        'Sos "Antigravity", el asistente de análisis de flota de FlotaControl (HSV Logística).',
+        'Sos el asistente de análisis de flota de FlotaControl (HSV Logística).',
         'Respondé siempre en español rioplatense, de forma breve, concreta y accionable.',
         'Para datos de LA FLOTA: basate en el resumen que te dan a continuación. Si preguntan por',
         'un equipo puntual que no está en ese resumen, o necesitás más detalle, usá la tool',

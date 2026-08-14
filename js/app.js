@@ -1,27 +1,23 @@
 /**
- * FlotaControl - Core Application Logic
+ * FlotaControl - Arranque y navegación.
  */
-
-import { initDB, clearAllData, getDBStats, getArchivosProcesados } from './data/database.js';
+import { initDB, clearAllData, clearMovimientos, getDBStats } from './data/database.js';
 import { initUploadUI, renderDBStatus } from './ui/upload.js';
 import { renderPanel, initPanelControls } from './ui/panel.js';
+import { renderDataTable, initDataTableControls, exportarTablaVisible } from './ui/datatable.js';
+import { initCalcPopover } from './ui/calcpopover.js';
 import { openConfigModal } from './ui/config.js';
 import { initAIChat } from './ai/chat.js';
-import { renderDataTable, saveDBRow } from './ui/datatable.js';
-import * as Exporter from './export/exporter.js';
 
 export const AppState = {
-    currentView: 'upload',
+    currentView: 'panel',
     filesQueue: [],
     dateFilter: { from: null, to: null }
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
-    console.log('FlotaControl inicializando...');
-
     try {
         await initDB();
-        console.log('IndexedDB lista.');
     } catch (e) {
         console.error('Falló la inicialización de la base:', e);
         alert('Error crítico: no se pudo inicializar la base de datos local del navegador.');
@@ -30,62 +26,66 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupNavigation();
     initUploadUI();
     initPanelControls();
+    initDataTableControls();
+    initCalcPopover();
     setupAIPanel();
     initAIChat();
 
     document.getElementById('btn-config')?.addEventListener('click', openConfigModal);
     document.getElementById('btn-reanalizar')?.addEventListener('click', reanalizar);
 
-    // Globals para los onclick inline del HTML
-    window.exportUnitToPDF = Exporter.exportUnitToPDF;
-    window.exportTableToXLSX = Exporter.exportTableToXLSX;
-    window.showDataTable = renderDataTable;
-    window.saveDBRow = saveDBRow;
+    window.exportTableToXLSX = exportarTablaVisible;
+    window.showDataTable = (t) => { irA('datos'); renderDataTable(t); };
     window.renderPanel = renderPanel;
 
     await renderDBStatus();
 
-    // Si ya hay datos guardados de una sesión anterior, arrancar directo en el panel.
+    // Si no hay nada cargado todavía, arrancar en la pantalla de carga.
     try {
-        const stats = await getDBStats();
-        if (stats.equipos > 0 || stats.cargas > 0) irA('panel');
-    } catch (e) { /* base vacía, se queda en la vista de carga */ }
+        const s = await getDBStats();
+        irA((s.equipos > 0 || s.movimientos > 0) ? 'panel' : 'upload');
+    } catch (e) { irA('upload'); }
 });
 
 /**
- * Botón "Re-analizar": borra todo lo guardado en el navegador y deja la app lista para
- * volver a procesar los archivos.
- *
- * Por qué hace falta: la app guarda los datos procesados en IndexedDB (el almacenamiento
- * local del navegador). Al mejorar el parser, los registros que quedaron de la versión
- * anterior siguen ahí, con denominaciones y horas mal calculadas, y se mezclan con los
- * nuevos. Sin este botón la única forma de limpiarlos era borrar los datos del sitio a mano
- * desde las herramientas del navegador.
+ * Re-analizar: da a elegir entre borrar solo los movimientos (conservando el padrón y las
+ * correcciones hechas a mano) o borrar absolutamente todo. Lo primero es lo habitual al
+ * cargar los archivos de un mes nuevo; lo segundo, para empezar de cero.
  */
 async function reanalizar() {
-    let stats;
-    try { stats = await getDBStats(); } catch (e) { stats = null; }
+    let s;
+    try { s = await getDBStats(); } catch (e) { s = null; }
 
-    const detalle = stats
-        ? `\n\nSe van a borrar:\n· ${stats.equipos} equipos\n· ${stats.cargas} cargas de combustible\n· ${stats.gps} registros GPS\n· ${stats.estimados} consumos estimados`
-        : '';
+    const detalle = s ? `\n\nHoy hay guardados:\n· ${s.equipos} equipos en el maestro (${s.conMeta} con meta)\n· ${s.movimientos} movimientos` : '';
+    const soloMovimientos = confirm(
+        `¿Qué querés borrar?${detalle}\n\n` +
+        `ACEPTAR = borrar solo los movimientos (cargas, GPS, etc.) y conservar el maestro con tus ediciones.\n` +
+        `CANCELAR = elegir borrar todo.`
+    );
 
-    if (!confirm(`¿Borrar los datos analizados y volver a empezar?${detalle}\n\nLos archivos Excel originales NO se tocan: vas a poder volver a subirlos y procesarlos con las reglas corregidas.`)) return;
+    let accion;
+    if (soloMovimientos) accion = 'movimientos';
+    else {
+        if (!confirm('¿Borrar TODO, incluido el maestro de equipos, las metas y las columnas propias?\n\nEsta acción no se puede deshacer.')) return;
+        accion = 'todo';
+    }
 
     const btn = document.getElementById('btn-reanalizar');
     const prev = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Limpiando...';
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
 
     try {
-        await clearAllData();
+        if (accion === 'todo') await clearAllData(); else await clearMovimientos();
         AppState.filesQueue = [];
         await renderDBStatus();
         irA('upload');
-        alert('Base limpia. Volvé a subir los 4 archivos Excel y presioná "Procesar y Analizar".');
+        alert(accion === 'todo'
+            ? 'Base vacía. Subí las planillas y presioná "Procesar y Analizar".'
+            : 'Movimientos borrados. El maestro quedó intacto: subí las planillas del período y procesá.');
     } catch (e) {
         console.error('Error limpiando la base:', e);
-        alert('No se pudo limpiar la base: ' + e.message);
+        alert('No se pudo limpiar: ' + e.message);
     } finally {
         btn.disabled = false;
         btn.innerHTML = prev;
@@ -94,18 +94,15 @@ async function reanalizar() {
 
 export function irA(vista) {
     AppState.currentView = vista;
-
-    document.querySelectorAll('.app-nav button').forEach(b => {
-        b.classList.toggle('active', b.id === `nav-${vista}`);
-    });
-
+    document.querySelectorAll('.app-nav button').forEach(b => b.classList.toggle('active', b.id === `nav-${vista}`));
     document.querySelectorAll('.view-section').forEach(v => {
         const activa = v.id === `view-${vista}`;
         v.classList.toggle('active', activa);
         v.classList.toggle('hidden', !activa);
     });
-
     if (vista === 'panel') renderPanel();
+    if (vista === 'datos') renderDataTable();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function setupNavigation() {
@@ -115,19 +112,18 @@ function setupNavigation() {
 }
 
 function setupAIPanel() {
-    const aiPanel = document.getElementById('ai-panel');
-    const aiHeader = aiPanel?.querySelector('.ai-header');
-    const toggleBtn = aiPanel?.querySelector('#btn-toggle-ai');
+    const panel = document.getElementById('ai-panel');
+    const header = panel?.querySelector('.ai-header');
+    const btn = panel?.querySelector('#btn-toggle-ai');
+    if (!header || !panel || !btn) return;
 
-    if (!aiHeader || !aiPanel || !toggleBtn) return;
-
-    aiHeader.addEventListener('click', () => {
-        aiPanel.classList.toggle('collapsed');
-        const icon = toggleBtn.querySelector('i');
+    header.addEventListener('click', () => {
+        panel.classList.toggle('collapsed');
+        const icon = btn.querySelector('i');
         if (icon) {
-            const colapsado = aiPanel.classList.contains('collapsed');
-            icon.classList.toggle('fa-chevron-up', !colapsado);
-            icon.classList.toggle('fa-chevron-down', colapsado);
+            const col = panel.classList.contains('collapsed');
+            icon.classList.toggle('fa-chevron-up', col);
+            icon.classList.toggle('fa-chevron-down', !col);
         }
     });
 }

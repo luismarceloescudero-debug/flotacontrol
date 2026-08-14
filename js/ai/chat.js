@@ -1,5 +1,5 @@
 /**
- * AI Chat interaction logic — Asistente "Antigravity"
+ * AI Chat interaction logic — Asistente de Flota
  *
  * Usa Claude (Anthropic) vía un backend propio (/api/chat.js): el navegador nunca ve
  * ninguna API key, solo le habla a "/api/chat" en el mismo dominio.

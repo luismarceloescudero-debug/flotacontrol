@@ -1,6 +1,6 @@
 import { AppState, irA } from '../app.js';
 import { dispatchFileParser } from '../parsers/index.js';
-import { clearAllData, getDBStats, getArchivosProcesados } from '../data/database.js';
+import { clearMovimientos, getDBStats, getArchivosProcesados } from '../data/database.js';
 
 export function initUploadUI() {
     const dropZone = document.getElementById('drop-zone');
@@ -96,7 +96,7 @@ export async function renderDBStatus() {
         const stats = await getDBStats();
         const archivos = await getArchivosProcesados();
 
-        if (stats.equipos === 0 && stats.cargas === 0 && stats.gps === 0) {
+        if (stats.equipos === 0 && stats.movimientos === 0) {
             el.innerHTML = `<div class="db-status-inner empty"><i class="fa-solid fa-database"></i> La base local está vacía. Subí los archivos para empezar.</div>`;
             return;
         }
@@ -106,7 +106,7 @@ export async function renderDBStatus() {
                 <div>
                     <i class="fa-solid fa-database"></i>
                     <strong>Datos guardados en este navegador:</strong>
-                    ${stats.equipos} equipos · ${stats.cargas} cargas · ${stats.gps} registros GPS · ${stats.estimados} metas
+                    ${stats.equipos} equipos en el maestro (${stats.conMeta} con meta) · ${stats.movimientos} movimientos${stats.columnasExtra ? ` · ${stats.columnasExtra} columnas propias` : ''}
                 </div>
                 <div class="db-status-files">
                     ${archivos.map(a => `<span class="chip">${a.tipo}: ${a.filename.slice(0, 34)}${a.filename.length > 34 ? '…' : ''}</span>`).join('')}
@@ -125,14 +125,14 @@ async function processAllFiles() {
     const limpiar = document.getElementById('chk-limpiar')?.checked;
     btn.disabled = true;
 
-    // Limpiar antes de procesar evita el problema de acumulación: los registros de cargas y
-    // GPS se insertan con clave autoincremental, así que reprocesar el mismo archivo sin
-    // limpiar duplica litros, km y horas en todos los totales.
+    // Se borran solo los MOVIMIENTOS, nunca el maestro: reprocesar el mismo archivo sin
+    // limpiar duplicaría litros, km y horas en todos los totales, pero borrar el padrón
+    // haría perder las correcciones hechas a mano y las columnas propias.
     if (limpiar) {
         try {
-            await clearAllData();
+            await clearMovimientos();
         } catch (e) {
-            console.error('No se pudo limpiar la base antes de procesar:', e);
+            console.error('No se pudieron limpiar los movimientos antes de procesar:', e);
         }
     }
 
