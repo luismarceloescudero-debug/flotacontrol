@@ -1,88 +1,139 @@
-export function openUnitModal(equipo, metrics, confirmed, eqCargas, eqGps) {
-    let container = document.getElementById('modals-container');
+/**
+ * Modal de detalle de un equipo: muestra de dónde sale cada número del cálculo,
+ * el historial de cargas y la actividad GPS del período.
+ */
+const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps = []) {
+    const container = document.getElementById('modals-container');
     if (!container) return;
 
-    // Expected value parsing for inverse math
-    let expectedValue = 0;
-    if (confirmed) {
-        // e.g. "34.5 L/100Km" -> 34.5
-        const match = confirmed.value.match(/([\d\.]+)/);
-        if (match) expectedValue = parseFloat(match[1]);
-    }
+    const esHora = metrics.tipo_calculo === 'L/Hora';
+    const factor = esHora ? metrics.total_horas : metrics.total_km;
+    const unidadFactor = esHora ? 'horas' : 'km';
+    // Fix: antes se sacaba el número de la meta con un regex sobre el texto en cada uso.
+    // Ahora el valor numérico ya viene parseado y validado desde el parser.
+    const meta = confirmed && confirmed.valor > 0 ? confirmed.valor : 0;
 
-    const modalHTML = `
-        <div class="modal-overlay active" id="unit-modal-${equipo.interno}">
-            <div class="modal-content">
+    const ultimasCargas = eqCargas.slice().sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '')).slice(0, 12);
+
+    const modalId = `unit-modal-${equipo.interno.replace(/[^A-Za-z0-9]/g, '')}`;
+
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
                 <div class="modal-header">
-                    <h2>Detalle: ${equipo.interno} - ${equipo.dominio}</h2>
-                    <button class="btn-close" onclick="this.closest('.modal-overlay').remove()"><i class="fa-solid fa-xmark"></i></button>
+                    <div>
+                        <h2>${esc(equipo.interno)} ${equipo.dominio ? `<small>${esc(equipo.dominio)}</small>` : ''}</h2>
+                        <p class="modal-sub">${esc(equipo.denominacion || '')} · ${esc([equipo.marca, equipo.modelo].filter(Boolean).join(' '))}</p>
+                    </div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
                 </div>
+
                 <div class="modal-body">
-                    <h3>Pasos del Cálculo (Editable)</h3>
-                    <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:1rem;">
-                        Podés editar los litros o distancia para ver proyecciones y recalcular.
-                    </p>
-                    
-                    <div class="calc-steps">
-                        <div class="calc-step">
-                            <label>1. Total Litros Cargados:</label>
-                            <input type="number" id="calc-litros" value="${metrics.total_litros.toFixed(1)}">
+                    ${metrics.motivo_sin_calculo ? `
+                        <div class="insight-bar insight-warn">
+                            <i class="fa-solid fa-triangle-exclamation"></i> ${esc(metrics.motivo_sin_calculo)}
+                        </div>` : ''}
+
+                    <h3>Cómo se calcula el consumo</h3>
+                    <div class="calc-flow">
+                        <div class="calc-box">
+                            <span class="calc-label">Combustible cargado</span>
+                            <input type="number" step="0.1" id="calc-litros" value="${metrics.total_litros.toFixed(1)}">
+                            <span class="calc-unit">litros · ${metrics.cantidad_cargas} cargas</span>
                         </div>
-                        <div class="calc-step">
-                            <label>2. ${metrics.tipo_calculo === 'L/100Km' ? 'Distancia Recorrida (km)' : 'Horas de Uso (hs)'}:</label>
-                            <input type="number" id="calc-factor" value="${metrics.tipo_calculo === 'L/100Km' ? metrics.total_km : metrics.total_horas}">
+                        <div class="calc-op">÷</div>
+                        <div class="calc-box">
+                            <span class="calc-label">${esHora ? 'Horas de uso (GPS)' : 'Distancia (GPS)'}</span>
+                            <input type="number" step="0.1" id="calc-factor" value="${factor.toFixed(1)}">
+                            <span class="calc-unit">${unidadFactor} · ${metrics.cantidad_gps} registros</span>
                         </div>
-                        <div class="calc-step" style="background: rgba(59,130,246,0.1); border:none; padding:1rem; margin-top:1rem;">
-                            <label style="color:var(--accent-cyan); font-weight:bold;">= Consumo Resultante (${metrics.tipo_calculo}):</label>
-                            <span id="calc-result" style="font-size:1.5rem; font-weight:bold;">${metrics.consumo_real.toFixed(2)}</span>
+                        <div class="calc-op">=</div>
+                        <div class="calc-box calc-result">
+                            <span class="calc-label">Consumo (${esc(metrics.tipo_calculo)})</span>
+                            <span id="calc-result">${nf(metrics.consumo_real, 2)}</span>
+                            <span class="calc-unit">${meta ? `meta: ${nf(meta, 2)}` : 'sin meta cargada'}</span>
                         </div>
                     </div>
 
-                    ${expectedValue > 0 ? `
-                    <div style="margin-top:2rem;">
-                        <h3 style="color:var(--accent-amber)">Cálculo Inverso (Falta de GPS)</h3>
-                        <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:1rem;">
-                            Meta según fábrica: <strong>${confirmed.value}</strong>. 
-                            Si el vehículo consumió ${metrics.total_litros.toFixed(1)}L, debería haber recorrido/trabajado:
-                        </p>
-                        <div class="calc-step" style="background: rgba(245,158,11,0.1); border:none; padding:1rem;">
-                            <label style="color:var(--accent-amber); font-weight:bold;">Proyección Inversa:</label>
-                            <span style="font-size:1.5rem; font-weight:bold;">
-                                ${metrics.tipo_calculo === 'L/100Km' ? 
-                                    ((metrics.total_litros / expectedValue) * 100).toFixed(0) + ' km' : 
-                                    (metrics.total_litros / expectedValue).toFixed(1) + ' hs'}
-                            </span>
-                        </div>
-                    </div>
-                    ` : ''}
+                    ${esHora && metrics.horas_ralenti > 0 ? `
+                    <div class="insight-bar">
+                        <i class="fa-solid fa-hourglass-half"></i>
+                        De las ${nf(metrics.total_horas, 1)} horas, <strong>${nf(metrics.horas_ralenti, 1)} fueron en ralentí</strong>
+                        (${nf(metrics.horas_ralenti / metrics.total_horas * 100, 0)}%) y ${nf(metrics.horas_movimiento, 1)} en movimiento.
+                    </div>` : ''}
+
+                    ${meta > 0 && metrics.total_litros > 0 ? `
+                    <h3>Proyección inversa</h3>
+                    <p class="modal-note">
+                        Si el equipo cumpliera exactamente su meta de <strong>${esc(confirmed.value)}</strong>,
+                        con ${nf(metrics.total_litros, 1)} L cargados debería haber registrado:
+                        <strong>${esHora ? nf(metrics.total_litros / meta, 1) + ' horas' : nf((metrics.total_litros / meta) * 100, 0) + ' km'}</strong>.
+                        ${factor > 0 ? `Registró ${nf(factor, esHora ? 1 : 0)} ${unidadFactor}.` : 'No hay registro de GPS para comparar.'}
+                    </p>` : ''}
+
+                    <h3>Últimas cargas de combustible</h3>
+                    ${ultimasCargas.length ? `
+                    <div class="table-responsive modal-table">
+                        <table class="data-table">
+                            <thead><tr><th>Fecha</th><th>Litros</th><th>Importe</th><th>Lugar</th><th>Centro de costo</th><th>Chofer</th></tr></thead>
+                            <tbody>
+                                ${ultimasCargas.map(c => `
+                                    <tr>
+                                        <td>${esc(c.fecha)}</td>
+                                        <td>${nf(c.litros, 1)}</td>
+                                        <td>$${nf(c.importe, 0)}</td>
+                                        <td>${esc(c.lugar_carga)}</td>
+                                        <td>${esc(c.centro_costo)}</td>
+                                        <td>${esc(c.chofer)}</td>
+                                    </tr>`).join('')}
+                            </tbody>
+                        </table>
+                    </div>` : '<p class="modal-note">No hay cargas registradas en el período.</p>'}
+
+                    <h3>Actividad GPS del período</h3>
+                    ${eqGps.length ? `
+                    <div class="table-responsive modal-table">
+                        <table class="data-table">
+                            <thead><tr><th>Desde</th><th>Hasta</th><th>Km</th><th>Hs ralentí</th><th>Hs movimiento</th><th>Hs total</th></tr></thead>
+                            <tbody>
+                                ${eqGps.map(g => {
+                                    const h = (g.horas && typeof g.horas === 'object') ? g.horas : { ralenti: 0, movimiento: parseFloat(g.horas) || 0, total: parseFloat(g.horas) || 0 };
+                                    return `<tr>
+                                        <td>${esc(g.fecha)}</td>
+                                        <td>${esc(g.fecha_hasta || '')}</td>
+                                        <td>${nf(g.distancia, 0)}</td>
+                                        <td>${nf(h.ralenti, 1)}</td>
+                                        <td>${nf(h.movimiento, 1)}</td>
+                                        <td><strong>${nf(h.total, 1)}</strong></td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>` : '<p class="modal-note">Este equipo no tiene registros en el Resumen de Flota (GPS) del período.</p>'}
                 </div>
             </div>
-        </div>
-    `;
+        </div>`);
 
-    container.insertAdjacentHTML('beforeend', modalHTML);
+    const modal = document.getElementById(modalId);
+    modal.querySelector('[data-close]').addEventListener('click', () => modal.remove());
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 
-    // Add interactivity to the calc step inputs
-    const modal = document.getElementById(`unit-modal-${equipo.interno}`);
+    // Recalculo en vivo al editar litros o el factor (para simular escenarios)
     const inputLitros = modal.querySelector('#calc-litros');
     const inputFactor = modal.querySelector('#calc-factor');
     const spanResult = modal.querySelector('#calc-result');
 
-    const updateCalc = () => {
-        let l = parseFloat(inputLitros.value) || 0;
-        let f = parseFloat(inputFactor.value) || 0;
+    const update = () => {
+        const l = parseFloat(inputLitros.value) || 0;
+        const f = parseFloat(inputFactor.value) || 0;
         let res = 0;
-        
-        if (f > 0) {
-            if (metrics.tipo_calculo === 'L/100Km') {
-                res = (l / f) * 100;
-            } else {
-                res = l / f;
-            }
-        }
-        spanResult.innerText = res.toFixed(2);
+        if (f > 0) res = esHora ? (l / f) : ((l / f) * 100);
+        spanResult.innerText = nf(res, 2);
+        spanResult.style.color = (meta > 0 && res > meta * 1.15) ? 'var(--accent-red)' : 'var(--accent-cyan)';
     };
-
-    inputLitros.addEventListener('input', updateCalc);
-    inputFactor.addEventListener('input', updateCalc);
+    inputLitros.addEventListener('input', update);
+    inputFactor.addEventListener('input', update);
 }

@@ -1,0 +1,285 @@
+/* ============================================================
+   Panel unificado (KPIs + tarjetas) — FlotaControl
+   Usa los tokens de color ya definidos en main.css
+   ============================================================ */
+
+/* ---------- Estado de la base local ---------- */
+.db-status { margin-bottom: 1.25rem; }
+.db-status-inner {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--accent-cyan);
+    border-radius: 10px;
+    padding: 0.85rem 1rem;
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+}
+.db-status-inner.empty { border-left-color: var(--text-muted); }
+.db-status-inner i { color: var(--accent-cyan); margin-right: 0.4rem; }
+.db-status-inner strong { color: var(--text-primary); }
+.db-status-files { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; }
+.chip {
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 0.2rem 0.7rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.checkbox-line {
+    display: flex; align-items: center; gap: 0.5rem;
+    color: var(--text-secondary); font-size: 0.88rem; cursor: pointer;
+}
+.checkbox-line input { accent-color: var(--accent-blue); width: 16px; height: 16px; }
+.upload-actions { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+
+/* ---------- Barra de período ---------- */
+.periodo-bar {
+    display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+.periodo-label { display: block; font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.periodo-valor { display: block; font-size: 1.05rem; font-weight: 600; color: var(--accent-cyan); margin-top: 0.15rem; }
+.periodo-detalle { font-size: 0.82rem; color: var(--text-muted); text-align: right; }
+
+/* ---------- KPIs ---------- */
+.kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+}
+.kpi-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1.1rem 1.15rem;
+    display: flex; flex-direction: column; gap: 0.3rem;
+    transition: border-color var(--transition-fast), transform var(--transition-fast);
+    cursor: default;
+}
+.kpi-card[onclick] { cursor: pointer; }
+.kpi-card[onclick]:hover { border-color: var(--border-active); transform: translateY(-2px); }
+.kpi-label { font-size: 0.76rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.kpi-value { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); line-height: 1.15; }
+.kpi-value small { font-size: 0.95rem; font-weight: 500; color: var(--text-secondary); }
+.kpi-sub { font-size: 0.76rem; color: var(--text-muted); }
+.kpi-card.kpi-alert { border-left: 3px solid var(--accent-red); }
+.kpi-card.kpi-alert .kpi-value { color: var(--accent-red); }
+.kpi-card.kpi-warn { border-left: 3px solid var(--accent-amber); }
+.kpi-card.kpi-warn .kpi-value { color: var(--accent-amber); }
+
+/* ---------- Barras de insight ---------- */
+.insight-bar {
+    display: flex; align-items: flex-start; gap: 0.6rem;
+    background: rgba(6, 182, 212, 0.08);
+    border: 1px solid rgba(6, 182, 212, 0.25);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    font-size: 0.86rem;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+}
+.insight-bar i { color: var(--accent-cyan); margin-top: 0.15rem; }
+.insight-bar strong { color: var(--text-primary); }
+.insight-bar.insight-warn { background: rgba(245, 158, 11, 0.08); border-color: rgba(245, 158, 11, 0.28); }
+.insight-bar.insight-warn i { color: var(--accent-amber); }
+
+/* ---------- Toolbar ---------- */
+.cards-toolbar {
+    display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 0.85rem 1rem;
+    margin-bottom: 1.25rem;
+    position: sticky; top: 0; z-index: 20;
+}
+.toolbar-left { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+.toolbar-right { display: flex; gap: 0.75rem; align-items: center; }
+.search-wrap { position: relative; }
+.search-wrap i { position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.85rem; }
+.search-wrap input { padding-left: 2.1rem !important; min-width: 240px; }
+.cards-toolbar input, .cards-toolbar select {
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 0.55rem 0.8rem;
+    font-size: 0.86rem;
+    font-family: inherit;
+}
+.cards-toolbar input:focus, .cards-toolbar select:focus { outline: none; border-color: var(--border-active); }
+.cards-count { font-size: 0.84rem; color: var(--text-muted); white-space: nowrap; }
+
+/* ---------- Grilla de tarjetas ---------- */
+.cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1rem;
+}
+
+.equip-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1.1rem;
+    display: flex; flex-direction: column; gap: 0.85rem;
+    transition: border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.equip-card:hover { border-color: var(--border-active); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.equip-card.editing { border-color: var(--accent-blue); box-shadow: 0 0 0 1px var(--accent-blue-glow); }
+
+.card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75rem; }
+.card-top h3 { font-size: 1.15rem; font-weight: 700; color: var(--accent-cyan); margin: 0; line-height: 1.2; }
+.card-top h3 small { font-size: 0.78rem; font-weight: 500; color: var(--text-muted); margin-left: 0.35rem; }
+.card-deno { font-size: 0.8rem; font-weight: 600; color: var(--text-primary); margin: 0.25rem 0 0; letter-spacing: 0.02em; }
+.card-modelo { font-size: 0.76rem; color: var(--text-muted); margin: 0.1rem 0 0; }
+.card-actions { display: flex; gap: 0.3rem; flex-shrink: 0; }
+
+.card-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; }
+.stat { display: flex; flex-direction: column; gap: 0.15rem; background: var(--bg-input); border-radius: 8px; padding: 0.6rem 0.7rem; }
+.stat-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.stat-value { font-size: 1.05rem; font-weight: 600; color: var(--text-primary); }
+.stat-value small { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); }
+.stat-value.stat-highlight { color: var(--accent-cyan); }
+.stat-value.stat-muted { color: var(--text-muted); }
+
+/* ---------- Comparación real vs meta ---------- */
+.meta-bar { display: flex; flex-direction: column; gap: 0.35rem; }
+.meta-bar-track { position: relative; height: 8px; background: var(--bg-input); border-radius: 999px; overflow: hidden; }
+.meta-bar-fill { height: 100%; border-radius: 999px; transition: width var(--transition-normal); }
+.meta-bar-target { position: absolute; top: -2px; bottom: -2px; left: 100%; width: 2px; background: var(--text-secondary); }
+.meta-bar-legend { display: flex; justify-content: space-between; font-size: 0.74rem; color: var(--text-muted); }
+.meta-bar-legend strong { color: var(--text-primary); }
+
+.card-meta-line { display: flex; gap: 0.9rem; flex-wrap: wrap; font-size: 0.74rem; color: var(--text-muted); }
+.card-meta-line i { opacity: 0.7; margin-right: 0.2rem; }
+
+.litros-bar { height: 3px; background: var(--bg-input); border-radius: 999px; overflow: hidden; }
+.litros-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); border-radius: 999px; }
+
+/* ---------- Estado ---------- */
+.card-status {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-size: 0.8rem; font-weight: 500;
+    padding: 0.6rem 0.75rem;
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    margin-top: auto;
+}
+.card-status.status-ok { color: var(--accent-green); border-left: 3px solid var(--accent-green); }
+.card-status.status-warn { color: var(--accent-amber); border-left: 3px solid var(--accent-amber); }
+.card-status.status-alert { color: var(--accent-red); border-left: 3px solid var(--accent-red); }
+.card-status.status-neutral { color: var(--text-muted); border-left: 3px solid var(--text-muted); }
+
+/* ---------- Edición en tarjeta ---------- */
+.card-edit { display: flex; flex-direction: column; gap: 0.7rem; }
+.card-edit label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.card-edit input, .card-edit select {
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.9rem;
+    font-family: inherit;
+    text-transform: none;
+}
+.card-edit input:focus, .card-edit select:focus { outline: none; border-color: var(--border-active); }
+.edit-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+.edit-actions { display: flex; gap: 0.5rem; }
+.edit-actions button { flex: 1; padding: 0.5rem; font-size: 0.85rem; }
+
+/* ---------- Estado vacío ---------- */
+.empty-state {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 3.5rem 1.5rem;
+    color: var(--text-muted);
+    background: var(--bg-card);
+    border: 1px dashed var(--border-color);
+    border-radius: 12px;
+}
+.empty-state i { font-size: 2.5rem; color: var(--text-muted); opacity: 0.5; margin-bottom: 1rem; display: block; }
+.empty-state h3 { color: var(--text-secondary); margin: 0 0 0.5rem; font-size: 1.05rem; }
+.empty-state p { margin: 0 auto; max-width: 460px; font-size: 0.88rem; line-height: 1.5; }
+
+/* ---------- Tablas ---------- */
+.table-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.table-head h3 { color: var(--accent-blue); margin: 0; }
+.tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.cell-key { color: var(--accent-cyan); font-weight: 600; }
+.cell-edit { background: rgba(255,255,255,0.04); cursor: text; }
+.cell-edit:focus { outline: 1px solid var(--border-active); background: var(--bg-input); }
+.cell-muted { color: var(--text-muted); font-size: 0.82rem; }
+.save-flag { display: none; color: var(--accent-green); font-size: 0.78rem; }
+
+/* ---------- Modal ---------- */
+.modal-wide { max-width: 900px; width: 92vw; }
+.modal-sub { font-size: 0.82rem; color: var(--text-muted); margin: 0.2rem 0 0; }
+.modal-note { font-size: 0.86rem; color: var(--text-secondary); line-height: 1.55; }
+.modal-table { max-height: 260px; overflow-y: auto; margin-bottom: 1.25rem; }
+.modal-body h3 { font-size: 0.95rem; color: var(--accent-blue); margin: 1.5rem 0 0.75rem; }
+.modal-body h3:first-of-type { margin-top: 0; }
+
+.calc-flow { display: flex; align-items: stretch; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.calc-box {
+    flex: 1; min-width: 150px;
+    display: flex; flex-direction: column; gap: 0.3rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 0.8rem;
+}
+.calc-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.calc-box input {
+    background: transparent; border: none; border-bottom: 1px solid var(--border-color);
+    color: var(--text-primary); font-size: 1.3rem; font-weight: 600; font-family: inherit;
+    padding: 0.2rem 0; width: 100%;
+}
+.calc-box input:focus { outline: none; border-bottom-color: var(--accent-blue); }
+.calc-unit { font-size: 0.72rem; color: var(--text-muted); }
+.calc-op { display: flex; align-items: center; font-size: 1.4rem; color: var(--text-muted); font-weight: 300; }
+.calc-result { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.3); }
+.calc-result #calc-result { font-size: 1.75rem; font-weight: 700; color: var(--accent-cyan); }
+
+/* Los botones que solo contienen un ícono colapsan a 0x0 px si el CDN de Font Awesome no
+   carga (red corporativa, caída del proveedor), quedando invisibles e imposibles de clickear
+   — incluido el botón de cerrar los modales, que dejaría la app trabada. Un tamaño mínimo
+   garantiza que sigan siendo utilizables aunque no haya íconos. */
+.btn-icon, .btn-close {
+    min-width: 32px;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ---------- Header ---------- */
+.header-actions { display: flex; gap: 0.5rem; align-items: center; }
+#btn-reanalizar {
+    display: flex; align-items: center; gap: 0.45rem;
+    background: var(--bg-card); border: 1px solid var(--border-color);
+    color: var(--text-secondary); border-radius: 8px;
+    padding: 0.5rem 0.85rem; font-size: 0.84rem; cursor: pointer;
+    font-family: inherit;
+    transition: all var(--transition-fast);
+}
+#btn-reanalizar:hover:not(:disabled) { border-color: var(--accent-amber); color: var(--accent-amber); }
+#btn-reanalizar:disabled { opacity: 0.6; cursor: not-allowed; }
+
+@media (max-width: 720px) {
+    .btn-label { display: none; }
+    .cards-toolbar { position: static; }
+    .search-wrap input { min-width: 0; width: 100%; }
+    .toolbar-left { width: 100%; }
+    .toolbar-left > * { flex: 1; }
+    .periodo-detalle { text-align: left; }
+    .calc-op { display: none; }
+}

@@ -1,11 +1,4 @@
 {
-  "name": "flotacontrol",
-  "version": "0.2.0",
-  "private": true,
-  "description": "Control de consumo de combustible de la flota HSV Logística.",
-  "scripts": {
-    "dev": "npx serve . -l 8080"
-  },
   "dependencies": {
     "jsdom": "^30.0.0",
     "puppeteer": "^25.4.0",

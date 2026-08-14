@@ -3,6 +3,89 @@
  */
 
 /**
+ * Denominación canónica de cada equipo según el prefijo de su interno.
+ *
+ * Por qué existe: la columna TIPO del Excel de Equipos trae denominaciones inconsistentes
+ * o directamente erróneas (ej: los TR figuran como "CAMION" cuando son TRACTORES; los MX
+ * mezclan "CAMION MIXER"/"CAMION VOLCADOR"/"CAMION REGADOR"). El prefijo del interno sí es
+ * consistente en las 4 planillas, así que se usa como fuente de verdad para la denominación.
+ * Verificado contra los 23 prefijos presentes en "Equipos HSV SJ-MZA 2026.xlsx".
+ */
+export const TIPO_POR_PREFIJO = {
+    AE: 'AUTOELEVADOR',
+    AU: 'AUTOMÓVIL',
+    BA: 'BATEA',
+    BM: 'BOMBA',
+    CF: 'CARGADORA FRONTAL',
+    CH: 'CAMIÓN HIDROGRÚA',
+    CL: 'CALOVENTOR',
+    CM: 'CAMIONETA',
+    CR: 'CARRETÓN',
+    EX: 'EXCAVADORA',
+    FG: 'FURGÓN',
+    GE: 'GRUPO ELECTRÓGENO',
+    MC: 'MINICARGADORA',
+    MH: 'PRODUCTORA DE HIELO',
+    MS: 'SEMI MIXER',
+    MT: 'MOTOCOMPRESOR',
+    MX: 'MIXER',
+    RE: 'RETROCARGADORA',
+    SR: 'SEMIRREMOLQUE',
+    TO: 'TOLVA',
+    TP: 'TOPADOR',
+    TR: 'TRACTOR',
+    VL: 'VOLCADOR'
+};
+
+/**
+ * Extrae el prefijo alfabético del interno ("TR-20" -> "TR", "CM43" -> "CM").
+ * Es la clave con la que se agrupa la flota y se determina la denominación.
+ */
+export function getPrefijo(interno) {
+    const m = String(interno || '').toUpperCase().match(/^[A-Z]+/);
+    return m ? m[0] : '';
+}
+
+/**
+ * Denominación canónica de un equipo. Si el prefijo no está mapeado, cae al TIPO original
+ * del Excel (para no perder información de equipos nuevos o atípicos).
+ */
+export function getDenominacion(interno, tipoExcel = '') {
+    const pref = getPrefijo(interno);
+    return TIPO_POR_PREFIJO[pref] || normalizeString(tipoExcel) || 'SIN CLASIFICAR';
+}
+
+/**
+ * Parsea el consumo estimado del Excel de metas, que viene como texto con la unidad
+ * incluida: " 3 L/hora ", " 7 L/100km ", " 9.5 L/100km ".
+ *
+ * La UNIDAD es el dato más valioso de esa planilla: define si el equipo se mide por hora
+ * o por distancia. Antes la app ignoraba la unidad y decidía el tipo de cálculo con listas
+ * de prefijos hardcodeadas que no coincidían con la realidad (ej: los VL figuraban como
+ * L/100Km cuando el área los mide en L/hora, y las BM sin dominio quedaban como "No Aplica"
+ * pese a tener meta declarada).
+ *
+ * @param {any} raw
+ * @returns {{valor: Number, unidad: String|null, texto: String}}
+ *          unidad: 'L/Hora' | 'L/100Km' | null
+ */
+export function parseConsumoEstimado(raw) {
+    const texto = String(raw == null ? '' : raw).trim();
+    if (!texto) return { valor: 0, unidad: null, texto: '' };
+
+    const up = normalizeString(texto);
+    let unidad = null;
+    if (/\/\s*H/.test(up)) unidad = 'L/Hora';           // "L/HORA", "L/H"
+    else if (/K\s*M/.test(up)) unidad = 'L/100Km';      // "L/100KM", "L/KM"
+
+    // Tomar el primer número del texto (soporta "9,5" y "9.5")
+    const m = up.match(/(\d+(?:[.,]\d+)?)/);
+    const valor = m ? parseFloat(m[1].replace(',', '.')) : 0;
+
+    return { valor: isNaN(valor) ? 0 : valor, unidad, texto };
+}
+
+/**
  * Normaliza un string para poder cruzar datos de manera segura
  * @param {String} val 
  * @returns {String} String en mayúsculas, sin espacios extra y sin acentos

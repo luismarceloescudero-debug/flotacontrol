@@ -1,86 +1,102 @@
 # FlotaControl — Control de Consumo de Combustible
 
-Aplicación web (HTML/CSS/JS vanilla, sin build step) para controlar y visualizar el
-consumo de combustible de la flota de HSV Logística. Los datos se procesan y guardan
-100% en el navegador (IndexedDB) — no hay backend propio de datos, salvo el proxy de IA
-descripto más abajo.
+Aplicación web para controlar y analizar el consumo de combustible de la flota (HSV Logística).
+Corre 100% en el navegador: los archivos Excel se procesan localmente y los datos quedan
+guardados en IndexedDB (el almacenamiento del propio navegador). Nada de la flota se sube a
+ningún servidor, salvo el resumen que se le pasa al asistente de IA si se lo usa.
 
-> Para el historial de qué se diagnosticó y corrigió (y por qué), ver
-> [`CORRECCIONES_APLICADAS.md`](./CORRECCIONES_APLICADAS.md).
+## Cómo funciona
 
-## ✨ Características
+Se cargan cuatro planillas y la app las cruza entre sí:
 
-- **Carga de datos**: arrastrá o seleccioná archivos Excel (.xlsx) de Equipos, Cargas de Combustible y GPS/Resumen de Flota.
-- **Detección automática**: el sistema reconoce el tipo de cada archivo por sus columnas.
-- **Dashboard interactivo**: stats generales y periodo auto-alineado entre Cargas y GPS.
-- **Tarjetas de equipos**: vista en grilla con filtros por tipo y búsqueda, comparando consumo real vs. meta de fábrica.
-- **Modal de análisis por equipo**: historial de cargas, cálculo inverso, comparación con la meta.
-- **Asistente IA ("Antigravity")**: chat con Claude (Anthropic) con acceso real a los datos de la flota y research web.
-- **Exportación**: a Excel desde las tablas de datos.
+| Planilla | Aporta | Clave de cruce |
+|---|---|---|
+| `Equipos HSV*.xlsx` | Padrón: interno, dominio, marca, modelo | `INTERNO` |
+| `Cargas_Combustible_*.xlsx` | Litros, costo, lugar, centro de costo, chofer | `INTERNO-DOMINIO` |
+| `Resumen de Flota*.xlsx` (GPS) | Km recorridos, horas de ralentí y de movimiento | `UNIDAD` |
+| `Consumos Estimados*.xlsx` | Meta de consumo **y su unidad** (L/hora o L/100km) | `INTERNO` |
 
-## 🚀 Uso local
+El cruce se hace por una **clave normalizada** del interno: `TR-21`, `TR 21` y `TR21` se
+tratan como el mismo equipo.
 
-**Importante**: `index.html` carga `js/app.js` como módulo ES6 (`<script type="module">`).
-Los navegadores bloquean la carga de módulos vía `file://` por política CORS — **no
-alcanza con abrir `index.html` con doble clic**, hace falta un servidor local:
+### Cómo se decide L/Hora vs L/100Km
+
+Por la **unidad declarada en Consumos Estimados**, que es la fuente de verdad del área
+(ej. `8 L/hora` → se mide por hora; `9,5 L/100km` → se mide por distancia).
+Si un equipo no tiene meta cargada, se cae a una regla por prefijo de interno.
+Se puede sobrescribir a mano desde la tarjeta del equipo.
+
+### Denominaciones
+
+La columna `TIPO` del Excel de Equipos tiene valores inconsistentes (los TR figuran como
+"CAMION" siendo tractores). La app usa una denominación canónica según el prefijo del interno:
+
+`AE` Autoelevador · `AU` Automóvil · `BA` Batea · `BM` Bomba · `CF` Cargadora frontal ·
+`CH` Camión hidrogrúa · `CL` Caloventor · `CM` Camioneta · `CR` Carretón · `EX` Excavadora ·
+`FG` Furgón · `GE` Grupo electrógeno · `MC` Minicargadora · `MH` Productora de hielo ·
+`MS` Semi mixer · `MT` Motocompresor · `MX` Mixer · `RE` Retrocargadora · `SR` Semirremolque ·
+`TO` Tolva · `TP` Topador · `TR` Tractor · `VL` Volcador
+
+## Uso
+
+1. Abrir la app (ver *Desarrollo local* o la URL desplegada).
+2. Ir a **Carga de Datos**, arrastrar las cuatro planillas (se pueden subir varios
+   "Resumen de Flota" para abarcar más meses).
+3. **Procesar y Analizar** → la app salta al **Panel de Flota**.
+
+En el panel están juntos los indicadores globales y las tarjetas por equipo, con filtros por
+denominación, estado y orden. Cada tarjeta es editable (denominación, meta y unidad) y abre un
+detalle con el desglose del cálculo, las últimas cargas y la actividad GPS.
+
+**Re-analizar** (arriba a la derecha) borra los datos guardados en el navegador y deja todo
+listo para reprocesar. Es necesario cuando quedaron datos de una versión anterior de la app,
+porque reprocesar sin limpiar duplicaría litros, km y horas.
+
+## Desarrollo local
+
+`index.html` carga los módulos como ES modules, así que **no funciona abriéndolo con doble
+clic** (`file://`): el navegador bloquea los módulos por CORS. Hay que servirlo por HTTP:
 
 ```bash
-npm install       # una vez
-npm run dev       # sirve la app en http://localhost:8080
+python -m http.server 8080     # y abrir http://localhost:8080
 ```
 
-(o cualquier otro servidor estático: `python -m http.server 8080`, la extensión "Live
-Server" de VS Code, etc.)
+El asistente de IA necesita además el backend (`/api/chat`), que no corre con un servidor
+estático. Para probarlo localmente hace falta `vercel dev`.
 
-El chat con IA (`/api/chat`) **no** funciona en local sin backend — ver la sección de
-IA más abajo.
+## Asistente de IA
 
-1. Abrí `http://localhost:8080/index.html`.
-2. Cargá los archivos Excel de tu flota.
-3. Procesá los datos con el botón "🚀 Procesar y Analizar".
-4. Explorá el Dashboard y las tarjetas de equipos.
+Usa Claude a través de una función serverless en `api/chat.js`. La API key vive únicamente
+en la variable de entorno `ANTHROPIC_API_KEY` del hosting, nunca en el código del navegador.
+Ver `.env.example`.
 
-## 📊 Archivos Excel esperados
+El asistente tiene acceso real a: el resumen de la flota, el detalle de cualquier equipo bajo
+demanda (tool `get_equipo_detalle`) y búsqueda web (tool `web_search` de Anthropic, con costo
+aparte por búsqueda).
 
-- **Equipos**: `Equipos HSV*.xlsx` — lista de la flota (INTERNO, DOMINIO, MARCA, MODELO, TIPO).
-- **Cargas de Combustible**: `Cargas_Combustible_*.xlsx` — historial diario (INTERNO-DOMINIO, FECHA, LITROS, CENTRO DE COSTO, LUGAR DE CARGA).
-- **GPS / Resumen de Flota**: `Resumen de Flota*.xlsx` — reporte mensual (UNIDAD, Tiempo en ralentí, Tiempo en movimiento, Kilómetros recorridos).
-- **Consumos Estimados**: `Consumos Estimados*.xlsx` — meta de fábrica por equipo (INTERNO, CONSUMO ESTIMADO).
+## Despliegue
 
-## 🤖 Asistente IA (Claude vía backend propio)
+Vercel, conectado al repo. GitHub Pages **no** sirve porque no puede ejecutar `api/chat.js`.
+Variables de entorno necesarias: `ANTHROPIC_API_KEY` (obligatoria),
+`ANTHROPIC_MODEL` y `ANTHROPIC_MAX_WEB_SEARCHES` (opcionales).
 
-El chat usa la API de Anthropic a través de una función serverless (`api/chat.js`), para
-que la API key nunca quede expuesta en el navegador. Pensado para desplegar en Vercel:
-
-1. `console.anthropic.com` → API Keys → generar una key.
-2. En el proyecto de Vercel: Settings → Environment Variables → `ANTHROPIC_API_KEY`.
-3. (Opcional) `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_WEB_SEARCHES` — ver `.env.example`.
-4. Redesplegar.
-
-El asistente tiene acceso real a toda la flota cargada (no solo a un resumen) vía
-tool-use, y puede investigar en internet (precios de gasoil, normativa, etc.) vía la
-tool `web_search` de Anthropic — esto último tiene costo aparte por búsqueda.
-
-Esto **no** es tu suscripción de chat de claude.ai (Pro/Max): es la API de Anthropic,
-facturada por uso.
-
-## 📁 Estructura
+## Estructura
 
 ```
-index.html            Entrada de la app
-js/
-  app.js               Bootstrap, navegación
-  data/                normalizer.js, database.js (IndexedDB), analyzer.js (reglas de negocio)
-  parsers/              xlsx-parser.js
-  ui/                    cards.js, dashboard.js, modals.js, upload.js, datatable.js, config.js
-  ai/                    chat.js (cliente del asistente IA)
-  export/                exporter.js
-api/
-  chat.js               Proxy serverless a la API de Anthropic (Vercel)
-styles/                 main.css, upload.css, components.css
-ARCHIVOS/               Excel de ejemplo/reales (gitignored)
+index.html              Página única (Carga de Datos + Panel de Flota)
+xlsx.full.min.js        SheetJS, servido localmente (no desde CDN)
+api/chat.js             Backend del asistente (función serverless)
+js/app.js               Arranque, navegación, botón Re-analizar
+js/data/normalizer.js   Normalización, denominaciones, parseo de horas y metas
+js/data/analyzer.js     Reglas de negocio y análisis de toda la flota
+js/data/database.js     IndexedDB
+js/parsers/             Detección de formato y extracción de cada planilla
+js/ui/panel.js          Panel unificado (KPIs + tarjetas editables)
+js/ui/datatable.js      Visor/editor de tablas
+js/ui/modals.js         Detalle por equipo
+js/ai/chat.js           Cliente del asistente
 ```
 
 ## Licencia
 
-Uso interno — HSV Logística
+Uso interno — HSV Logística.

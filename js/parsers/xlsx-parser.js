@@ -1,9 +1,12 @@
 /**
  * XLSX Parser wrapper using SheetJS
- * Handles 4 specific file formats: Equipos, Cargas, GPS, Consumos Estimados
+ * Maneja 4 formatos: Equipos, Cargas de Combustible, GPS (Resumen de Flota), Consumos Estimados.
  */
-import { insertEquipos, insertRawRecords, insertEstimados } from '../data/database.js';
-import { extractDataFromString, parseDate, parseNumber, normalizeString, aggregateHours } from '../data/normalizer.js';
+import { insertEquipos, insertRawRecords, insertEstimados, insertPrecios, registrarArchivo } from '../data/database.js';
+import {
+    extractDataFromString, parseDate, parseNumber, normalizeString,
+    normalizeEquipoKey, aggregateHours, getDenominacion, parseConsumoEstimado
+} from '../data/normalizer.js';
 
 export async function parseXLSX(file) {
     return new Promise((resolve, reject) => {
@@ -13,30 +16,27 @@ export async function parseXLSX(file) {
                 const data = new Uint8Array(e.target.result);
                 const workbook = XLSX.read(data, { type: 'array' });
                 const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-                
-                // Get all data as raw arrays
-                const rawRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
-                if (rawRows.length === 0) throw new Error("Excel vacío");
 
-                // Detect File Type and Header Row
+                const rawRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+                if (rawRows.length === 0) throw new Error('Excel vacío');
+
                 let fileType = 'UNKNOWN';
                 let headerRowIdx = -1;
 
-                // 1. Check if it's "Consumos Estimados" (Header at 0, contains 'CONSUMO ESTIMADO')
+                // 1. Consumos Estimados
                 for (let i = 0; i < Math.min(5, rawRows.length); i++) {
-                    const rowText = rawRows[i].join('|').toUpperCase();
-                    if (rowText.includes('CONSUMO ESTIMADO')) {
+                    if (normalizeString(rawRows[i].join('|')).includes('CONSUMO ESTIMADO')) {
                         fileType = 'ESTIMADOS';
                         headerRowIdx = i;
                         break;
                     }
                 }
 
-                // 2. Check if it's "Cargas Combustible" (Header at 0, contains 'LITROS' and 'CHOFER')
+                // 2. Cargas de Combustible
                 if (fileType === 'UNKNOWN') {
                     for (let i = 0; i < Math.min(5, rawRows.length); i++) {
-                        const rowText = rawRows[i].join('|').toUpperCase();
-                        if (rowText.includes('LITROS') && rowText.includes('LUGAR DE CARGA')) {
+                        const t = normalizeString(rawRows[i].join('|'));
+                        if (t.includes('LITROS') && t.includes('LUGAR DE CARGA')) {
                             fileType = 'CARGAS';
                             headerRowIdx = i;
                             break;
@@ -44,11 +44,11 @@ export async function parseXLSX(file) {
                     }
                 }
 
-                // 3. Check if it's "Equipos" (Header at 4 or contains 'POTENCIA', 'CAPACIDAD')
+                // 3. Equipos
                 if (fileType === 'UNKNOWN') {
                     for (let i = 0; i < Math.min(10, rawRows.length); i++) {
-                        const rowText = rawRows[i].join('|').toUpperCase();
-                        if (rowText.includes('TIPO') && rowText.includes('MARCA') && rowText.includes('POTENCIA') && rowText.includes('INTERNO')) {
+                        const t = normalizeString(rawRows[i].join('|'));
+                        if (t.includes('TIPO') && t.includes('MARCA') && t.includes('POTENCIA') && t.includes('INTERNO')) {
                             fileType = 'EQUIPOS';
                             headerRowIdx = i;
                             break;
@@ -59,37 +59,28 @@ export async function parseXLSX(file) {
                 let gpsDesde = null;
                 let gpsHasta = null;
 
-                // 4. Check if it's "GPS Resumen" (Header at 6 or contains 'KILÓMETROS RECORRIDOS')
+                // 4. GPS / Resumen de Flota
                 if (fileType === 'UNKNOWN') {
-                    for (let i = 0; i < Math.min(10, rawRows.length); i++) {
-                        const rowText = normalizeString(rawRows[i].join('|').toUpperCase());
-                        if (rowText.includes('KILOMETROS RECORRIDOS') || rowText.includes('TIEMPO EN MOVIMIENTO')) {
+                    for (let i = 0; i < Math.min(12, rawRows.length); i++) {
+                        const t = normalizeString(rawRows[i].join('|'));
+                        if (headerRowIdx === -1 && (t.includes('KILOMETROS RECORRIDOS') || t.includes('TIEMPO EN MOVIMIENTO'))) {
                             fileType = 'GPS';
                             headerRowIdx = i;
                         }
-                        // Search for metadata dates
-                        if (rawRows[i][0] && String(rawRows[i][0]).toUpperCase().includes('DESDE:')) {
-                            gpsDesde = parseDate(rawRows[i][1]);
-                        }
-                        if (rawRows[i][0] && String(rawRows[i][0]).toUpperCase().includes('HASTA:')) {
-                            gpsHasta = parseDate(rawRows[i][1]);
-                        }
+                        const c0 = normalizeString(rawRows[i][0]);
+                        if (c0.includes('DESDE')) gpsDesde = parseDate(rawRows[i][1]);
+                        if (c0.includes('HASTA')) gpsHasta = parseDate(rawRows[i][1]);
                     }
                 }
 
                 if (headerRowIdx === -1) {
-                    console.warn("No se pudo detectar el formato del archivo:", file.name);
-                    resolve();
+                    console.warn('No se pudo detectar el formato del archivo:', file.name);
+                    resolve({ tipo: 'DESCONOCIDO', filas: 0, archivo: file.name });
                     return;
                 }
 
-                // Extract Headers
-                // NOTA (fix): algunos Excel reales (ej. "Equipos HSV*.xlsx") repiten el
-                // encabezado "TIPO" dos veces en la misma fila (una vez con la categoría
-                // descriptiva y otra vez con una clasificación por peso). Si dos columnas
-                // tienen el mismo nombre, la conversión a objeto de más abajo pisaba el
-                // valor de la primera con el de la segunda y se perdía el dato. Para evitar
-                // eso, las columnas repetidas se renombran TIPO, TIPO_2, TIPO_3...
+                // Encabezados. Las columnas repetidas (el Excel de Equipos trae "TIPO" dos
+                // veces) se renombran TIPO, TIPO_2... para que la segunda no pise a la primera.
                 const headerCounts = {};
                 const headers = rawRows[headerRowIdx].map(h => {
                     const base = normalizeString(h).trim();
@@ -97,9 +88,7 @@ export async function parseXLSX(file) {
                     headerCounts[base] = (headerCounts[base] || 0) + 1;
                     return headerCounts[base] === 1 ? base : `${base}_${headerCounts[base]}`;
                 });
-                console.log(`[${fileType}] Headers at row ${headerRowIdx}:`, headers);
 
-                // Convert remaining rows to objects
                 const jsonData = [];
                 for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
                     const obj = {};
@@ -113,18 +102,19 @@ export async function parseXLSX(file) {
                     if (hasData) jsonData.push(obj);
                 }
 
-                // Dispatch to specific handler
-                if (fileType === 'EQUIPOS') {
-                    await handleEquipos(jsonData, file.name);
-                } else if (fileType === 'CARGAS') {
-                    await handleCargas(jsonData, file.name);
-                } else if (fileType === 'GPS') {
-                    await handleGPS(jsonData, file.name, gpsDesde, gpsHasta);
-                } else if (fileType === 'ESTIMADOS') {
-                    await handleEstimados(jsonData, file.name);
+                let filas = 0;
+                if (fileType === 'EQUIPOS') filas = await handleEquipos(jsonData, file.name);
+                else if (fileType === 'CARGAS') {
+                    filas = await handleCargas(jsonData, file.name);
+                    await handlePrecios(workbook, file.name); // 2da hoja "Precios", si existe
                 }
+                else if (fileType === 'GPS') filas = await handleGPS(jsonData, file.name, gpsDesde, gpsHasta);
+                else if (fileType === 'ESTIMADOS') filas = await handleEstimados(jsonData, file.name);
 
-                resolve();
+                const meta = { filename: file.name, tipo: fileType, filas, procesado: new Date().toISOString(), periodo_desde: gpsDesde, periodo_hasta: gpsHasta };
+                await registrarArchivo(meta);
+                console.log(`[${fileType}] ${file.name}: ${filas} filas procesadas`);
+                resolve(meta);
             } catch (err) {
                 reject(err);
             }
@@ -135,29 +125,72 @@ export async function parseXLSX(file) {
 }
 
 async function handleEquipos(data, filename) {
-    const equipos = [];
+    // Se agrupa por clave normalizada en vez de empujar una fila por renglón.
+    //
+    // Por qué: el Excel real lista cada bomba de hormigón DOS veces con el mismo interno —
+    // una fila como chasis (tiene el dominio, ej "BM09 / JNU923 / 31320") y otra como el
+    // equipo bomba montado encima (sin dominio, ej "BM09 / - / BSF 38Z 12L"). Como el store
+    // usa `interno` como clave, la segunda fila pisaba a la primera y el equipo terminaba
+    // SIN DOMINIO. Eso a su vez disparaba la vieja regla "BM sin dominio = No Aplica" y
+    // dejaba 10 bombas fuera del control de combustible.
+    // Ahora las filas del mismo interno se fusionan: se conserva el dominio del chasis y se
+    // combinan los modelos (chasis + bomba), que es la información real de la unidad.
+    const porKey = new Map();
+
     data.forEach(row => {
         const internoRaw = getValFuzzy(row, ['INTERNO', 'NRO', 'ID']);
         const dominio = getValFuzzy(row, ['DOMINIO', 'PATENTE']);
-        const tipo = getValFuzzy(row, ['TIPO', 'CATEGORIA']);
-        
-        let idData = extractDataFromString(internoRaw || dominio);
+        const tipoExcel = getValFuzzy(row, ['TIPO', 'CATEGORIA']);
+
+        const idData = extractDataFromString(internoRaw || dominio);
         if (!idData.interno && !idData.dominio) return;
-        
-        equipos.push({
-            interno: (idData.interno || idData.dominio).toUpperCase(),
-            dominio: idData.dominio || dominio || '',
-            marca: getValFuzzy(row, ['MARCA']) || '',
-            modelo: getValFuzzy(row, ['MODELO']) || '',
-            tipo: tipo || '',
-            source_file: filename
-        });
+
+        const interno = (idData.interno || idData.dominio).toUpperCase();
+        const key = normalizeEquipoKey(interno);
+        const marca = normalizeString(getValFuzzy(row, ['MARCA'])) || '';
+        const modelo = normalizeString(getValFuzzy(row, ['MODELO'])) || '';
+
+        const prev = porKey.get(key);
+        if (!prev) {
+            porKey.set(key, {
+                interno,
+                interno_key: key,
+                dominio: idData.dominio || normalizeString(dominio) || '',
+                marca,
+                modelo,
+                // Denominación canónica por prefijo: la columna TIPO del Excel trae valores
+                // erróneos (los TR figuran como "CAMION" siendo tractores, los MX mezclan
+                // mixer/volcador/regador). Se guarda igual el original para trazabilidad.
+                denominacion: getDenominacion(interno, tipoExcel),
+                tipo: normalizeString(tipoExcel) || '',
+                ubicacion: normalizeString(getValFuzzy(row, ['UBICACION'])) || '',
+                anio: parseNumber(getValFuzzy(row, ['ANO', 'AÑO'])) || null,
+                filas_origen: 1,
+                source_file: filename
+            });
+        } else {
+            // Fusionar: se completa lo que falte y se acumulan marca/modelo distintos.
+            prev.dominio = prev.dominio || idData.dominio || normalizeString(dominio) || '';
+            prev.marca = unirDistinto(prev.marca, marca);
+            prev.modelo = unirDistinto(prev.modelo, modelo);
+            prev.tipo = prev.tipo || normalizeString(tipoExcel) || '';
+            prev.ubicacion = prev.ubicacion || normalizeString(getValFuzzy(row, ['UBICACION'])) || '';
+            prev.anio = prev.anio || parseNumber(getValFuzzy(row, ['ANO', 'AÑO'])) || null;
+            prev.filas_origen++;
+        }
     });
-    
-    if (equipos.length > 0) {
-        await insertEquipos(equipos);
-        console.log(`Insertados ${equipos.length} equipos`);
-    }
+
+    const equipos = [...porKey.values()];
+    if (equipos.length > 0) await insertEquipos(equipos);
+    return equipos.length;
+}
+
+/** Une dos valores de texto sin repetir (para fusionar marca/modelo de chasis + equipo). */
+function unirDistinto(a, b) {
+    if (!b) return a;
+    if (!a) return b;
+    if (a.includes(b) || b.includes(a)) return a.length >= b.length ? a : b;
+    return `${a} / ${b}`;
 }
 
 async function handleEstimados(data, filename) {
@@ -165,105 +198,130 @@ async function handleEstimados(data, filename) {
     data.forEach(row => {
         const internoRaw = getValFuzzy(row, ['INTERNO']);
         if (!internoRaw) return;
-        
-        let idData = extractDataFromString(internoRaw);
+        const idData = extractDataFromString(internoRaw);
         if (!idData.interno) return;
 
-        // El Excel real trae valores como " 3 L/hora " o " 7 L/100km " (texto con unidad).
-        // Se conserva el texto (para mostrarlo tal cual, ej. "Meta: 3 L/hora") y además
-        // se guarda el número puro por separado para poder comparar/calcular con él sin
-        // depender de un regex en cada lugar que lo use (fix: antes solo se guardaba el
-        // texto crudo, lo que impedía compararlo numéricamente contra el consumo real).
-        const rawEstimado = (getValFuzzy(row, ['CONSUMO ESTIMADO', 'ESTIMADO']) || '').toString().trim();
+        // El valor viene como texto con unidad: " 3 L/hora ", " 7 L/100km ".
+        // Se guarda el texto original (para mostrar), el número (para comparar) y la
+        // UNIDAD, que es lo que define si el equipo se mide por hora o por distancia.
+        const parsed = parseConsumoEstimado(getValFuzzy(row, ['CONSUMO ESTIMADO', 'ESTIMADO']));
+        const interno = idData.interno.toUpperCase();
+
         estimados.push({
-            interno: idData.interno.toUpperCase(),
-            consumo_estimado: rawEstimado,
-            consumo_estimado_valor: parseNumber(rawEstimado),
+            interno,
+            interno_key: normalizeEquipoKey(interno),
+            consumo_estimado: parsed.texto,
+            consumo_estimado_valor: parsed.valor,
+            consumo_estimado_unidad: parsed.unidad,
             source_file: filename
         });
     });
 
-    if (estimados.length > 0) {
-        await insertEstimados(estimados);
-        console.log(`Insertados ${estimados.length} consumos estimados`);
-    }
+    if (estimados.length > 0) await insertEstimados(estimados);
+    return estimados.length;
 }
 
 async function handleCargas(data, filename) {
     const records = [];
     data.forEach(row => {
-        const identRaw = getValFuzzy(row, ['INTERNO-DOMINIO', 'INTERNO', 'PATENTE', 'DOMINIO']);
-        let idData = extractDataFromString(identRaw);
+        const identRaw = getValFuzzy(row, ['INTERNO-DOMINIO', 'INTERNO', 'PATENTE', 'DOMINIO', 'VEHICULO']);
+        const idData = extractDataFromString(identRaw);
         if (!idData.interno) return;
 
+        const interno = idData.interno.toUpperCase();
         records.push({
             type: 'carga',
-            interno: idData.interno.toUpperCase(),
+            interno,
+            interno_key: normalizeEquipoKey(interno),
+            dominio: idData.dominio || '',
             fecha: parseDate(getValFuzzy(row, ['FECHA', 'DATE'])),
             litros: parseNumber(getValFuzzy(row, ['LITROS', 'CANTIDAD'])),
-            importe: parseNumber(getValFuzzy(row, ['COSTO TOTAL', 'IMPORTE', 'TOTAL', 'MONTO'])),
-            centro_costo: getValFuzzy(row, ['CENTRO DE COSTO', 'C. COSTO', 'AREA', 'SECTOR']) || '',
-            lugar_carga: getValFuzzy(row, ['LUGAR DE CARGA', 'LUGAR', 'SURTIDOR']) || '',
+            importe: parseNumber(getValFuzzy(row, ['COSTO TOTAL', 'IMPORTE', 'MONTO'])),
+            precio_unitario: parseNumber(getValFuzzy(row, ['PRECIO UNITARIO'])),
+            combustible: normalizeString(getValFuzzy(row, ['TIPO DE COMBUSTIBLE'])) || '',
+            chofer: normalizeString(getValFuzzy(row, ['CHOFER'])) || '',
+            sector: normalizeString(getValFuzzy(row, ['SECTOR'])) || '',
+            centro_costo: normalizeString(getValFuzzy(row, ['CENTRO DE COSTO', 'C. COSTO'])) || '',
+            lugar_carga: normalizeString(getValFuzzy(row, ['LUGAR DE CARGA', 'LUGAR', 'SURTIDOR'])) || '',
             source_file: filename
         });
     });
-    
-    if (records.length > 0) {
-        await insertRawRecords(records);
-        console.log(`Insertadas ${records.length} cargas`);
-    }
+
+    if (records.length > 0) await insertRawRecords(records);
+    return records.length;
 }
 
 async function handleGPS(data, filename, gpsDesde, gpsHasta) {
     const records = [];
     data.forEach(row => {
         const identRaw = getValFuzzy(row, ['UNIDAD', 'MATRICULA', 'INTERNO', 'DOMINIO']);
-        let idData = extractDataFromString(identRaw);
+        const idData = extractDataFromString(identRaw);
         if (!idData.interno) return;
 
-        // Fix: el reporte real "Resumen de Flota" trae DOS columnas de tiempo separadas
-        // ("Tiempo en ralentí" y "Tiempo en movimiento"; no existe una tercera columna
-        // "Tiempo parado" en los archivos reales, a diferencia de lo que asumía la
-        // documentación previa). Antes se leía una sola columna ("Tiempo en movimiento")
-        // como número plano, perdiendo por completo las horas de ralentí. Ahora se agregan
-        // ambas con aggregateHours(), que además convierte correctamente el valor numérico
-        // que entrega SheetJS (fracción de día tipo Excel) a horas reales.
+        // El reporte real trae DOS columnas de tiempo ("Tiempo en ralentí" y "Tiempo en
+        // movimiento"). Antes se leía solo una como número plano y se perdían las horas de
+        // ralentí. aggregateHours() suma ambas y convierte el valor que entrega SheetJS
+        // (fracción de día de Excel) a horas reales.
         const horas = aggregateHours({
             ralenti: getValFuzzy(row, ['TIEMPO EN RALENTI', 'RALENTI']),
             movimiento: getValFuzzy(row, ['TIEMPO EN MOVIMIENTO', 'HORAS', 'HS']),
             parado: getValFuzzy(row, ['TIEMPO PARADO', 'TIEMPO DETENIDO'])
         });
 
+        const interno = idData.interno.toUpperCase();
         records.push({
             type: 'gps',
-            interno: idData.interno.toUpperCase(),
-            fecha: parseDate(getValFuzzy(row, ['FECHA'])) || gpsDesde || new Date().toISOString().split('T')[0],
+            interno,
+            interno_key: normalizeEquipoKey(interno),
+            fecha: parseDate(getValFuzzy(row, ['FECHA'])) || gpsDesde || '',
             fecha_hasta: gpsHasta || null,
             distancia: parseNumber(getValFuzzy(row, ['KILOMETROS RECORRIDOS', 'KILOMETROS', 'DISTANCIA'])),
             horas,
+            odometro: parseNumber(getValFuzzy(row, ['ODOMETRO'])),
+            horometro: parseNumber(getValFuzzy(row, ['HOROMETRO'])),
+            vel_max: parseNumber(getValFuzzy(row, ['MAXIMA VELOCIDAD'])),
+            grupo: normalizeString(getValFuzzy(row, ['GRUPO'])) || '',
             source_file: filename
         });
     });
-    
-    if (records.length > 0) {
-        await insertRawRecords(records);
-        console.log(`Insertados ${records.length} registros GPS`);
+
+    if (records.length > 0) await insertRawRecords(records);
+    return records.length;
+}
+
+/**
+ * La planilla de Cargas trae una segunda hoja "Precios" con el precio por litro de cada
+ * tipo de combustible. Antes se ignoraba por completo; ahora se guarda para poder mostrar
+ * el costo de referencia y detectar cargas con precio fuera de lista.
+ */
+async function handlePrecios(workbook, filename) {
+    const hoja = workbook.SheetNames.find(n => normalizeString(n).includes('PRECIO'));
+    if (!hoja) return;
+    try {
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[hoja], { header: 1, defval: '' });
+        const precios = [];
+        for (let i = 1; i < rows.length; i++) {
+            const tipo = normalizeString(rows[i][0]);
+            const precio = parseNumber(rows[i][1]);
+            if (tipo && precio > 0) precios.push({ combustible: tipo, precio, source_file: filename });
+        }
+        if (precios.length > 0) await insertPrecios(precios);
+    } catch (e) {
+        console.warn('No se pudo leer la hoja de Precios:', e);
     }
 }
 
-// Utility to find value in an object using possible keys ignoring case/accents
+// Busca un valor en la fila por nombre de columna, ignorando mayúsculas/acentos/espacios.
 function getValFuzzy(row, possibleKeys) {
-    const normalizedRowKeys = Object.keys(row).map(k => ({ 
-        original: k, 
+    const normalizedRowKeys = Object.keys(row).map(k => ({
+        original: k,
         norm: normalizeString(k).replace(/\s+/g, '')
     }));
-    
+
     for (let pk of possibleKeys) {
         const normPk = normalizeString(pk).replace(/\s+/g, '');
         const match = normalizedRowKeys.find(rk => rk.norm.includes(normPk));
-        if (match) {
-            return row[match.original];
-        }
+        if (match) return row[match.original];
     }
     return null;
 }

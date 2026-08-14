@@ -3,119 +3,130 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FlotaControl v2.0</title>
-    <!-- Dependencies -->
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <title>FlotaControl</title>
+    <!-- Dependencies.
+         SheetJS se carga desde la copia LOCAL del repo, no desde un CDN: si el CDN está
+         bloqueado (red corporativa, sin internet, caída del proveedor) `XLSX` queda sin
+         definir y la app no puede leer ni un solo archivo — falla con
+         "ReferenceError: XLSX is not defined" al procesar. El archivo ya estaba en el repo. -->
+    <script src="xlsx.full.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    
+
     <!-- CSS -->
     <link rel="stylesheet" href="styles/main.css">
     <link rel="stylesheet" href="styles/upload.css">
     <link rel="stylesheet" href="styles/components.css">
-    
+    <link rel="stylesheet" href="styles/panel.css">
+
     <!-- JS App Entry Point -->
     <script type="module" src="js/app.js" defer></script>
 </head>
 <body class="theme-dark">
-    <!-- Header -->
     <header class="app-header">
         <div class="logo">
             <i class="fa-solid fa-truck-fast"></i>
-            <span>FlotaControl <small>v2.0</small></span>
+            <span>FlotaControl</span>
         </div>
         <nav class="app-nav">
             <button id="nav-upload" class="active"><i class="fa-solid fa-cloud-arrow-up"></i> Carga de Datos</button>
-            <button id="nav-dashboard"><i class="fa-solid fa-chart-pie"></i> Dashboard</button>
-            <button id="nav-cards"><i class="fa-solid fa-address-card"></i> Equipos</button>
+            <button id="nav-panel"><i class="fa-solid fa-gauge-high"></i> Panel de Flota</button>
         </nav>
         <div class="header-actions">
+            <button id="btn-reanalizar" title="Borrar los datos guardados y volver a procesar los archivos">
+                <i class="fa-solid fa-rotate"></i> <span class="btn-label">Re-analizar</span>
+            </button>
             <button id="btn-config" title="Configuración"><i class="fa-solid fa-gear"></i></button>
         </div>
     </header>
 
-    <!-- Main Content Area -->
     <main id="app-content">
-        <!-- View: Upload Area -->
+        <!-- ============ Vista: Carga de Datos ============ -->
         <section id="view-upload" class="view-section active">
+            <div id="db-status" class="db-status"></div>
+
             <div class="upload-container" id="drop-zone">
                 <i class="fa-solid fa-file-import upload-icon"></i>
                 <h2>Arrastrá tus archivos aquí</h2>
-                <p>Soporta .xlsx, .pdf, .csv, .json</p>
-                <input type="file" id="file-input" multiple accept=".xlsx, .xls, .csv, .pdf, .json" hidden>
+                <p>Equipos · Cargas de Combustible · Resumen de Flota (GPS) · Consumos Estimados</p>
+                <input type="file" id="file-input" multiple accept=".xlsx, .xls, .csv, .json" hidden>
                 <button class="btn-primary" onclick="document.getElementById('file-input').click()">
                     Seleccionar Archivos
                 </button>
             </div>
-            
-            <div id="file-list" class="file-list">
-                <!-- File items will be injected here -->
-            </div>
-            
+
+            <div id="file-list" class="file-list"></div>
+
             <div class="upload-actions">
+                <label class="checkbox-line">
+                    <input type="checkbox" id="chk-limpiar" checked>
+                    Borrar los datos anteriores antes de procesar (recomendado)
+                </label>
                 <button id="btn-process-all" class="btn-success" disabled>
                     <i class="fa-solid fa-rocket"></i> Procesar y Analizar
                 </button>
             </div>
         </section>
 
-        <!-- View: Dashboard -->
-        <section id="view-dashboard" class="view-section hidden">
-            <!-- Dual Calendars Filter (Auto-Aligned) -->
-            <div class="global-filters" style="display:flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 1rem; border-radius: 12px; margin-bottom: 1.5rem; border: 1px solid var(--border-color);">
-                <div style="display:flex; flex-direction:column; gap:0.25rem;">
-                    <span style="color:var(--text-secondary); font-size: 0.85rem;">Periodo de Análisis (Auto-Alineado)</span>
-                    <span id="auto-date-range" style="color:var(--accent-cyan); font-weight: 600; font-size: 1.1rem;">Calculando...</span>
+        <!-- ============ Vista: Panel (KPIs + Tarjetas juntos) ============ -->
+        <section id="view-panel" class="view-section hidden">
+            <div id="panel-kpis"></div>
+
+            <div class="cards-toolbar">
+                <div class="toolbar-left">
+                    <div class="search-wrap">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="text" id="search-equip" placeholder="Buscar interno, dominio, marca...">
+                    </div>
+                    <select id="filter-denominacion">
+                        <option value="ALL">Todas las denominaciones</option>
+                    </select>
+                    <select id="filter-estado">
+                        <option value="ALL">Todos los estados</option>
+                        <option value="CON_CONSUMO">Con consumo calculado</option>
+                        <option value="SOBRE">Sobre la meta (+15%)</option>
+                        <option value="OK">Dentro de la meta</option>
+                        <option value="SIN_DATOS">Sin consumo calculable</option>
+                    </select>
+                    <select id="sort-by">
+                        <option value="litros">Ordenar por litros</option>
+                        <option value="costo">Ordenar por costo</option>
+                        <option value="desvio">Ordenar por desvío vs meta</option>
+                        <option value="interno">Ordenar por interno</option>
+                    </select>
                 </div>
-                <div style="font-size: 0.8rem; color: var(--text-muted); text-align: right; max-width: 300px;">
-                    El sistema detecta automáticamente la superposición entre los archivos de Cargas y GPS para garantizar un cruce de datos exacto.
+                <div class="toolbar-right">
+                    <span id="cards-count" class="cards-count"></span>
+                    <button class="btn-secondary" onclick="window.showDataTable('equipos')">
+                        <i class="fa-solid fa-table"></i> Ver tablas
+                    </button>
                 </div>
-            </div>
-            
-            <div class="dashboard-grid" id="dashboard-metrics">
-                <!-- Metrics will be injected here -->
             </div>
 
-            <!-- Data Table (Interactive) -->
+            <div id="cards-container" class="cards-grid"></div>
+
+            <!-- Visor de base de datos -->
             <div id="dashboard-table-container" style="display:none; margin-top: 2rem;">
-                <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                    <h3 id="table-title" style="color:var(--accent-blue)">Visor de Base de Datos</h3>
-                    <button class="btn-secondary" onclick="window.exportTableToXLSX()"><i class="fa-solid fa-file-excel"></i> Exportar a Excel</button>
+                <div class="table-head">
+                    <h3 id="table-title">Visor de Base de Datos</h3>
+                    <div>
+                        <button class="btn-secondary" onclick="window.exportTableToXLSX()"><i class="fa-solid fa-file-excel"></i> Exportar a Excel</button>
+                        <button class="btn-icon" onclick="document.getElementById('dashboard-table-container').style.display='none'"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
                 </div>
-                
-                <div class="tabs" style="display:flex; gap:0.5rem; margin-bottom: 1rem;">
-                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('carga')">Cargas Combustible</button>
-                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('gps')">GPS Resumen</button>
-                    <button class="btn-tab btn-primary" onclick="window.showDataTable('equipos')">Equipos (DB Maestro)</button>
-                    <button class="btn-tab btn-primary" onclick="window.showDataTable('estimados')">Consumos Estimados (DB)</button>
+
+                <div class="tabs">
+                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('carga')">Cargas de Combustible</button>
+                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('gps')">Resumen de Flota (GPS)</button>
+                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('equipos')">Equipos</button>
+                    <button class="btn-tab btn-secondary" onclick="window.showDataTable('estimados')">Consumos Estimados</button>
                 </div>
 
                 <div class="table-responsive">
                     <table class="data-table" id="data-table">
-                        <thead>
-                            <tr id="table-header"></tr>
-                        </thead>
+                        <thead><tr id="table-header"></tr></thead>
                         <tbody id="table-body"></tbody>
                     </table>
                 </div>
-            </div>
-        </section>
-
-        <!-- View: Equipment Cards -->
-        <section id="view-cards" class="view-section hidden">
-            <div class="cards-toolbar">
-                <input type="text" id="search-equip" placeholder="Buscar por interno, dominio...">
-                <select id="filter-type">
-                    <option value="ALL">Todos los tipos</option>
-                    <option value="TR">Tractores (TR)</option>
-                    <option value="CM">Camiones (CM)</option>
-                    <option value="VL">Vehículos Livianos (VL)</option>
-                    <option value="MAQ">Maquinaria (MX, BM, etc)</option>
-                </select>
-            </div>
-            
-            <div id="cards-container" class="cards-grid">
-                <!-- Cards will be injected here -->
             </div>
         </section>
     </main>
@@ -127,7 +138,7 @@
             <button id="btn-toggle-ai"><i class="fa-solid fa-chevron-down"></i></button>
         </div>
         <div class="ai-chat-area" id="ai-chat-history">
-            <div class="ai-msg system">Hola, soy tu asistente de flota. ¿Qué querés analizar hoy?</div>
+            <div class="ai-msg system">Hola, soy tu asistente de flota. Puedo analizar consumos, comparar equipos contra su meta y buscar datos actuales en internet. ¿Qué querés ver?</div>
         </div>
         <div class="ai-input-area">
             <input type="text" id="ai-input" placeholder="Preguntame algo sobre la flota...">
@@ -135,7 +146,6 @@
         </div>
     </aside>
 
-    <!-- Modals Container -->
     <div id="modals-container"></div>
 </body>
 </html>
