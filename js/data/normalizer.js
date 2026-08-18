@@ -38,17 +38,19 @@ export const TIPO_POR_PREFIJO = {
 };
 
 /**
- * Provincia y sub-sede.
+ * Provincia, centro de costo y lugar de carga.
  *
  * La columna UBICACIÓN del Excel de Equipos ya viene como "MENDOZA" / "SAN JUAN", así que
  * getProvincia() solo agrupa las variantes raras (VENDIDO, FUERA DE SERVICIO, MALARGÜE...)
  * bajo "OTRA/BAJA" para no ensuciar el filtro principal.
  *
- * La sub-sede sale del CENTRO DE COSTO de las cargas de combustible (columna "CENTRO DE
- * COSTO" en Cargas_Combustible*.xlsx), no del padrón de Equipos: un equipo no tiene una
- * sub-sede fija, va donde lo mandan, así que se usa el centro de costo que más se repite
- * entre SUS cargas del período. Mapeo verificado contra
- * "Cargas_Combustible_HSV_2026.xlsx" (3.996 filas, 11 códigos reales).
+ * Ni el CENTRO DE COSTO ni el LUGAR DE CARGA son un atributo fijo del equipo: van de las
+ * cargas de combustible (Cargas_Combustible*.xlsx), no del padrón de Equipos. Un mismo interno
+ * puede repartirse entre varios (ej: TR32 carga tanto para CEMENTO como para ÁRIDOS, con
+ * distinto centro de costo cada vez), así que se usa el que más se repite entre SUS cargas del
+ * período y se guarda el desglose completo para poder mostrarlo. Mapeo verificado contra
+ * "Cargas_Combustible_HSV_2026.xlsx" (3.996 filas, 11 códigos de centro de costo y 9 lugares
+ * de carga reales).
  */
 export const PROVINCIAS = ['MENDOZA', 'SAN JUAN'];
 
@@ -60,7 +62,7 @@ export function getProvincia(ubicacion) {
     return 'OTRA'; // MALARGÜE, VENDIDO, FUERA DE SERVICIO, etc.
 }
 
-export const SUB_SEDE_POR_CENTRO_COSTO = {
+export const NOMBRE_POR_CENTRO_COSTO = {
     PMZA: 'Godoy Cruz (planta)',
     AMZA: 'Áridos',
     PTY: 'Tunuyán',
@@ -74,11 +76,55 @@ export const SUB_SEDE_POR_CENTRO_COSTO = {
     ALT: 'Altamira'
 };
 
-/** Nombre de sub-sede a partir del código de centro de costo; si no está mapeado, muestra el código tal cual para no perder equipos de sedes nuevas. */
-export function getSubSede(centroCosto) {
+/** Nombre legible de un centro de costo a partir de su código; si no está mapeado, muestra el código tal cual para no perder equipos de centros nuevos. */
+export function getNombreCentroCosto(centroCosto) {
     const c = normalizeString(centroCosto).replace(/\s+/g, '');
     if (!c) return '';
-    return SUB_SEDE_POR_CENTRO_COSTO[c] || c;
+    return NOMBRE_POR_CENTRO_COSTO[c] || c;
+}
+
+/**
+ * Clasifica un LUGAR DE CARGA (columna del Excel de Cargas) como sede propia (carga a granel,
+ * bandera YPF) o estación de servicio de terceros (bandera Axion). Corregido a mano por HSV
+ * contra los 9 valores reales de "Cargas_Combustible_HSV_2026.xlsx" — el nombre del lugar NO
+ * alcanza para deducirlo solo (ej: "GRIS" es una estación Axion pese a no tener "estación" ni
+ * "GNC" en el nombre, y "SAN JUAN (EXTERNO)" es una sede principal pese a tener "EXTERNO" en
+ * el nombre), así que se usa una lista explícita en vez de un patrón de texto:
+ *
+ *  - SEDE (a granel, YPF — Infinia Diesel, YPF 500): Godoy Cruz, Tunuyán, San Martín, Áridos,
+ *    Altamira, San Juan (Externo). San Juan (Externo) es sede principal al mismo nivel que
+ *    Mendoza — el "(Externo)" del nombre es solo porque queda fuera del predio de Mendoza,
+ *    no porque sea una estación de terceros.
+ *  - ESTACIÓN DE SERVICIO (Axion — Quantium Diesel, Quantium Nafta, Nafta Super, X10): Gris,
+ *    EE SS Coronel Díaz, GNC Godoy Cruz.
+ *
+ * Un lugar nuevo que no esté en ninguna de las dos listas se clasifica como "Sede" por
+ * default (para no marcar de más), pero conviene revisar y sumarlo a la lista correcta.
+ */
+const LUGARES_ESTACION_SERVICIO = new Set(['GRIS', 'EE SS CORONEL DIAZ', 'GNC GODOY CRUZ']);
+
+export function tipoLugarCarga(lugar) {
+    const u = normalizeString(lugar);
+    if (!u) return '';
+    return LUGARES_ESTACION_SERVICIO.has(u) ? 'Estación de servicio' : 'Sede';
+}
+
+/**
+ * Bandera de combustible a partir del TIPO DE COMBUSTIBLE de la carga. Verificado contra los
+ * 7 valores reales: INFINIA DIESEL e YPF 500/YPF500 son de sedes propias (bandera YPF);
+ * QUANTIUM DIESEL, QUANTIUM NAFTA, NAFTA SUPER y X10 son de estaciones Axion. Coincide con
+ * tipoLugarCarga() (una sede carga YPF, una estación de servicio carga Axion) pero se calcula
+ * aparte porque viene de una columna distinta y puede haber excepciones sueltas.
+ */
+const COMBUSTIBLES_YPF = new Set(['INFINIA DIESEL', 'YPF 500', 'YPF500']);
+const COMBUSTIBLES_AXION = new Set(['QUANTIUM DIESEL', 'QUANTIUM NAFTA', 'NAFTA SUPER', 'X10']);
+
+export function getBandera(combustible) {
+    const u = normalizeString(combustible);
+    if (!u) return '';
+    if (COMBUSTIBLES_YPF.has(u)) return 'YPF';
+    if (COMBUSTIBLES_AXION.has(u)) return 'Axion';
+    return '';
 }
 
 /**

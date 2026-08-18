@@ -12,7 +12,7 @@
  *    de origen. La UI los muestra al hacer click, así ningún total es una caja negra.
  */
 
-import { normalizeEquipoKey, getPrefijo, getDenominacion, partesFecha, getProvincia, getSubSede } from './normalizer.js';
+import { normalizeEquipoKey, getPrefijo, getDenominacion, partesFecha, getProvincia, getNombreCentroCosto, tipoLugarCarga, getBandera } from './normalizer.js';
 
 export const RULE_L_100KM = ['TR', 'CM', 'CH', 'FG', 'AU'];
 export const RULE_L_HORA = ['MX', 'CF', 'EX', 'TP', 'GE', 'BM', 'VL', 'AE', 'RE', 'MC', 'MT', 'MH', 'CL', 'MS'];
@@ -271,24 +271,51 @@ function contarFrecuencias(lista, campo) {
     return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([valor, n]) => ({ valor, n }));
 }
 
+/** Igual que contarFrecuencias(), pero contando un valor DERIVADO de cada registro (ej: la bandera a partir del combustible) en vez de un campo directo. */
+function contarFrecuenciasDerivado(lista, fn) {
+    const m = new Map();
+    lista.forEach(r => {
+        const v = fn(r);
+        if (!v) return;
+        m.set(v, (m.get(v) || 0) + 1);
+    });
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([valor, n]) => ({ valor, n }));
+}
+
 /**
- * Provincia, sub-sede y estación/lugar de carga de un equipo, en el período analizado.
+ * Provincia, centro de costo, lugar de carga, bandera y tipo de combustible de un equipo, en
+ * el período analizado.
  *
- * La provincia sale del padrón (Equipos.UBICACIÓN). La sub-sede y el lugar de carga NO son
- * un atributo fijo del equipo — dependen de dónde cargó combustible ese período — así que se
- * toma el más frecuente entre sus cargas, con el resto del detalle disponible por si hace
- * falta mostrarlo (un mixer puede cargar en dos sedes distintas en el mismo mes).
+ * La provincia sale del padrón (Equipos.UBICACIÓN). El resto NO es un atributo fijo del
+ * equipo — depende de dónde y con qué cargó combustible ese período, así que se toma el más
+ * frecuente entre sus cargas, con el resto del detalle disponible por si hace falta mostrarlo:
+ * un mismo interno puede repartirse entre dos centros de costo en el mismo mes (ej: TR32 carga
+ * tanto para CEMENTO como para ÁRIDOS, con su propio centro de costo cada vez).
+ *
+ * Centro de costo (columna "CENTRO DE COSTO") es la unidad administrativa que paga la carga
+ * (PMZA, AMZA, PTY...); lugar de carga (columna "LUGAR DE CARGA") es el sitio físico donde se
+ * cargó, y puede ser una sede propia con carga a granel bandera YPF (Godoy Cruz, Áridos,
+ * Tunuyán, San Martín, Altamira, San Juan externo — sede principal al mismo nivel que Mendoza)
+ * o una estación de servicio Axion de terceros (Gris, EE SS Coronel Díaz, GNC Godoy Cruz). Son
+ * dos ejes distintos y no deben confundirse entre sí (ver tipoLugarCarga() en normalizer.js).
  */
 function resumenUbicacion(equipo, cargasList) {
     const centros = contarFrecuencias(cargasList, 'centro_costo');
-    const subSedes = centros.map(c => ({ valor: getSubSede(c.valor), n: c.n }));
+    const centroCostos = centros.map(c => ({ valor: getNombreCentroCosto(c.valor), codigo: c.valor, n: c.n }));
     const lugares = contarFrecuencias(cargasList, 'lugar_carga');
+    const combustibles = contarFrecuencias(cargasList, 'combustible');
+    const banderas = contarFrecuenciasDerivado(cargasList, r => getBandera(r.combustible));
     return {
         provincia: getProvincia(equipo.ubicacion),
-        subSede: subSedes[0] ? subSedes[0].valor : '',
-        subSedeBreakdown: subSedes,
+        centroCosto: centroCostos[0] ? centroCostos[0].valor : '',
+        centroCostoBreakdown: centroCostos,
         lugarCarga: lugares[0] ? lugares[0].valor : '',
-        lugarCargaBreakdown: lugares
+        lugarCargaBreakdown: lugares,
+        tipoLugarCarga: lugares[0] ? tipoLugarCarga(lugares[0].valor) : '',
+        combustible: combustibles[0] ? combustibles[0].valor : '',
+        combustibleBreakdown: combustibles,
+        bandera: banderas[0] ? banderas[0].valor : '',
+        banderaBreakdown: banderas
     };
 }
 

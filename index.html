@@ -92,8 +92,15 @@
                 <div class="toolbar-row toolbar-ubicacion">
                     <span class="toolbar-tag"><i class="fa-solid fa-location-dot"></i> Ubicación</span>
                     <select id="filter-provincia"><option value="ALL">Mendoza y San Juan</option></select>
-                    <select id="filter-subsede"><option value="ALL">Todas las sub-sedes</option></select>
-                    <select id="filter-estacion"><option value="ALL">Todas las estaciones</option></select>
+                    <select id="filter-lugarcarga" title="Sitio físico donde se cargó: sede propia (bandera YPF) o estación de servicio de terceros (bandera Axion)"><option value="ALL">Todos los lugares de carga</option></select>
+                    <select id="filter-centrocosto" title="Unidad administrativa que paga la carga"><option value="ALL">Todos los centros de costo</option></select>
+                    <select id="filter-combustible" title="Agrupados por bandera: YPF (sedes, a granel) y Axion (estaciones de servicio)"><option value="ALL">Todos los combustibles</option></select>
+                </div>
+                <div class="toolbar-row toolbar-specs">
+                    <span class="toolbar-tag"><i class="fa-solid fa-gears"></i> Ficha técnica</span>
+                    <select id="filter-anio-equipo"><option value="ALL">Todos los años</option></select>
+                    <select id="filter-potencia"><option value="ALL">Todas las potencias</option></select>
+                    <select id="filter-capacidad"><option value="ALL">Todas las capacidades</option></select>
                 </div>
                 <div class="toolbar-row toolbar-periodo">
                     <span class="toolbar-tag"><i class="fa-solid fa-calendar-days"></i> Período</span>
@@ -101,6 +108,7 @@
                     <select id="filter-mes"><option value="">Todos los meses</option></select>
                     <button id="btn-limpiar-periodo" class="btn-secondary btn-sm">Auto</button>
                     <button id="btn-ajustar-metas" class="btn-secondary btn-sm"><i class="fa-solid fa-sliders"></i> Ajustar metas</button>
+                    <button id="btn-comparar" class="btn-secondary btn-sm"><i class="fa-solid fa-code-compare"></i> Comparar equipos</button>
                     <span id="cards-count" class="cards-count"></span>
                 </div>
             </div>

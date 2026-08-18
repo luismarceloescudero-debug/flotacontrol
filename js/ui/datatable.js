@@ -71,10 +71,12 @@ const CAMPOS_MAESTRO = [
     { k: 'denominacion', label: 'Denominación', editable: true },
     { k: 'marca', label: 'Marca', editable: true },
     { k: 'modelo', label: 'Modelo', editable: true },
+    { k: 'anio', label: 'Año', editable: true, num: true },
+    { k: 'potencia', label: 'Potencia', editable: true },
+    { k: 'capacidad', label: 'Capacidad', editable: true },
     { k: 'meta_valor', label: 'Meta', editable: true, num: true },
     { k: 'meta_unidad', label: 'Unidad', editable: true, opciones: ['', 'L/Hora', 'L/100Km', 'No Aplica'] },
-    { k: 'ubicacion', label: 'Ubicación', editable: true },
-    { k: 'anio', label: 'Año', editable: true, num: true }
+    { k: 'ubicacion', label: 'Ubicación', editable: true }
 ];
 
 async function renderMaestro() {

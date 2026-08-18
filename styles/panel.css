@@ -123,6 +123,20 @@
 .diag-head h2 i { color: var(--accent-cyan); }
 .diag-sub { font-size: 0.8rem; color: var(--text-muted); }
 
+/* Qué se resolvió desde el último cambio (ajuste de metas, archivo nuevo...): la señal visible de que el diagnóstico se está limpiando de verdad, no solo recalculando en silencio. */
+.diag-resuelto {
+    display: flex; align-items: flex-start; gap: 0.6rem;
+    background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3);
+    border-radius: 10px; padding: 0.7rem 0.9rem; margin: 1.25rem 0 0; font-size: 0.85rem;
+    color: var(--text-secondary); line-height: 1.5;
+}
+.diag-resuelto i { color: var(--accent-green); margin-top: 0.15rem; }
+.diag-resuelto strong { color: var(--text-primary); }
+.diag-resuelto-item {
+    display: inline-block; background: var(--bg-input); border-radius: 6px;
+    padding: 0.1rem 0.5rem; margin: 0.3rem 0.3rem 0 0; font-size: 0.78rem;
+}
+
 .diag-grid { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1.5rem; }
 
 .diag-card {
@@ -233,23 +247,46 @@
 }
 .equip-card:hover { border-color: var(--border-active); transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .equip-card.editing { border-color: var(--accent-blue); box-shadow: 0 0 0 1px var(--accent-blue-glow); }
+/* Tarjeta marcada para comparativa (checkbox "Agregar a comparativa"): borde propio para no confundirse con el de edición. */
+.equip-card.card-seleccionada { border-color: var(--accent-cyan); box-shadow: 0 0 0 1px rgba(6, 182, 212, 0.35); }
 
 .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75rem; }
 .card-top h3 { font-size: 1.15rem; font-weight: 700; color: var(--accent-cyan); margin: 0; line-height: 1.2; }
 .card-top h3 small { font-size: 0.78rem; font-weight: 500; color: var(--text-muted); margin-left: 0.35rem; }
 .card-deno { font-size: 0.8rem; font-weight: 600; color: var(--text-primary); margin: 0.25rem 0 0; letter-spacing: 0.02em; }
 .card-modelo { font-size: 0.76rem; color: var(--text-muted); margin: 0.1rem 0 0; }
+.card-specs { font-size: 0.7rem; color: var(--text-muted); margin: 0.15rem 0 0; opacity: 0.85; }
 .card-actions { display: flex; gap: 0.3rem; flex-shrink: 0; }
+
+/* ---------- Período de la tarjeta: destacado arriba de las stats, no perdido en la meta-line ---------- */
+.card-periodo {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    font-size: 0.7rem; font-weight: 600; letter-spacing: 0.02em;
+    color: var(--text-secondary); background: var(--bg-input);
+    border-radius: 999px; padding: 0.2rem 0.6rem; width: fit-content;
+}
+.card-periodo i { color: var(--accent-blue); font-size: 0.68rem; }
 
 .card-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; }
 .stat { display: flex; flex-direction: column; gap: 0.15rem; background: var(--bg-input); border-radius: 8px; padding: 0.6rem 0.7rem; }
 .stat-label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.stat-label i { margin-right: 0.15rem; opacity: 0.8; }
 .stat-value { font-size: 1.05rem; font-weight: 600; color: var(--text-primary); }
 .stat-value small { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); }
 .stat-value.stat-highlight { color: var(--accent-cyan); }
 .stat-value.stat-muted { color: var(--text-muted); }
+/* Unidad de un valor (L, hs, km, L/Hora, L/100Km): siempre visible pegada al número, nunca un valor "pelado" sin unidad. */
+.stat-unit { text-transform: none; letter-spacing: 0; opacity: 0.85; }
 
-/* ---------- Litros + precio, destacados con color y símbolo ---------- */
+/* ---------- Litros y costo, destacados como los datos principales de la tarjeta ---------- */
+.stat-emphasis {
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+}
+.stat-emphasis .stat-value { font-size: 1.28rem; font-weight: 700; }
+.stat-litros.stat-emphasis .stat-value { color: var(--accent-blue); }
+.stat-litros.stat-emphasis .stat-value small { color: var(--accent-blue); opacity: 0.75; }
+.stat-costo.stat-emphasis .stat-value { color: var(--accent-amber); }
 .stat-litros { position: relative; }
 .stat-precio {
     display: inline-flex; align-items: center; gap: 0.3rem;
@@ -281,7 +318,7 @@
 .ralenti-tag.ralenti-warn { color: var(--accent-amber); }
 .ralenti-tag.ralenti-alert { color: var(--accent-red); }
 
-/* ---------- Provincia / sub-sede ---------- */
+/* ---------- Provincia / centro de costo ---------- */
 .card-ubicacion { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .badge-ubic {
     display: inline-flex; align-items: center; gap: 0.3rem;
@@ -290,6 +327,9 @@
     padding: 0.2rem 0.55rem;
 }
 .badge-ubic i { color: var(--accent-blue); font-size: 0.7rem; }
+/* Equipo que reparte entre más de un centro de costo en el período (ej: TR32 entre cemento y áridos): se marca en vez de esconder que hay más de uno. */
+.badge-ubic-split { border: 1px solid rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.08); }
+.badge-ubic-split i { color: var(--accent-amber); }
 
 /* ---------- Fuente de cada dato (Cargas / GPS / Meta / Estimado) ---------- */
 .card-fuentes { display: flex; gap: 0.4rem; flex-wrap: wrap; }
@@ -391,6 +431,8 @@
 /* ---------- Modal ---------- */
 .modal-wide { max-width: 900px; width: 92vw; }
 .modal-sub { font-size: 0.82rem; color: var(--text-muted); margin: 0.2rem 0 0; }
+.modal-sub-specs { font-size: 0.76rem; opacity: 0.85; }
+.modal-sub-specs i { color: var(--accent-blue); margin-right: 0.15rem; }
 .modal-note { font-size: 0.86rem; color: var(--text-secondary); line-height: 1.55; }
 .modal-table { max-height: 260px; overflow-y: auto; margin-bottom: 1.25rem; }
 .modal-body h3 { font-size: 0.95rem; color: var(--accent-blue); margin: 1.5rem 0 0.75rem; }
@@ -497,7 +539,7 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .kpi-sub { white-space: normal; }
-.card-deno, .card-modelo, .card-dominio {
+.card-deno, .card-modelo, .card-specs, .card-dominio {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
 }
 .card-status { align-items: flex-start; }
@@ -533,6 +575,8 @@
 .toolbar-periodo select { flex: 0 1 150px; }
 .toolbar-ubicacion { border-top: 1px solid var(--border-color); padding-top: 0.6rem; }
 .toolbar-ubicacion select { flex: 1 1 160px; min-width: 0; }
+.toolbar-specs { border-top: 1px solid var(--border-color); padding-top: 0.6rem; }
+.toolbar-specs select { flex: 1 1 140px; min-width: 0; }
 .toolbar-tag {
     display: inline-flex; align-items: center; gap: 0.4rem;
     font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase;
@@ -762,6 +806,46 @@
 .metas-tabla input[type=checkbox] { accent-color: var(--accent-blue); width: 15px; height: 15px; cursor: pointer; }
 .metas-overlay .calc-panel { display: none; }
 
+/* ---------- Comparativa entre equipos ---------- */
+.comparar-panel {
+    background: var(--bg-card); border: 1px solid var(--border-active); border-radius: 14px;
+    box-shadow: var(--shadow-lg); width: min(920px, 100%); max-height: 88vh;
+    display: flex; flex-direction: column; padding: 1.3rem; overflow-y: auto;
+}
+.comparar-agregar { display: flex; gap: 0.55rem; align-items: center; margin: 1rem 0 0.7rem; }
+.comparar-agregar .search-wrap { flex: 1; }
+.comparar-agregar input {
+    background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary);
+    border-radius: 8px; padding: 0.55rem 0.8rem; font-size: 0.85rem; font-family: inherit; width: 100%;
+}
+.comparar-agregar input.input-error { border-color: var(--accent-red); }
+.comparar-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; min-height: 1.6rem; }
+.comparar-chip {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 999px;
+    padding: 0.3rem 0.4rem 0.3rem 0.7rem; font-size: 0.82rem; font-weight: 600; color: var(--accent-cyan);
+}
+.comparar-chip small { color: var(--text-muted); font-weight: 500; }
+.comparar-chip button {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 0.7rem; flex-shrink: 0;
+}
+.comparar-chip button:hover { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+.comparar-vacio { color: var(--text-muted); font-size: 0.85rem; }
+.comparar-resumen { list-style: none; margin: 0 0 1rem; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+.comparar-resumen li {
+    background: var(--bg-input); border-radius: 8px; padding: 0.55rem 0.8rem;
+    font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;
+}
+.comparar-resumen li strong { color: var(--text-primary); }
+.comparar-resumen .cmp-pct { color: var(--accent-cyan); font-weight: 600; }
+.comparar-tabla { flex: 1; overflow-y: auto; }
+.comparar-caption { caption-side: top; text-align: left; padding: 1rem 0; color: var(--text-muted); font-size: 0.85rem; }
+.comparar-tabla .th-sub { font-size: 0.7rem; color: var(--text-muted); font-weight: 500; margin-top: 0.15rem; }
+.comparar-tabla td.cmp-best { color: var(--accent-green); font-weight: 700; }
+.comparar-tabla td.cmp-worst { color: var(--accent-red); font-weight: 700; }
+
 /* ---------- Evolución mes a mes ---------- */
 .evol { display: flex; gap: 0.5rem; align-items: flex-end; position: relative; background: var(--bg-input); border-radius: 10px; padding: 1rem 0.9rem 0.7rem; margin-bottom: 1.25rem; min-height: 190px; }
 .evol-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 0.3rem; min-width: 0; }
@@ -771,4 +855,37 @@
 .evol-mes { font-size: 0.75rem; color: var(--text-secondary); font-weight: 600; }
 .evol-sub { font-size: 0.66rem; color: var(--text-muted); text-align: center; line-height: 1.3; }
 .evol-meta { position: absolute; left: 0.9rem; right: 0.9rem; border-top: 1px dashed var(--accent-amber); pointer-events: none; }
+
+/* ---------- Selección de tarjetas para comparativa (checkbox "Agregar a comparativa" + barra flotante) ---------- */
+.btn-card-compare.active {
+    color: var(--accent-cyan);
+    background: rgba(6, 182, 212, 0.12);
+    border-radius: 6px;
+}
+.compare-float-bar {
+    display: none;
+    position: fixed;
+    left: 50%;
+    bottom: 1.25rem;
+    transform: translateX(-50%);
+    z-index: 60;
+    align-items: center;
+    gap: 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--accent-cyan);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(6, 182, 212, 0.15);
+    border-radius: 999px;
+    padding: 0.6rem 0.7rem 0.6rem 1.1rem;
+    max-width: calc(100vw - 2rem);
+}
+.compare-float-bar.visible { display: flex; }
+.compare-bar-info { display: flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+.compare-bar-info i { color: var(--accent-cyan); }
+.compare-bar-info small { color: var(--text-muted); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 34vw; }
+.compare-bar-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
+.compare-bar-actions .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+@media (max-width: 720px) {
+    .compare-float-bar { left: 1rem; right: 1rem; transform: none; flex-wrap: wrap; border-radius: 14px; }
+    .compare-bar-info small { max-width: 100%; white-space: normal; }
+}
 .evol-meta span { position: absolute; right: 0; top: -0.95rem; font-size: 0.66rem; color: var(--accent-amber); background: var(--bg-input); padding: 0 0.3rem; }

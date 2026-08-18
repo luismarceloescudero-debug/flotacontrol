@@ -8,7 +8,7 @@ const MESES_CORTOS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps = []) {
+export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps = [], ubicacion = null) {
     const container = document.getElementById('modals-container');
     if (!container) return;
 
@@ -30,6 +30,11 @@ export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps =
                     <div>
                         <h2>${esc(equipo.interno)} ${equipo.dominio ? `<span class="card-dominio">${esc(equipo.dominio)}</span>` : '<span class="card-dominio"><em>sin dominio</em></span>'}</h2>
                         <p class="modal-sub">${esc(equipo.denominacion || '')} · ${esc([equipo.marca, equipo.modelo].filter(Boolean).join(' '))}</p>
+                        ${(equipo.anio || equipo.potencia || equipo.capacidad) ? `<p class="modal-sub modal-sub-specs">${esc([equipo.anio, equipo.potencia, equipo.capacidad].filter(Boolean).join(' · '))}</p>` : ''}
+                        ${ubicacion && (ubicacion.combustible || ubicacion.centroCosto) ? `<p class="modal-sub modal-sub-specs">
+                            ${ubicacion.combustible ? `<i class="fa-solid fa-droplet"></i> ${esc(ubicacion.combustible)}` : ''}
+                            ${ubicacion.centroCosto ? ` · <i class="fa-solid fa-building"></i> ${esc(ubicacion.centroCosto)}${ubicacion.centroCostoBreakdown && ubicacion.centroCostoBreakdown.length > 1 ? ` <span title="${esc(ubicacion.centroCostoBreakdown.map(c => `${c.valor} (${c.n})`).join(', '))}">(+${ubicacion.centroCostoBreakdown.length - 1} más)</span>` : ''}` : ''}
+                        </p>` : ''}
                     </div>
                     <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
                 </div>

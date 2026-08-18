@@ -211,6 +211,11 @@ async function handleEquipos(filas, filename, mapeo) {
         const marca = normalizeString(val(row, 'marca', ['MARCA'], mapeo)) || '';
         const modelo = normalizeString(val(row, 'modelo', ['MODELO'], mapeo)) || '';
         const tipoExcel = val(row, 'tipo', ['TIPO', 'CATEGORIA'], mapeo);
+        // POTENCIA y CAPACIDAD vienen como texto libre con la unidad incluida ("310 HP",
+        // "440 KVA", "25 M3", "30 TN", "6X4"...), sin un formato único: se guardan tal cual,
+        // no se intenta parsear un número suelto.
+        const potencia = normalizeString(val(row, 'potencia', ['POTENCIA'], mapeo)) || '';
+        const capacidad = normalizeString(val(row, 'capacidad', ['CAPACIDAD'], mapeo)) || '';
 
         const prev = porKey.get(key);
         if (!prev) {
@@ -221,6 +226,7 @@ async function handleEquipos(filas, filename, mapeo) {
                 dominio_key: id.dominio_key,
                 denominacion: getDenominacion(interno, tipoExcel),
                 marca, modelo,
+                potencia, capacidad,
                 tipo: normalizeString(tipoExcel) || '',
                 ubicacion: normalizeString(val(row, 'ubicacion', ['UBICACION'], mapeo)) || '',
                 anio: parseNumber(val(row, 'anio', ['ANO', 'AÑO'], mapeo)) || null,
@@ -233,6 +239,8 @@ async function handleEquipos(filas, filename, mapeo) {
             prev.dominio_key = prev.dominio_key || id.dominio_key;
             prev.marca = unirDistinto(prev.marca, marca);
             prev.modelo = unirDistinto(prev.modelo, modelo);
+            prev.potencia = unirDistinto(prev.potencia, potencia);
+            prev.capacidad = unirDistinto(prev.capacidad, capacidad);
         }
     });
 
