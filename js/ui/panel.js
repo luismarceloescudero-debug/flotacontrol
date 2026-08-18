@@ -7,7 +7,7 @@
 import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos } from '../data/analyzer.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita } from '../data/diagnostico.js';
-import { TIPO_POR_PREFIJO, MESES } from '../data/normalizer.js';
+import { TIPO_POR_PREFIJO, MESES, getBandera } from '../data/normalizer.js';
 import { diasHabiles } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
@@ -181,6 +181,15 @@ function poblarFiltrosPeriodo(rawRecords) {
     if (selA && selA.options.length !== anios.length + 1) {
         selA.innerHTML = '<option value="">Todos los años</option>' + anios.map(a => `<option value="${a}">${a}</option>`).join('');
         selA.value = view.anio;
+    }
+
+    // Auto-seleccionar meses cruzados (cargas + GPS) si el usuario no eligió nada aún
+    // y hay meses que se repiten en ambas fuentes.
+    if (view.meses.size === 0) {
+        const cruzados = periodos.filter(ym => mesesCargas.has(ym) && mesesGps.has(ym));
+        if (cruzados.length > 0 && cruzados.length < periodos.length) {
+            cruzados.forEach(ym => view.meses.add(ym));
+        }
     }
 
     renderMesesGrid(periodos, mesesCargas, mesesGps);
@@ -809,8 +818,20 @@ function renderCards(container, analisis) {
 
     const maxLitros = Math.max(...filas.map(f => f.metrics.total_litros), 1);
     const precioPromedio = analisis.totales.costo_por_litro || 0;
+    // Mapa de precio por tipo de combustible para comparar el equipo contra su mismo tipo
+    const preciosPorTipo = new Map();
+    (analisis.totales.combustible_desglose || []).forEach(d => { if (d.precio_litro > 0) preciosPorTipo.set(d.tipo, d.precio_litro); });
     const periodo = rangoCorto();
-    container.innerHTML = filas.map(f => cardHTML(f, maxLitros, precioPromedio, periodo)).join('');
+    container.innerHTML = filas.map(f => {
+        try {
+            return cardHTML(f, maxLitros, precioPromedio, periodo, preciosPorTipo);
+        } catch (e) {
+            console.error(`Error renderizando tarjeta de ${f.equipo?.interno}:`, e);
+            return `<div class="equip-card card-error" data-interno="${esc(f.equipo?.interno || '?')}">
+                <div class="card-top"><div class="card-ident"><h3>${esc(f.equipo?.interno || '?')}</h3>
+                <p style="color:var(--accent-red)"><i class="fa-solid fa-triangle-exclamation"></i> Error al renderizar: ${esc(e.message)}</p></div></div></div>`;
+        }
+    }).join('');
 
     container.querySelectorAll('.equip-card').forEach(card => {
         const interno = card.dataset.interno;
@@ -939,8 +960,6 @@ function cardPeriodoInfo(f, m, ubi, ralentiTag) {
     return `
         <div class="card-meta-line">
             <span title="${esc(tooltipC)}"><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'}${rangoC ? ` · ${esc(rangoC)}` : ''}</span>
-            ${ubi.lugarCarga ? `<span title="${ubi.tipoLugarCarga ? esc(ubi.tipoLugarCarga) : ''}"><i class="fa-solid ${ubi.tipoLugarCarga === 'Estación de servicio' ? 'fa-charging-station' : 'fa-warehouse'}"></i> ${esc(cap(ubi.lugarCarga))}${ubi.lugarCargaBreakdown && ubi.lugarCargaBreakdown.length > 1 ? ` (${ubi.lugarCargaBreakdown[0].n}/${m.cantidad_cargas})` : ''}</span>` : ''}
-            ${ubi.combustible ? `<span title="Combustible más cargado${ubi.bandera ? ` · bandera ${ubi.bandera}` : ''}"><i class="fa-solid fa-droplet"></i> ${ubi.bandera ? `${esc(ubi.bandera)} ` : ''}${esc(cap(ubi.combustible))}</span>` : ''}
             <span title="${esc(tooltipG)}"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} reporte${m.cantidad_gps === 1 ? '' : 's'} GPS${rangoG ? ` · ${esc(rangoG)}` : ''}</span>
             ${dhTag}
             ${desalineado}
@@ -959,7 +978,7 @@ function estadoDe(m, confirmed) {
     return { cls: 'ok', txt: 'Dentro de la meta', icon: 'fa-check' };
 }
 
-function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccionado') {
+function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccionado', preciosPorTipo = new Map()) {
     const { equipo: eq, metrics: m, confirmed } = f;
     const editando = view.editando === eq.interno;
     const est = estadoDe(m, confirmed);
@@ -975,14 +994,54 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
         pasos: m.pasos, fuentes: m.fuentes
     });
 
-    // --- Litros + precio, con color/símbolo según cómo se compara contra el precio promedio de la flota en el período ---
+    // --- Litros + precio: compara contra el precio de la flota para el MISMO tipo de combustible ---
     const precioEquipo = m.total_litros > 0 ? m.total_costo / m.total_litros : 0;
+    const ubi = f.ubicacion || {};
+    const precioRef = (ubi.combustible && preciosPorTipo.get(ubi.combustible)) || precioPromedio;
     let precioTag = '';
-    if (precioEquipo > 0 && precioPromedio > 0) {
-        const diffPct = ((precioEquipo / precioPromedio) - 1) * 100;
+    if (precioEquipo > 0 && precioRef > 0) {
+        const diffPct = ((precioEquipo / precioRef) - 1) * 100;
         const cls = diffPct > 8 ? 'precio-alto' : (diffPct < -8 ? 'precio-bajo' : 'precio-normal');
         const icon = diffPct > 8 ? 'fa-arrow-trend-up' : (diffPct < -8 ? 'fa-arrow-trend-down' : 'fa-minus');
-        precioTag = `<span class="stat-precio ${cls}" title="Promedio de la flota: $${nf(precioPromedio)}/L"><i class="fa-solid ${icon}"></i> $${nf(precioEquipo)}/L</span>`;
+        const refLabel = (ubi.combustible && preciosPorTipo.has(ubi.combustible))
+            ? `Promedio ${ubi.combustible}: $${nf(precioRef)}/L`
+            : `Promedio general: $${nf(precioRef)}/L`;
+        precioTag = `<span class="stat-precio ${cls}" title="${esc(refLabel)}"><i class="fa-solid ${icon}"></i> $${nf(precioEquipo)}/L</span>`;
+    }
+
+    // --- Combustible hero: desglose por tipo cuando hay más de uno ---
+    const combBreak = ubi.combustibleBreakdown || [];
+    let combustibleHero = '';
+    if (combBreak.length > 1) {
+        // Calcular litros y precio por cada tipo de combustible del equipo
+        const porTipo = new Map();
+        f.cargas.forEach(c => {
+            const t = c.combustible || 'Sin dato';
+            if (!porTipo.has(t)) porTipo.set(t, { litros: 0, costo: 0 });
+            const b = porTipo.get(t);
+            b.litros += parseFloat(c.litros) || 0;
+            b.costo += parseFloat(c.importe) || 0;
+        });
+        combustibleHero = `<div class="card-combustible-hero card-combustible-multi">${
+            combBreak.map(cb => {
+                const d = porTipo.get(cb.valor) || { litros: 0, costo: 0 };
+                const pl = d.litros > 0 ? d.costo / d.litros : 0;
+                const ban = getBandera(cb.valor) || '';
+                return `<div class="combustible-row">
+                    ${ban ? `<span class="combustible-bandera">${esc(ban)}</span>` : ''}
+                    <span class="combustible-tipo">${esc(cap(cb.valor))}</span>
+                    <span class="combustible-litros">${nf(d.litros, 0)} L</span>
+                    ${pl > 0 ? `<span class="combustible-precio">$${nf(pl)}/L</span>` : ''}
+                </div>`;
+            }).join('')
+        }</div>`;
+    } else if (ubi.combustible) {
+        combustibleHero = `<div class="card-combustible-hero">
+            <span class="combustible-bandera">${ubi.bandera ? esc(ubi.bandera) : ''}</span>
+            <span class="combustible-tipo">${esc(cap(ubi.combustible))}</span>
+            ${precioEquipo > 0 ? `<span class="combustible-precio">$${nf(precioEquipo)}/L</span>` : ''}
+            ${precioTag}
+        </div>`;
     }
 
     // --- Sin GPS pero con litros: cálculo inverso (litros ÷ meta) como actividad estimada ---
@@ -1009,17 +1068,22 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
             ${fuenteBadges.map(b => `<span class="fuente-tag ${b.c}" title="${esc(b.t)}"><i class="fa-solid ${b.i}"></i> ${esc(b.corto)}</span>`).join('')}
         </div>` : '';
 
-    // --- Provincia / centro de costo, si hay dato. Cuando el equipo reparte entre más de un
-    // centro de costo en el período (ej: TR32 entre CEMENTO y ÁRIDOS), se muestra la fracción
-    // y el desglose completo en el tooltip en vez de esconder que hay más de uno. ---
-    const ubi = f.ubicacion || {};
+    // --- Provincia / centro de costo: si hay más de uno, mostrar cada uno en su propia línea ---
     const ccBreak = ubi.centroCostoBreakdown || [];
     const ccTotal = ccBreak.reduce((s, c) => s + c.n, 0);
-    const ccTooltip = ccBreak.length > 1 ? `Se reparte entre ${ccBreak.length} centros de costo: ${ccBreak.map(c => `${c.valor} (${c.n})`).join(', ')}` : '';
-    const ubicacionRow = (ubi.provincia && ubi.provincia !== 'SIN DATO') || ubi.centroCosto ? `
+    const ccLines = ccBreak.length > 1
+        ? ccBreak.map(c => `<span class="badge-ubic badge-ubic-split" title="${c.n} de ${ccTotal} cargas"><i class="fa-solid fa-building"></i> ${esc(c.valor)} <small>(${c.n})</small></span>`).join('')
+        : (ubi.centroCosto ? `<span class="badge-ubic"><i class="fa-solid fa-building"></i> ${esc(ubi.centroCosto)}</span>` : '');
+    // Lugares de carga: si hay más de uno, mostrar cada uno
+    const lcBreak = ubi.lugarCargaBreakdown || [];
+    const lcLines = lcBreak.length > 1
+        ? lcBreak.map(l => `<span class="badge-ubic badge-ubic-lc" title="${l.n} cargas"><i class="fa-solid ${ubi.tipoLugarCarga === 'Estación de servicio' ? 'fa-charging-station' : 'fa-warehouse'}"></i> ${esc(cap(l.valor))} <small>(${l.n})</small></span>`).join('')
+        : '';
+    const ubicacionRow = (ubi.provincia && ubi.provincia !== 'SIN DATO') || ccLines ? `
         <div class="card-ubicacion">
             ${ubi.provincia && ubi.provincia !== 'SIN DATO' ? `<span class="badge-ubic"><i class="fa-solid fa-location-dot"></i> ${esc(cap(ubi.provincia))}</span>` : ''}
-            ${ubi.centroCosto ? `<span class="badge-ubic ${ccBreak.length > 1 ? 'badge-ubic-split' : ''}" ${ccTooltip ? `title="${esc(ccTooltip)}"` : ''}><i class="fa-solid fa-building"></i> ${esc(ubi.centroCosto)}${ccBreak.length > 1 ? ` (${ccBreak[0].n}/${ccTotal})` : ''}</span>` : ''}
+            ${ccLines}
+            ${lcLines}
         </div>` : '';
 
     let barra = '';
@@ -1069,12 +1133,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
             </div>
         </div>` : `
         <div class="card-periodo"><i class="fa-solid fa-calendar-days"></i> ${esc(periodo)}</div>
-        ${ubi.combustible ? `<div class="card-combustible-hero">
-            <span class="combustible-bandera">${ubi.bandera ? esc(ubi.bandera) : ''}</span>
-            <span class="combustible-tipo">${esc(cap(ubi.combustible))}</span>
-            ${precioEquipo > 0 ? `<span class="combustible-precio">$${nf(precioEquipo)}/L</span>` : ''}
-            ${precioTag}
-        </div>` : ''}
+        ${combustibleHero}
         <div class="card-stats">
             <div class="stat stat-litros stat-emphasis">
                 <span class="stat-label"><i class="fa-solid fa-gas-pump"></i> Litros</span>

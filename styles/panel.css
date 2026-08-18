@@ -1051,6 +1051,14 @@
     padding: 0.1rem 0.4rem; border-radius: 4px;
 }
 .combustible-bandera:empty { display: none; }
+.card-combustible-multi { flex-direction: column; gap: 0.25rem; }
+.combustible-row {
+    display: flex; align-items: center; gap: 0.4rem; width: 100%;
+}
+.combustible-litros {
+    font-size: 0.78rem; font-weight: 600; color: var(--text-secondary);
+    margin-left: auto; font-variant-numeric: tabular-nums;
+}
 .combustible-tipo {
     font-size: 0.85rem; font-weight: 600; color: var(--text-primary);
 }

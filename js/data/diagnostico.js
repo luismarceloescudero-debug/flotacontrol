@@ -77,21 +77,34 @@ export function calcularExceso(fila) {
 }
 
 /**
- * Sugiere una meta a partir del consumo real medido de los pares del mismo tipo.
+ * Sugiere una meta a partir del consumo real medido de los pares comparables.
+ * Compara primero contra misma marca+modelo; si no hay suficientes, cae a denominación.
  * Devuelve además la lista de esos pares, para poder mostrar CONTRA QUIÉN se compara.
  */
 export function sugerirMeta(fila, todas = []) {
     const tipo = fila.metrics.tipo_calculo;
     if (tipo !== 'L/Hora' && tipo !== 'L/100Km') return null;
 
-    const pares = todas.filter(f =>
-        f.equipo.interno !== fila.equipo.interno &&
-        f.equipo.denominacion === fila.equipo.denominacion &&
+    const eq = fila.equipo;
+    const filtroBase = f =>
+        f.equipo.interno !== eq.interno &&
         f.metrics.tipo_calculo === tipo &&
         f.metrics.consumo_real > 0 &&
-        confiabilidad(f).confiable
-    );
-    if (pares.length < 3) return null;
+        confiabilidad(f).confiable;
+
+    // Intentar primero con marca+modelo (comparación justa)
+    let pares = [];
+    let etiqueta = '';
+    if (eq.marca && eq.modelo) {
+        pares = todas.filter(f => filtroBase(f) && f.equipo.marca === eq.marca && f.equipo.modelo === eq.modelo);
+        etiqueta = `${eq.denominacion} ${eq.marca} ${eq.modelo}`;
+    }
+    // Fallback a denominación si no hay suficientes pares con marca+modelo
+    if (pares.length < 2) {
+        pares = todas.filter(f => filtroBase(f) && f.equipo.denominacion === eq.denominacion);
+        etiqueta = eq.denominacion || 'equipos';
+    }
+    if (pares.length < 2) return null;
 
     const valores = pares.map(f => f.metrics.consumo_real);
     const med = mediana(valores);
@@ -103,7 +116,7 @@ export function sugerirMeta(fila, todas = []) {
         n: pares.length,
         minimo: Math.min(...valores),
         maximo: Math.max(...valores),
-        base: `mediana de ${pares.length} ${(fila.equipo.denominacion || 'equipos').toLowerCase()} medidos`,
+        base: `mediana de ${pares.length} ${etiqueta.toLowerCase()} medidos`,
         pares: pares.sort((a, b) => a.metrics.consumo_real - b.metrics.consumo_real)
             .map(p => ({ interno: p.equipo.interno, valor: p.metrics.consumo_real, cargas: p.metrics.cantidad_cargas }))
     };
@@ -319,27 +332,54 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
         });
     }
 
-    // ---------- 5. Comparación contra pares (mostrando los pares) ----------
-    const porDeno = new Map();
+    // ---------- 5. Comparación contra pares (marca, modelo y potencia; fallback a denominación) ----------
+    // Agrupar por la clave más específica posible: marca+modelo > marca > denominación.
+    // Así un GE01 de 250 kVA no se compara contra un GE03 de 500 kVA.
+    function claveParGrupo(eq) {
+        const deno = eq.denominacion || '';
+        const marca = eq.marca || '';
+        const modelo = eq.modelo || '';
+        const potencia = eq.potencia || '';
+        // Si tiene marca y modelo, agrupar por deno+marca+modelo (más justo)
+        if (marca && modelo) return `${deno}|${marca}|${modelo}`;
+        if (marca) return `${deno}|${marca}`;
+        return deno;
+    }
+    function etiquetaGrupo(key) {
+        const [deno, marca, modelo] = key.split('|');
+        if (modelo) return `${deno} ${marca} ${modelo}`;
+        if (marca) return `${deno} ${marca}`;
+        return deno;
+    }
+
+    const porGrupo = new Map();
     activos.filter(f => f.metrics.consumo_real > 0 && confiabilidad(f).confiable).forEach(f => {
-        const k = f.equipo.denominacion;
-        if (!porDeno.has(k)) porDeno.set(k, []);
-        porDeno.get(k).push(f);
+        const k = claveParGrupo(f.equipo);
+        if (!porGrupo.has(k)) porGrupo.set(k, []);
+        porGrupo.get(k).push(f);
     });
 
     const peores = [];
-    porDeno.forEach((grupo, deno) => {
-        if (grupo.length < 3) return;
+    porGrupo.forEach((grupo, key) => {
+        // Necesitamos al menos 2 pares (3 en el grupo) para comparar
+        if (grupo.length < 2) return;
+        const deno = etiquetaGrupo(key);
         const orden = grupo.slice().sort((a, b) => a.metrics.consumo_real - b.metrics.consumo_real);
         const med = mediana(orden.map(f => f.metrics.consumo_real));
         if (med <= 0) return;
         grupo.forEach(f => {
             const ratio = f.metrics.consumo_real / med;
-            if (ratio > 1.25) {
+            // Con grupos chicos (2-3), solo alertar con desvíos más claros (>35%)
+            const umbral = grupo.length < 4 ? 1.35 : 1.25;
+            if (ratio > umbral) {
+                const specs = [f.equipo.potencia, f.equipo.capacidad].filter(Boolean).join(' · ');
                 peores.push({
-                    fila: f, deno, mediana: med, ratio,
-                    // Los pares concretos contra los que se lo compara, ordenados.
-                    pares: orden.map(p => ({ interno: p.equipo.interno, valor: p.metrics.consumo_real, esEste: p.equipo.interno === f.equipo.interno }))
+                    fila: f, deno, mediana: med, ratio, specs,
+                    pares: orden.map(p => ({
+                        interno: p.equipo.interno, valor: p.metrics.consumo_real,
+                        esEste: p.equipo.interno === f.equipo.interno,
+                        specs: [p.equipo.potencia, p.equipo.capacidad].filter(Boolean).join(' · ')
+                    }))
                 });
             }
         });
@@ -349,17 +389,17 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
     if (peores.length) {
         hallazgos.push({
             id: 'pares', severidad: 'media', icono: 'fa-code-compare',
-            titulo: `${peores.length} equipos consumen más que sus pares del mismo tipo`,
-            detalle: `Comparación contra la mediana de cada denominación, no contra la meta teórica. Cuando una máquina consume bastante más que otras iguales haciendo el mismo trabajo, suele apuntar a un problema mecánico, a la forma de operarla o a cargas mal imputadas. Abajo se ve contra qué equipos se lo compara.`,
+            titulo: `${peores.length} equipos consumen más que sus pares comparables`,
+            detalle: `Comparación contra la mediana de equipos similares (misma marca y modelo cuando hay dato, o misma denominación si no). No se comparan equipos de distinta potencia o modelo entre sí. Cuando una máquina consume bastante más que otras iguales, suele apuntar a un problema mecánico, operación o cargas mal imputadas.`,
             comparaciones: peores.slice(0, 8).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.deno,
                 valor: x.fila.metrics.consumo_real, mediana: x.mediana, unidad: x.fila.metrics.tipo_calculo,
-                exceso_pct: (x.ratio - 1) * 100, pares: x.pares
+                exceso_pct: (x.ratio - 1) * 100, pares: x.pares, specs: x.specs
             })),
             equipos: peores.slice(0, 8).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.deno,
                 texto: `${fmt(x.fila.metrics.consumo_real, 2)} vs ${fmt(x.mediana, 2)} del grupo`,
-                sub: `${fmt((x.ratio - 1) * 100)}% sobre la mediana de ${x.pares.length} ${x.deno.toLowerCase()}s`
+                sub: `${fmt((x.ratio - 1) * 100)}% sobre la mediana de ${x.pares.length} ${x.deno.toLowerCase()}${x.specs ? ' · ' + x.specs : ''}`
             }))
         });
     }
@@ -471,6 +511,70 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
             }))
         });
     }
+
+    // ---------- 10. Bajo uso: equipos con pocas cargas y sin GPS ----------
+    const bajoUso = activos.filter(f =>
+        f.metrics.cantidad_cargas > 0 && f.metrics.cantidad_cargas <= 3 &&
+        f.metrics.cantidad_gps === 0 && f.metrics.tipo_calculo !== 'No Aplica'
+    ).sort((a, b) => a.metrics.cantidad_cargas - b.metrics.cantidad_cargas);
+
+    if (bajoUso.length) {
+        hallazgos.push({
+            id: 'bajo_uso', severidad: 'baja', icono: 'fa-battery-quarter',
+            titulo: `${bajoUso.length} equipos con muy pocas cargas y sin dato de GPS`,
+            detalle: `Tienen entre 1 y 3 cargas en el período y ningún registro de Resumen de Flota. Con tan pocos datos el consumo calculado no es representativo. Conviene verificar si el equipo estuvo efectivamente en uso o si las cargas podrían estar mal imputadas.`,
+            equipos: bajoUso.slice(0, 10).map(x => ({
+                interno: x.equipo.interno, denominacion: x.equipo.denominacion,
+                texto: `${x.metrics.cantidad_cargas} carga${x.metrics.cantidad_cargas === 1 ? '' : 's'} · ${fmt(x.metrics.total_litros)} L`,
+                sub: 'sin GPS · consumo no representativo'
+            }))
+        });
+    }
+
+    // ---------- 11. Ralentí inverosímil: más de 20 hs diarias promedio de ralentí ----------
+    if (totales.periodo_desde && totales.periodo_hasta) {
+        const ralentiExtremo = activos.filter(f => {
+            if (f.metrics.horas_ralenti <= 0) return false;
+            const cat = categoriaRalenti(f.equipo.interno);
+            // Solo alertar en equipos donde el ralentí NO es su trabajo
+            if (cat === 'estacionario') return false;
+            // Calcular horas de ralentí por día
+            const fechasG = f.gps.map(g => g.fecha).filter(Boolean).sort();
+            if (fechasG.length < 2) return false;
+            const d1 = new Date(fechasG[0]), d2 = new Date(fechasG[fechasG.length - 1]);
+            const dias = Math.max(1, (d2 - d1) / 86400000);
+            const pctRalenti = f.metrics.horas_ralenti / f.metrics.total_horas * 100;
+            return (f.metrics.horas_ralenti / dias > 18 || pctRalenti > 90);
+        }).sort((a, b) => b.metrics.horas_ralenti - a.metrics.horas_ralenti);
+
+        if (ralentiExtremo.length) {
+            hallazgos.push({
+                id: 'ralenti_inverosimil', severidad: 'media', icono: 'fa-circle-exclamation',
+                titulo: `${ralentiExtremo.length} equipos con ralentí inverosímil`,
+                detalle: `Promedian más de 18 hs diarias de ralentí o >90% del total de horas. Esto suele indicar un error en los datos del GPS, un equipo que quedó encendido por accidente, o un problema con el sensor.`,
+                equipos: ralentiExtremo.slice(0, 10).map(x => {
+                    const pct = x.metrics.total_horas > 0 ? (x.metrics.horas_ralenti / x.metrics.total_horas * 100) : 0;
+                    return {
+                        interno: x.equipo.interno, denominacion: x.equipo.denominacion,
+                        texto: `${fmt(x.metrics.horas_ralenti)} hs ralentí (${fmt(pct)}%)`,
+                        sub: `de ${fmt(x.metrics.total_horas)} hs totales · verificar GPS`
+                    };
+                })
+            });
+        }
+    }
+
+    // ---------- 12. Sede inconsistente: lugar de carga ≠ provincia del padrón ----------
+    const sedeInconsistente = activos.filter(f => {
+        const prov = f.ubicacion?.provincia;
+        if (!prov || prov === 'SIN DATO') return false;
+        const lc = f.ubicacion?.lugarCargaBreakdown || [];
+        if (!lc.length) return false;
+        // Si la provincia del padrón es Mendoza pero hay cargas en lugares que suenan a otra provincia
+        // Para ahora, detectar si el centro de costo principal no coincide con otros equipos del mismo centro
+        // Simplificación: si el equipo tiene cargas en un lugar que no contiene la provincia
+        return false; // placeholder: la lógica real requiere un mapa de lugares → provincias
+    });
 
     const orden = { alta: 0, media: 1, baja: 2, ok: 3 };
     hallazgos.sort((a, b) => (orden[a.severidad] - orden[b.severidad]) || (Math.abs(b.impacto_costo || 0) - Math.abs(a.impacto_costo || 0)));

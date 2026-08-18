@@ -53,10 +53,11 @@ export function abrirAjusteMetas(analisis, filtroInicial = 'todos') {
             <div class="metas-acciones">
                 <button class="btn-secondary btn-sm" data-sel="todos">Seleccionar todos</button>
                 <button class="btn-secondary btn-sm" data-sel="ninguno">Ninguno</button>
+                <button class="btn-primary btn-sm" id="metas-normalizar-real" title="Seleccionar todos + aplicar el consumo real de cada uno como meta"><i class="fa-solid fa-wand-magic-sparkles"></i> Normalizar todos con el real</button>
                 <div class="metas-aplicar">
                     <select id="metas-origen">
                         <option value="real">Usar el consumo real de cada equipo</option>
-                        <option value="mediana">Usar la mediana de su denominación</option>
+                        <option value="mediana">Usar la mediana de su grupo comparable</option>
                         <option value="manual">Usar un valor fijo…</option>
                     </select>
                     <input type="number" id="metas-manual" step="0.01" min="0" placeholder="valor" style="display:none">
@@ -96,6 +97,14 @@ export function abrirAjusteMetas(analisis, filtroInicial = 'todos') {
         pintar();
     }));
     document.getElementById('metas-aplicar').addEventListener('click', aplicar);
+    document.getElementById('metas-normalizar-real')?.addEventListener('click', () => {
+        document.getElementById('metas-origen').value = 'real';
+        document.getElementById('metas-manual').style.display = 'none';
+        const visibles = filtrar().map(f => f.equipo.interno);
+        visibles.forEach(i => seleccion.add(i));
+        pintar();
+        aplicar();
+    });
 
     pintar();
 }
@@ -114,7 +123,7 @@ function filtrar() {
         if (soloConf && !confiabilidad(f).confiable) return false;
 
         if (filtro === 'sin_meta') return !f.confirmed || !f.confirmed.valor;
-        if (filtro === 'sobre') return f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15;
+        if (filtro === 'sobre' || filtro === 'excedidos') return f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15;
         if (filtro === 'metas_raras') {
             if (!f.confirmed || !f.confirmed.valor || !f.metrics.consumo_real) return false;
             const r = f.metrics.consumo_real / f.confirmed.valor;
