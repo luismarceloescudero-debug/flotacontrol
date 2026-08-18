@@ -23,6 +23,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         alert('Error crítico: no se pudo inicializar la base de datos local del navegador.');
     }
 
+    // Los movimientos (cargas, GPS, cubiertas…) son datos de sesión: se limpian al iniciar.
+    // Solo el maestro (equipos + estimados + mapeos + config) persiste entre sesiones, porque
+    // tiene ediciones manuales y columnas propias que no se deben perder.
+    try { await clearMovimientos(); } catch (e) { console.warn('No se pudieron limpiar los movimientos al iniciar:', e); }
+
     setupNavigation();
     initUploadUI();
     initPanelControls();
@@ -40,10 +45,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     await renderDBStatus();
 
-    // Si no hay nada cargado todavía, arrancar en la pantalla de carga.
+    // Después de limpiar movimientos, arrancar en panel solo si hay equipos cargados
+    // (el maestro persiste); de lo contrario, ir a carga de datos.
     try {
         const s = await getDBStats();
-        irA((s.equipos > 0 || s.movimientos > 0) ? 'panel' : 'upload');
+        irA(s.equipos > 0 ? 'panel' : 'upload');
     } catch (e) { irA('upload'); }
 });
 

@@ -18,7 +18,7 @@ const view = {
     busqueda: '', denominacion: 'ALL', estado: 'ALL', orden: 'litros',
     provincia: 'ALL', lugarCarga: 'ALL', centroCosto: 'ALL', combustible: 'ALL',
     anioEquipo: 'ALL', potencia: 'ALL', capacidad: 'ALL',
-    anio: '', mes: '', editando: null
+    anio: '', meses: new Set(), editando: null
 };
 
 /** Interpretación del ralentí según el tipo de equipo (motor de diagnóstico, ver diagnostico.js). */
@@ -47,6 +47,7 @@ const diagAbiertos = new Map();
 const diagIgnorados = new Set();
 const diagSeguimiento = new Map();
 
+const MESES_CORTO = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -139,7 +140,7 @@ export async function renderPanel() {
         limpiarCalculos();
         ultimoAnalisis = analizarFlota({
             equipos, rawRecords, estimados,
-            filtro: { anio: view.anio || null, mes: view.mes || null }
+            filtro: { anio: view.anio || null, periodos: [...view.meses] }
         });
 
         renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes);
@@ -164,17 +165,99 @@ export async function renderPanel() {
 // ---------------------------------------------------------------- filtros de período
 
 function poblarFiltrosPeriodo(rawRecords) {
-    const { anios, meses } = periodosDisponibles(rawRecords);
+    const { anios, periodos } = periodosDisponibles(rawRecords);
+
+    // Contar qué meses tienen cargas y cuáles GPS
+    const mesesCargas = new Set();
+    const mesesGps = new Set();
+    rawRecords.forEach(r => {
+        const p = r.periodo || (r.fecha ? r.fecha.slice(0, 7) : null);
+        if (!p) return;
+        if (r.type === 'carga') mesesCargas.add(p);
+        else if (r.type === 'gps') mesesGps.add(p);
+    });
+
     const selA = document.getElementById('filter-anio');
-    const selM = document.getElementById('filter-mes');
     if (selA && selA.options.length !== anios.length + 1) {
         selA.innerHTML = '<option value="">Todos los años</option>' + anios.map(a => `<option value="${a}">${a}</option>`).join('');
         selA.value = view.anio;
     }
-    if (selM && selM.options.length !== meses.length + 1) {
-        selM.innerHTML = '<option value="">Todos los meses</option>' + meses.map(m => `<option value="${m}">${MESES[m - 1]}</option>`).join('');
-        selM.value = view.mes;
+
+    renderMesesGrid(periodos, mesesCargas, mesesGps);
+}
+
+/** Grilla interactiva de meses: cada botón muestra disponibilidad de cargas/GPS y se puede tildar. */
+function renderMesesGrid(todosLosPeriodos, mesesCargas, mesesGps) {
+    const grid = document.getElementById('periodo-meses-grid');
+    if (!grid) return;
+
+    // Si hay un año seleccionado, mostrar solo los 12 meses de ese año. Si no, los periodos disponibles.
+    let mesesMostrar;
+    if (view.anio) {
+        mesesMostrar = [];
+        for (let m = 1; m <= 12; m++) {
+            const ym = `${view.anio}-${String(m).padStart(2, '0')}`;
+            mesesMostrar.push(ym);
+        }
+    } else {
+        mesesMostrar = [...new Set(todosLosPeriodos)].sort();
     }
+
+    if (!mesesMostrar.length) { grid.innerHTML = ''; return; }
+
+    const haySeleccion = view.meses.size > 0;
+    const ambos = mesesMostrar.filter(ym => mesesCargas.has(ym) && mesesGps.has(ym));
+
+    let html = '<div class="meses-grid-row">';
+    mesesMostrar.forEach(ym => {
+        const [a, m] = ym.split('-');
+        const mc = parseInt(m, 10);
+        const label = view.anio ? MESES_CORTO[mc - 1] : `${MESES_CORTO[mc - 1]} ${a.slice(2)}`;
+        const tieneC = mesesCargas.has(ym);
+        const tieneG = mesesGps.has(ym);
+        const seleccionado = view.meses.has(ym);
+        const sinDatos = !tieneC && !tieneG;
+        const clases = [
+            'mes-toggle',
+            seleccionado ? 'mes-activo' : '',
+            sinDatos ? 'mes-sin-datos' : '',
+            tieneC && tieneG ? 'mes-completo' : '',
+            tieneC && !tieneG ? 'mes-solo-cargas' : '',
+            !tieneC && tieneG ? 'mes-solo-gps' : ''
+        ].filter(Boolean).join(' ');
+
+        const dots = `<span class="mes-dots">${tieneC ? '<i class="dot-c" title="Cargas"></i>' : '<i class="dot-empty"></i>'}${tieneG ? '<i class="dot-g" title="GPS"></i>' : '<i class="dot-empty"></i>'}</span>`;
+
+        html += `<button class="${clases}" data-ym="${ym}" title="${MESES[mc - 1]} ${a}${tieneC ? ' · tiene cargas' : ''}${tieneG ? ' · tiene GPS' : ''}${sinDatos ? ' · sin datos' : ''}">${esc(label)}${dots}</button>`;
+    });
+    html += '</div>';
+
+    // Acciones rápidas
+    html += `<div class="meses-grid-actions">`;
+    html += `<button class="btn-meses-action" id="meses-solo-cruzados" title="Seleccionar solo los meses que tienen cargas Y GPS a la vez">${ambos.length} meses cruzados</button>`;
+    if (haySeleccion) html += `<button class="btn-meses-action" id="meses-limpiar">Limpiar</button>`;
+    html += `</div>`;
+
+    grid.innerHTML = html;
+
+    // Event listeners
+    grid.querySelectorAll('.mes-toggle').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const ym = btn.dataset.ym;
+            if (view.meses.has(ym)) view.meses.delete(ym);
+            else view.meses.add(ym);
+            renderPanel();
+        });
+    });
+    grid.querySelector('#meses-solo-cruzados')?.addEventListener('click', () => {
+        view.meses.clear();
+        ambos.forEach(ym => view.meses.add(ym));
+        renderPanel();
+    });
+    grid.querySelector('#meses-limpiar')?.addEventListener('click', () => {
+        view.meses.clear();
+        renderPanel();
+    });
 }
 
 // ---------------------------------------------------------------- fuentes
@@ -218,19 +301,34 @@ function kpi({ id, label, valor, sub, clase, titulo, pasos, fuentes, nota }) {
         </div>`;
 }
 
-/** Etiqueta corta del período elegido ("junio 2026", "período seleccionado"...), reutilizada en los KPIs y en cada tarjeta para que "22 cargas" diga contra qué período se cuenta. */
+/** Etiqueta corta del período elegido ("junio 2026", "Abr–Jun 2026"...), reutilizada en los KPIs y en cada tarjeta. */
 function rangoCorto() {
-    if (view.mes && view.anio) return `${MESES[view.mes - 1]} ${view.anio}`;
-    if (view.mes) return MESES[view.mes - 1];
+    if (view.meses.size > 0) {
+        const sorted = [...view.meses].sort();
+        return rangoMeses(sorted);
+    }
     if (view.anio) return `año ${view.anio}`;
     return 'período seleccionado';
+}
+
+/** Sub-texto del KPI de costo: desglose por tipo de combustible en vez de un promedio global. */
+function costoSubPorCombustible(t) {
+    const desg = t.combustible_desglose || [];
+    if (!desg.length) return `$${nf(t.total_costo)}`;
+    if (desg.length === 1) {
+        const d = desg[0];
+        return `${esc(d.bandera)} ${esc(cap(d.tipo))} · $${nf(d.precio_litro)}/L · ${nf(d.litros)} L`;
+    }
+    // Múltiples tipos: mostrar cada uno con su precio
+    return desg.map(d =>
+        `${esc(d.bandera)} $${nf(d.precio_litro)}/L <small>(${nf(d.litros)} L)</small>`
+    ).join(' · ');
 }
 
 function renderKPIs(el, t, fuentes) {
     let rango;
     if (t.periodo_desde && t.periodo_hasta) rango = `${t.periodo_desde} → ${t.periodo_hasta}`;
-    else if (view.mes && view.anio) rango = `${MESES[view.mes - 1]} ${view.anio}`;
-    else if (view.mes) rango = `${MESES[view.mes - 1]} (todos los años)`;
+    else if (view.meses.size > 0) rango = rangoCorto();
     else if (view.anio) rango = `Año ${view.anio}`;
     else rango = 'Sin período común entre Cargas y GPS';
 
@@ -260,7 +358,7 @@ function renderKPIs(el, t, fuentes) {
 
         <div class="kpi-grid">
             ${kpi({ id: 'kpi-litros', label: 'Combustible', valor: `${nf(t.total_litros)} <small>L</small>`, sub: `${nf(t.cantidad_cargas)} cargas registradas`, titulo: 'Combustible total del período', pasos: t.pasos.litros })}
-            ${kpi({ id: 'kpi-costo', label: 'Costo total', valor: money(t.total_costo), sub: `$${nf(t.total_costo)} · $${nf(t.costo_por_litro)}/litro`, titulo: 'Costo total del combustible', pasos: t.pasos.costo })}
+            ${kpi({ id: 'kpi-costo', label: 'Costo total', valor: money(t.total_costo), sub: costoSubPorCombustible(t), titulo: 'Costo total del combustible', pasos: t.pasos.costo })}
             ${kpi({ id: 'kpi-km', label: 'Distancia', valor: `${nf(t.total_km)} <small>km</small>`, sub: 'Según Resumen de Flota', titulo: 'Kilómetros recorridos', pasos: t.pasos.km })}
             ${kpi({ id: 'kpi-horas', label: 'Horas de uso', valor: `${nf(t.total_horas)} <small>hs</small>`, sub: `${nf(t.horas_movimiento)} movimiento · ${nf(t.horas_ralenti)} ralentí`, titulo: 'Horas de uso', pasos: t.pasos.horas })}
             ${kpi({ id: 'kpi-sobre', label: 'Sobre la meta', valor: String(t.sobre_meta), sub: `de ${t.con_meta} equipos con meta`, clase: t.sobre_meta > 0 ? 'kpi-alert' : '', titulo: 'Equipos sobre la meta', pasos: t.pasos.sobre_meta })}
@@ -629,7 +727,15 @@ function poblarFiltrosSpecs(filas) {
     });
 }
 
-const cap = (s) => String(s || '').toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+/** Capitaliza cada palabra, pero preserva siglas de marca conocidas (YPF, GNC, EE SS, GLP, CNG). */
+const BRAND_KEEP = ['YPF', 'GNC', 'GLP', 'CNG'];
+const cap = (s) => {
+    let r = String(s || '').toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+    BRAND_KEEP.forEach(b => { r = r.replace(new RegExp(`\\b${b}\\b`, 'gi'), b); });
+    // "Ee Ss" → "EE SS"
+    r = r.replace(/\bEe\s+Ss\b/g, 'EE SS');
+    return r;
+};
 
 /**
  * Sugerencias del buscador (search-equip): se arman con los valores REALES de la flota ya
@@ -780,6 +886,68 @@ function renderCompararBar(container, analisis) {
     });
 }
 
+/** Rango de meses compacto: "Abr–Jun 2026" o "Abr 2026" si es uno solo. */
+function rangoMeses(meses) {
+    if (!meses.length) return '';
+    const fmt = (ym) => {
+        const [a, m] = ym.split('-');
+        return MESES_CORTO[parseInt(m, 10) - 1] + ' ' + a;
+    };
+    const fmtCorto = (ym) => MESES_CORTO[parseInt(ym.split('-')[1], 10) - 1];
+    if (meses.length === 1) return fmt(meses[0]);
+    const mismoAnio = meses[0].slice(0, 4) === meses[meses.length - 1].slice(0, 4);
+    return mismoAnio
+        ? fmtCorto(meses[0]) + '–' + fmt(meses[meses.length - 1])
+        : fmt(meses[0]) + '–' + fmt(meses[meses.length - 1]);
+}
+
+/** Meta-line de la tarjeta: cargas, GPS, períodos, días hábiles, combustible. */
+function cardPeriodoInfo(f, m, ubi, ralentiTag) {
+    const fechasC = f.cargas.map(c => c.fecha).filter(Boolean).sort();
+    const fechasG = f.gps.map(g => g.fecha).filter(Boolean).sort();
+    const mesesC = [...new Set(fechasC.map(x => x.slice(0, 7)))].sort();
+    const mesesG = [...new Set(fechasG.map(x => x.slice(0, 7)))].sort();
+    const rangoC = rangoMeses(mesesC);
+    const rangoG = rangoMeses(mesesG);
+
+    // Días hábiles del período de este equipo (unión de cargas + GPS)
+    const todasFechas = [...fechasC, ...fechasG].sort();
+    let dhTag = '';
+    if (todasFechas.length >= 2) {
+        const dh = diasHabiles(todasFechas[0], todasFechas[todasFechas.length - 1]);
+        if (dh && dh.totalCorridos > 0) {
+            dhTag = `<span title="${dh.dias} hábiles de ${dh.totalCorridos} corridos${dh.completo ? '' : ' (sin feriados móviles confirmados)'}"><i class="fa-solid fa-calendar-days"></i> ${dh.dias} días hábiles</span>`;
+        }
+    }
+
+    // Alerta si cargas y GPS cubren meses distintos
+    const mesesSoloC = mesesC.filter(m => !mesesG.includes(m));
+    const mesesSoloG = mesesG.filter(m => !mesesC.includes(m));
+    let desalineado = '';
+    if (mesesC.length && mesesG.length && (mesesSoloC.length || mesesSoloG.length)) {
+        const partes = [];
+        if (mesesSoloC.length) partes.push(`cargas sin GPS: ${mesesSoloC.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1]).join(', ')}`);
+        if (mesesSoloG.length) partes.push(`GPS sin cargas: ${mesesSoloG.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1]).join(', ')}`);
+        desalineado = `<span class="meta-periodo-warn" title="Los períodos de cargas y GPS no coinciden al 100%: ${esc(partes.join('; '))}"><i class="fa-solid fa-triangle-exclamation"></i> períodos desalineados</span>`;
+    }
+
+    // Tooltip detallado para cargas
+    const tooltipC = mesesC.length ? `${m.cantidad_cargas} cargas en ${mesesC.length} mes${mesesC.length > 1 ? 'es' : ''}: ${mesesC.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1] + ' ' + m.slice(0, 4)).join(', ')}` : '';
+    // Tooltip detallado para GPS
+    const tooltipG = mesesG.length ? `${m.cantidad_gps} reportes de Resumen de Flota en ${mesesG.length} mes${mesesG.length > 1 ? 'es' : ''}: ${mesesG.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1] + ' ' + m.slice(0, 4)).join(', ')}` : '';
+
+    return `
+        <div class="card-meta-line">
+            <span title="${esc(tooltipC)}"><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'}${rangoC ? ` · ${esc(rangoC)}` : ''}</span>
+            ${ubi.lugarCarga ? `<span title="${ubi.tipoLugarCarga ? esc(ubi.tipoLugarCarga) : ''}"><i class="fa-solid ${ubi.tipoLugarCarga === 'Estación de servicio' ? 'fa-charging-station' : 'fa-warehouse'}"></i> ${esc(cap(ubi.lugarCarga))}${ubi.lugarCargaBreakdown && ubi.lugarCargaBreakdown.length > 1 ? ` (${ubi.lugarCargaBreakdown[0].n}/${m.cantidad_cargas})` : ''}</span>` : ''}
+            ${ubi.combustible ? `<span title="Combustible más cargado${ubi.bandera ? ` · bandera ${ubi.bandera}` : ''}"><i class="fa-solid fa-droplet"></i> ${ubi.bandera ? `${esc(ubi.bandera)} ` : ''}${esc(cap(ubi.combustible))}</span>` : ''}
+            <span title="${esc(tooltipG)}"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} reporte${m.cantidad_gps === 1 ? '' : 's'} GPS${rangoG ? ` · ${esc(rangoG)}` : ''}</span>
+            ${dhTag}
+            ${desalineado}
+            ${ralentiTag}
+        </div>`;
+}
+
 function estadoDe(m, confirmed) {
     if (m.tipo_calculo === 'No Aplica') return { cls: 'neutral', txt: 'Sin motor propio', icon: 'fa-ban' };
     if (m.motivo_sin_calculo) return { cls: 'warn', txt: m.motivo_sin_calculo, icon: 'fa-circle-info' };
@@ -901,17 +1069,20 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
             </div>
         </div>` : `
         <div class="card-periodo"><i class="fa-solid fa-calendar-days"></i> ${esc(periodo)}</div>
+        ${ubi.combustible ? `<div class="card-combustible-hero">
+            <span class="combustible-bandera">${ubi.bandera ? esc(ubi.bandera) : ''}</span>
+            <span class="combustible-tipo">${esc(cap(ubi.combustible))}</span>
+            ${precioEquipo > 0 ? `<span class="combustible-precio">$${nf(precioEquipo)}/L</span>` : ''}
+            ${precioTag}
+        </div>` : ''}
         <div class="card-stats">
             <div class="stat stat-litros stat-emphasis">
                 <span class="stat-label"><i class="fa-solid fa-gas-pump"></i> Litros</span>
                 <span class="stat-value">${nf(m.total_litros, 1)} <small class="stat-unit">L</small></span>
-                ${precioTag}
-                ${ubi.combustible ? `<span class="stat-combustible" title="${ubi.bandera ? esc(ubi.bandera) : ''}"><i class="fa-solid fa-droplet"></i> ${ubi.bandera ? `${esc(ubi.bandera)} ` : ''}${esc(cap(ubi.combustible))}</span>` : ''}
             </div>
             <div class="stat stat-costo stat-emphasis">
                 <span class="stat-label"><i class="fa-solid fa-sack-dollar"></i> Costo</span>
                 <span class="stat-value">${money(m.total_costo)}</span>
-                ${precioEquipo > 0 ? `<span class="stat-precio-detalle">$${nf(precioEquipo)}/L</span>` : ''}
             </div>
             <div class="stat ${implicita ? 'stat-implicita' : ''}">
                 <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>
@@ -923,15 +1094,19 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
                 <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? `${nf(m.consumo_real, 2)} <small class="stat-unit">${esc(unidadConsumoLabel(m.tipo_calculo))}</small>` : '—'}</span>
             </div>
         </div>
+        ${m.cross_check ? `<div class="card-cross-check" title="El GPS reporta horas y km para este equipo. Verificá que el tipo de cálculo sea el correcto.">
+            <i class="fa-solid fa-arrows-left-right"></i>
+            <span>También se podría medir como <strong>${nf(m.cross_check.consumo_alt, 2)} ${esc(m.cross_check.tipo_alt)}</strong></span>
+            <small>(tiene ${nf(m.total_horas, 1)} hs y ${nf(m.total_km)} km)</small>
+        </div>` : ''}
+        ${confirmed ? `<div class="card-meta-hero">
+            <span class="meta-label"><i class="fa-solid fa-bullseye"></i> Meta ${confirmed.source === 'Maestro' ? '(ajustada)' : '(estimada)'}</span>
+            <span class="meta-valor">${nf(confirmed.valor, 2)} <small>${esc(unidadConsumoLabel(confirmed.unidad || m.tipo_calculo))}</small></span>
+            ${m.desvio_pct !== null ? `<span class="meta-desvio ${m.desvio_pct > 15 ? 'desvio-alto' : (m.desvio_pct < -15 ? 'desvio-bajo' : 'desvio-ok')}">${m.desvio_pct >= 0 ? '+' : ''}${nf(m.desvio_pct)}%</span>` : ''}
+        </div>` : (m.consumo_real > 0 ? `<div class="card-meta-hero card-meta-falta"><span class="meta-label"><i class="fa-solid fa-circle-question"></i> Sin meta cargada</span></div>` : '')}
         ${barra}
         ${ubicacionRow}
-        <div class="card-meta-line">
-            <span><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'}</span>
-            ${ubi.lugarCarga ? `<span title="${ubi.tipoLugarCarga ? esc(ubi.tipoLugarCarga) : ''}"><i class="fa-solid ${ubi.tipoLugarCarga === 'Estación de servicio' ? 'fa-charging-station' : 'fa-warehouse'}"></i> ${esc(cap(ubi.lugarCarga))}${ubi.lugarCargaBreakdown && ubi.lugarCargaBreakdown.length > 1 ? ` (${ubi.lugarCargaBreakdown[0].n}/${m.cantidad_cargas})` : ''}</span>` : ''}
-            ${ubi.combustible ? `<span title="Combustible más cargado${ubi.bandera ? ` · bandera ${ubi.bandera}` : ''}"><i class="fa-solid fa-droplet"></i> ${ubi.bandera ? `${esc(ubi.bandera)} ` : ''}${esc(cap(ubi.combustible))}</span>` : ''}
-            <span><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} GPS</span>
-            ${ralentiTag}
-        </div>
+        ${cardPeriodoInfo(f, m, ubi, ralentiTag)}
         ${fuentesRow}
         <div class="litros-bar"><div class="litros-bar-fill" style="width:${pctLitros}%"></div></div>`;
 
@@ -1015,14 +1190,13 @@ export function initPanelControls() {
     document.getElementById('filter-capacidad')?.addEventListener('change', e => { view.capacidad = e.target.value; rerender(); });
 
     // Los filtros de período cambian el conjunto de datos: hay que recalcular todo.
-    document.getElementById('filter-anio')?.addEventListener('change', e => { view.anio = e.target.value; renderPanel(); });
-    document.getElementById('filter-mes')?.addEventListener('change', e => { view.mes = e.target.value; renderPanel(); });
+    document.getElementById('filter-anio')?.addEventListener('change', e => { view.anio = e.target.value; view.meses.clear(); renderPanel(); });
     document.getElementById('btn-ajustar-metas')?.addEventListener('click', () => abrirAjusteMetas(ultimoAnalisis, 'todos'));
     document.getElementById('btn-comparar')?.addEventListener('click', () => abrirComparativa(ultimoAnalisis, [...comparSeleccion]));
     document.getElementById('btn-limpiar-periodo')?.addEventListener('click', () => {
-        view.anio = ''; view.mes = '';
-        const a = document.getElementById('filter-anio'); const m = document.getElementById('filter-mes');
-        if (a) a.value = ''; if (m) m.value = '';
+        view.anio = ''; view.meses.clear();
+        const a = document.getElementById('filter-anio');
+        if (a) a.value = '';
         renderPanel();
     });
 

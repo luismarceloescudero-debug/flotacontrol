@@ -88,12 +88,40 @@ export function calculateAlignedPeriod(cargas = [], gps = []) {
 }
 
 /**
- * Filtra registros por año / mes / rango explícito.
+ * Filtra registros por año / mes / rango explícito / lista de períodos YYYY-MM.
  * Un registro de GPS abarca un período (fecha..fecha_hasta), así que se considera incluido
  * si ese período se superpone con el filtro, no solo si empieza dentro.
+ *
+ * `filtro.periodos` (array de "YYYY-MM") tiene prioridad sobre anio/mes cuando está presente:
+ * permite seleccionar meses específicos para cruzar cargas y GPS del mismo período.
  */
 export function filtrarPorPeriodo(records = [], filtro = {}) {
-    const { anio, mes, desde, hasta } = filtro;
+    const { anio, mes, desde, hasta, periodos } = filtro;
+
+    // Filtro por períodos YYYY-MM seleccionados (prioridad sobre anio/mes sueltos)
+    if (periodos && periodos.length) {
+        const set = new Set(periodos);
+        return records.filter(r => {
+            const p = r.periodo || (r.fecha ? r.fecha.slice(0, 7) : null);
+            if (!p) return false;
+            // Para GPS con rango, incluir si cualquier mes del rango está seleccionado
+            if (r.fecha_hasta) {
+                const pHasta = r.fecha_hasta.slice(0, 7);
+                if (set.has(p) || set.has(pHasta)) return true;
+                // Recorrer meses intermedios si el rango es largo
+                const cur = new Date(p + '-01');
+                const fin = new Date(pHasta + '-01');
+                while (cur <= fin) {
+                    const ym = cur.toISOString().slice(0, 7);
+                    if (set.has(ym)) return true;
+                    cur.setMonth(cur.getMonth() + 1);
+                }
+                return false;
+            }
+            return set.has(p);
+        });
+    }
+
     if (!anio && !mes && !desde && !hasta) return records;
 
     return records.filter(r => {
@@ -240,6 +268,22 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
         pasos.push(paso('No se puede completar el cálculo', motivoSinCalculo, '—'));
     }
 
+    // --- Cross-check: si el GPS reporta tanto horas como km, validar el tipo de cálculo ---
+    let crossCheck = null;
+    if (totalHoras > 0 && totalKm > 0 && totalLitros > 0 && calcType !== 'No Aplica' && calcType !== 'Sin clasificar') {
+        const consumoAlt = calcType === 'L/Hora'
+            ? (totalLitros / totalKm) * 100
+            : totalLitros / totalHoras;
+        const unidadAlt = calcType === 'L/Hora' ? 'L/100Km' : 'L/Hora';
+        crossCheck = { tipo_alt: unidadAlt, consumo_alt: consumoAlt };
+        pasos.push(paso(
+            'Cross-check: el GPS reporta horas y km',
+            `Consumo calculado con la otra unidad: ${nf(consumoAlt, 2)} ${unidadAlt}`,
+            `Tipo asignado: ${calcType}`,
+            `Este equipo tiene ${nf(totalHoras, 1)} hs y ${nf(totalKm)} km en el GPS. Si el tipo de cálculo no es el correcto, se puede cambiar manualmente.`
+        ));
+    }
+
     const fuentes = [...new Set([...cargasList, ...gpsList].map(r => r.source_file).filter(Boolean))];
 
     return {
@@ -255,6 +299,7 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
         cantidad_cargas: cargasList.length,
         cantidad_gps: gpsList.length,
         motivo_sin_calculo: motivoSinCalculo,
+        cross_check: crossCheck,
         pasos,
         fuentes
     };
@@ -343,16 +388,26 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
     const allOtros = rawRecords.filter(r => r.type !== 'carga' && r.type !== 'gps');
 
     const auto = calculateAlignedPeriod(allCargas, allGps);
-    const usaFiltroManual = !!(filtro.anio || filtro.mes || filtro.desde || filtro.hasta);
+    const usaFiltroManual = !!(filtro.anio || filtro.mes || filtro.desde || filtro.hasta || (filtro.periodos && filtro.periodos.length));
 
     let cargas, gps, otros, start, end, criterioPeriodo;
     if (usaFiltroManual) {
         cargas = filtrarPorPeriodo(allCargas, filtro);
         gps = filtrarPorPeriodo(allGps, filtro);
         otros = filtrarPorPeriodo(allOtros, filtro);
-        start = filtro.desde || null;
-        end = filtro.hasta || null;
-        criterioPeriodo = 'filtro manual';
+        if (filtro.periodos && filtro.periodos.length) {
+            const sorted = [...filtro.periodos].sort();
+            start = sorted[0] + '-01';
+            const last = sorted[sorted.length - 1];
+            const [ly, lm] = last.split('-').map(Number);
+            const lastDay = new Date(ly, lm, 0).getDate();
+            end = `${last}-${String(lastDay).padStart(2, '0')}`;
+            criterioPeriodo = `${sorted.length} mes${sorted.length > 1 ? 'es' : ''} seleccionado${sorted.length > 1 ? 's' : ''}`;
+        } else {
+            start = filtro.desde || null;
+            end = filtro.hasta || null;
+            criterioPeriodo = 'filtro manual';
+        }
     } else {
         start = auto.start; end = auto.end;
         const dentro = r => {
@@ -409,6 +464,22 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
     const kmTot = gps.reduce((s, g) => s + (parseFloat(g.distancia) || 0), 0);
     const hs = desgloseHoras(gps);
 
+    // Desglose de litros y costo por tipo de combustible (bandera + combustible)
+    const porCombustible = new Map();
+    cargas.forEach(c => {
+        const bandera = getBandera(c.combustible) || 'Otro';
+        const tipo = c.combustible || 'Sin dato';
+        const key = `${bandera}|${tipo}`;
+        if (!porCombustible.has(key)) porCombustible.set(key, { bandera, tipo, litros: 0, costo: 0, cargas: 0 });
+        const b = porCombustible.get(key);
+        b.litros += parseFloat(c.litros) || 0;
+        b.costo += parseFloat(c.importe) || 0;
+        b.cargas++;
+    });
+    const combustibleDesglose = [...porCombustible.values()]
+        .map(b => ({ ...b, precio_litro: b.litros > 0 ? b.costo / b.litros : 0 }))
+        .sort((a, b) => b.litros - a.litros);
+
     const totales = {
         periodo_desde: start, periodo_hasta: end, criterio_periodo: criterioPeriodo,
         equipos: equipos.length,
@@ -420,6 +491,7 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         sobre_meta: filas.filter(f => f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15).length,
         sin_calculo: filas.filter(f => f.metrics.motivo_sin_calculo && f.metrics.tipo_calculo !== 'No Aplica').length,
         costo_por_litro: litrosTot > 0 ? costoTot / litrosTot : 0,
+        combustible_desglose: combustibleDesglose,
         huerfanos
     };
 
