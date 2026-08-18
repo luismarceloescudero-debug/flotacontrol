@@ -211,19 +211,24 @@
 .cards-toolbar input:focus, .cards-toolbar select:focus { outline: none; border-color: var(--border-active); }
 .cards-count { font-size: 0.84rem; color: var(--text-muted); white-space: nowrap; }
 
-/* ---------- Grilla de tarjetas ---------- */
+/* ---------- Grilla de tarjetas ----------
+   Tarjetas más grandes (antes 320px mínimo) porque ahora traen más información de un
+   vistazo: ubicación, lugar de carga, fuente de cada dato y el desglose del cálculo. Con
+   320px ese contenido se apretaba y algunos badges quedaban tapados por los botones. */
 .cards-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 1rem;
+    /* minmax(min(400px, 100%), 1fr): en pantallas angostas (celular) la columna se achica
+       hasta el 100% del contenedor en vez de forzar 400px y desbordar horizontalmente. */
+    grid-template-columns: repeat(auto-fill, minmax(min(400px, 100%), 1fr));
+    gap: 1.25rem;
 }
 
 .equip-card {
     background: var(--bg-card);
     border: 1px solid var(--border-color);
     border-radius: 12px;
-    padding: 1.1rem;
-    display: flex; flex-direction: column; gap: 0.85rem;
+    padding: 1.25rem;
+    display: flex; flex-direction: column; gap: 0.9rem;
     transition: border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 .equip-card:hover { border-color: var(--border-active); transform: translateY(-2px); box-shadow: var(--shadow-md); }
@@ -243,6 +248,61 @@
 .stat-value small { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); }
 .stat-value.stat-highlight { color: var(--accent-cyan); }
 .stat-value.stat-muted { color: var(--text-muted); }
+
+/* ---------- Litros + precio, destacados con color y símbolo ---------- */
+.stat-litros { position: relative; }
+.stat-precio {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.74rem; font-weight: 600; margin-top: 0.15rem; width: fit-content;
+}
+.stat-precio.precio-bajo { color: var(--accent-green); }
+.stat-precio.precio-normal { color: var(--text-secondary); }
+.stat-precio.precio-alto { color: var(--accent-red); }
+
+/* ---------- Actividad estimada por cálculo inverso (sin GPS) ---------- */
+.stat-implicita { border: 1px dashed rgba(139, 92, 246, 0.4); background: rgba(139, 92, 246, 0.06); }
+.stat-implicita .stat-label i { color: var(--accent-purple); margin-left: 0.25rem; }
+.stat-nota { font-size: 0.68rem; color: var(--accent-purple); margin-top: 0.1rem; overflow-wrap: anywhere; }
+
+/* ---------- Fórmula del cálculo, siempre visible bajo la barra real/meta ---------- */
+.calc-inline {
+    display: flex; align-items: center; gap: 0.35rem;
+    font-size: 0.72rem; color: var(--text-muted);
+    background: var(--bg-input); border-radius: 6px;
+    padding: 0.35rem 0.55rem; cursor: pointer;
+    overflow-wrap: anywhere;
+}
+.calc-inline:hover { color: var(--accent-cyan); }
+.calc-inline i { flex-shrink: 0; opacity: 0.6; }
+
+/* ---------- Ralentí, interpretado según el tipo de equipo ---------- */
+.ralenti-tag { display: inline-flex; align-items: center; gap: 0.3rem; }
+.ralenti-tag.ralenti-ok { color: var(--accent-green); }
+.ralenti-tag.ralenti-warn { color: var(--accent-amber); }
+.ralenti-tag.ralenti-alert { color: var(--accent-red); }
+
+/* ---------- Provincia / sub-sede ---------- */
+.card-ubicacion { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.badge-ubic {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.72rem; font-weight: 500; color: var(--text-secondary);
+    background: var(--bg-input); border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+}
+.badge-ubic i { color: var(--accent-blue); font-size: 0.7rem; }
+
+/* ---------- Fuente de cada dato (Cargas / GPS / Meta / Estimado) ---------- */
+.card-fuentes { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.fuente-tag {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.68rem; font-weight: 600; letter-spacing: 0.02em;
+    border-radius: 999px; padding: 0.18rem 0.5rem;
+    border: 1px solid transparent;
+}
+.fuente-tag.fuente-cargas { color: var(--accent-cyan); background: rgba(6, 182, 212, 0.1); }
+.fuente-tag.fuente-gps { color: var(--accent-blue); background: rgba(59, 130, 246, 0.1); }
+.fuente-tag.fuente-meta { color: var(--accent-green); background: rgba(16, 185, 129, 0.1); }
+.fuente-tag.fuente-estimado { color: var(--accent-purple); background: rgba(139, 92, 246, 0.1); border-color: rgba(139, 92, 246, 0.3); }
 
 /* ---------- Comparación real vs meta ---------- */
 .meta-bar { display: flex; flex-direction: column; gap: 0.35rem; }
@@ -471,6 +531,8 @@
 .toolbar-row > select { flex: 1 1 150px; min-width: 0; }
 .toolbar-periodo { border-top: 1px solid var(--border-color); padding-top: 0.6rem; }
 .toolbar-periodo select { flex: 0 1 150px; }
+.toolbar-ubicacion { border-top: 1px solid var(--border-color); padding-top: 0.6rem; }
+.toolbar-ubicacion select { flex: 1 1 160px; min-width: 0; }
 .toolbar-tag {
     display: inline-flex; align-items: center; gap: 0.4rem;
     font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase;
@@ -606,6 +668,14 @@
     .calc-paso-res { max-width: 100%; text-align: left; }
     .calc-pasos li { flex-wrap: wrap; }
 }
+@media (max-width: 480px) {
+    /* En celular, dos columnas de stat dentro de una tarjeta ya angosta apretaban el precio
+       y la nota de "cálculo inverso" hasta desbordar. Una sola columna deja todo legible. */
+    .card-stats { grid-template-columns: 1fr; }
+    .equip-card { padding: 1rem; }
+    .card-top { flex-wrap: wrap; }
+    .card-actions { width: 100%; justify-content: flex-end; }
+}
 
 /* ============================================================
    CORRECCIONES SOBRE main.css
@@ -646,3 +716,59 @@
 .kpi-grid { align-items: stretch; }
 .kpi-card { height: 100%; }
 .kpi-calc { margin-top: auto; padding-top: 0.25rem; }
+
+/* ---------- Comparativa contra los pares ---------- */
+.comparativa { background: var(--bg-input); border-radius: 10px; padding: 0.8rem 0.9rem; margin-bottom: 0.7rem; }
+.comparativa-head { font-size: 0.84rem; color: var(--text-secondary); margin-bottom: 0.6rem; line-height: 1.5; }
+.comparativa-head strong { color: var(--text-primary); }
+.comparativa-barras { display: flex; flex-direction: column; gap: 0.25rem; }
+.cmp-fila { display: flex; align-items: center; gap: 0.6rem; font-size: 0.78rem; }
+.cmp-eq { width: 62px; flex-shrink: 0; color: var(--text-muted); font-weight: 600; }
+.cmp-barra { flex: 1; height: 12px; background: rgba(255,255,255,0.05); border-radius: 999px; overflow: hidden; }
+.cmp-barra i { display: block; height: 100%; background: var(--accent-blue); border-radius: 999px; }
+.cmp-val { width: 52px; text-align: right; color: var(--text-secondary); flex-shrink: 0; }
+.cmp-fila.cmp-este .cmp-eq { color: var(--accent-red); }
+.cmp-fila.cmp-este .cmp-barra i { background: var(--accent-red); }
+.cmp-fila.cmp-este .cmp-val { color: var(--accent-red); font-weight: 700; }
+.btn-diag-accion { margin-bottom: 0.9rem; }
+
+/* ---------- Ajuste masivo de metas ---------- */
+.metas-panel {
+    background: var(--bg-card); border: 1px solid var(--border-active); border-radius: 14px;
+    box-shadow: var(--shadow-lg); width: min(1100px, 100%); max-height: 88vh;
+    display: flex; flex-direction: column; padding: 1.3rem;
+}
+.metas-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.metas-head h3 { margin: 0.15rem 0 0.35rem; font-size: 1.1rem; color: var(--text-primary); }
+.metas-sub { font-size: 0.83rem; color: var(--text-muted); margin: 0; max-width: 760px; line-height: 1.5; }
+.metas-filtros { display: flex; gap: 0.55rem; align-items: center; flex-wrap: wrap; margin: 1rem 0 0.6rem; }
+.metas-filtros select {
+    background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary);
+    border-radius: 8px; padding: 0.5rem 0.75rem; font-size: 0.85rem; font-family: inherit;
+}
+.metas-acciones {
+    display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
+    padding: 0.7rem; background: var(--bg-input); border-radius: 10px; margin-bottom: 0.8rem;
+}
+.metas-aplicar { display: flex; gap: 0.5rem; align-items: center; margin-left: auto; flex-wrap: wrap; }
+.metas-aplicar select, .metas-aplicar input {
+    background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-primary);
+    border-radius: 8px; padding: 0.45rem 0.7rem; font-size: 0.83rem; font-family: inherit;
+}
+.metas-aplicar input { width: 90px; }
+.metas-tabla { flex: 1; max-height: none; overflow-y: auto; }
+.metas-tabla tr.fila-sel { background: rgba(59,130,246,0.12); }
+.cell-nueva { color: var(--accent-green); font-weight: 700; }
+.metas-tabla input[type=checkbox] { accent-color: var(--accent-blue); width: 15px; height: 15px; cursor: pointer; }
+.metas-overlay .calc-panel { display: none; }
+
+/* ---------- Evolución mes a mes ---------- */
+.evol { display: flex; gap: 0.5rem; align-items: flex-end; position: relative; background: var(--bg-input); border-radius: 10px; padding: 1rem 0.9rem 0.7rem; margin-bottom: 1.25rem; min-height: 190px; }
+.evol-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 0.3rem; min-width: 0; }
+.evol-barra { width: 100%; max-width: 46px; height: 96px; background: rgba(255,255,255,0.04); border-radius: 6px; display: flex; align-items: flex-end; overflow: hidden; }
+.evol-barra i { display: block; width: 100%; border-radius: 6px 6px 0 0; transition: height var(--transition-normal); }
+.evol-val { font-size: 0.8rem; font-weight: 700; color: var(--text-primary); }
+.evol-mes { font-size: 0.75rem; color: var(--text-secondary); font-weight: 600; }
+.evol-sub { font-size: 0.66rem; color: var(--text-muted); text-align: center; line-height: 1.3; }
+.evol-meta { position: absolute; left: 0.9rem; right: 0.9rem; border-top: 1px dashed var(--accent-amber); pointer-events: none; }
+.evol-meta span { position: absolute; right: 0; top: -0.95rem; font-size: 0.66rem; color: var(--accent-amber); background: var(--bg-input); padding: 0 0.3rem; }

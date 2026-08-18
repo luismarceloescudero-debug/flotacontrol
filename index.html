@@ -71,7 +71,7 @@
                 <div class="toolbar-row">
                     <div class="search-wrap">
                         <i class="fa-solid fa-magnifying-glass"></i>
-                        <input type="text" id="search-equip" placeholder="Buscar interno, dominio, marca...">
+                        <input type="text" id="search-equip" placeholder="Buscar interno, dominio, marca..." list="equip-suggestions" autocomplete="off">
                     </div>
                     <select id="filter-denominacion"><option value="ALL">Todas las denominaciones</option></select>
                     <select id="filter-estado">
@@ -89,11 +89,18 @@
                         <option value="interno">Ordenar por interno</option>
                     </select>
                 </div>
+                <div class="toolbar-row toolbar-ubicacion">
+                    <span class="toolbar-tag"><i class="fa-solid fa-location-dot"></i> Ubicación</span>
+                    <select id="filter-provincia"><option value="ALL">Mendoza y San Juan</option></select>
+                    <select id="filter-subsede"><option value="ALL">Todas las sub-sedes</option></select>
+                    <select id="filter-estacion"><option value="ALL">Todas las estaciones</option></select>
+                </div>
                 <div class="toolbar-row toolbar-periodo">
                     <span class="toolbar-tag"><i class="fa-solid fa-calendar-days"></i> Período</span>
                     <select id="filter-anio"><option value="">Todos los años</option></select>
                     <select id="filter-mes"><option value="">Todos los meses</option></select>
                     <button id="btn-limpiar-periodo" class="btn-secondary btn-sm">Auto</button>
+                    <button id="btn-ajustar-metas" class="btn-secondary btn-sm"><i class="fa-solid fa-sliders"></i> Ajustar metas</button>
                     <span id="cards-count" class="cards-count"></span>
                 </div>
             </div>

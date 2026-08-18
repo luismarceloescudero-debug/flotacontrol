@@ -12,7 +12,7 @@
  *    de origen. La UI los muestra al hacer click, así ningún total es una caja negra.
  */
 
-import { normalizeEquipoKey, getPrefijo, getDenominacion, partesFecha } from './normalizer.js';
+import { normalizeEquipoKey, getPrefijo, getDenominacion, partesFecha, getProvincia, getSubSede } from './normalizer.js';
 
 export const RULE_L_100KM = ['TR', 'CM', 'CH', 'FG', 'AU'];
 export const RULE_L_HORA = ['MX', 'CF', 'EX', 'TP', 'GE', 'BM', 'VL', 'AE', 'RE', 'MC', 'MT', 'MH', 'CL', 'MS'];
@@ -260,6 +260,38 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
     };
 }
 
+/** Cuenta ocurrencias de un campo en una lista de registros, de más a menos frecuente. */
+function contarFrecuencias(lista, campo) {
+    const m = new Map();
+    lista.forEach(r => {
+        const v = r[campo];
+        if (!v) return;
+        m.set(v, (m.get(v) || 0) + 1);
+    });
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([valor, n]) => ({ valor, n }));
+}
+
+/**
+ * Provincia, sub-sede y estación/lugar de carga de un equipo, en el período analizado.
+ *
+ * La provincia sale del padrón (Equipos.UBICACIÓN). La sub-sede y el lugar de carga NO son
+ * un atributo fijo del equipo — dependen de dónde cargó combustible ese período — así que se
+ * toma el más frecuente entre sus cargas, con el resto del detalle disponible por si hace
+ * falta mostrarlo (un mixer puede cargar en dos sedes distintas en el mismo mes).
+ */
+function resumenUbicacion(equipo, cargasList) {
+    const centros = contarFrecuencias(cargasList, 'centro_costo');
+    const subSedes = centros.map(c => ({ valor: getSubSede(c.valor), n: c.n }));
+    const lugares = contarFrecuencias(cargasList, 'lugar_carga');
+    return {
+        provincia: getProvincia(equipo.ubicacion),
+        subSede: subSedes[0] ? subSedes[0].valor : '',
+        subSedeBreakdown: subSedes,
+        lugarCarga: lugares[0] ? lugares[0].valor : '',
+        lugarCargaBreakdown: lugares
+    };
+}
+
 export function getCargasForEquipo(interno, rawRecords = []) {
     const key = normalizeEquipoKey(interno);
     return rawRecords.filter(r => r.type === 'carga' && ((r.interno_key || normalizeEquipoKey(r.interno)) === key || (r.dominio_key || '') === key));
@@ -338,6 +370,7 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
             equipo: { ...eq, denominacion: eq.denominacion || getDenominacion(eq.interno, eq.tipo) },
             prefijo: getPrefijo(eq.interno),
             metrics, confirmed,
+            ubicacion: resumenUbicacion(eq, g.cargas),
             cargas: g.cargas, gps: g.gps, otros: g.otros
         };
     });

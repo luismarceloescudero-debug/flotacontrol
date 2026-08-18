@@ -38,6 +38,50 @@ export const TIPO_POR_PREFIJO = {
 };
 
 /**
+ * Provincia y sub-sede.
+ *
+ * La columna UBICACIÓN del Excel de Equipos ya viene como "MENDOZA" / "SAN JUAN", así que
+ * getProvincia() solo agrupa las variantes raras (VENDIDO, FUERA DE SERVICIO, MALARGÜE...)
+ * bajo "OTRA/BAJA" para no ensuciar el filtro principal.
+ *
+ * La sub-sede sale del CENTRO DE COSTO de las cargas de combustible (columna "CENTRO DE
+ * COSTO" en Cargas_Combustible*.xlsx), no del padrón de Equipos: un equipo no tiene una
+ * sub-sede fija, va donde lo mandan, así que se usa el centro de costo que más se repite
+ * entre SUS cargas del período. Mapeo verificado contra
+ * "Cargas_Combustible_HSV_2026.xlsx" (3.996 filas, 11 códigos reales).
+ */
+export const PROVINCIAS = ['MENDOZA', 'SAN JUAN'];
+
+export function getProvincia(ubicacion) {
+    const u = normalizeString(ubicacion);
+    if (u.includes('MENDOZA')) return 'MENDOZA';
+    if (u.includes('SAN JUAN')) return 'SAN JUAN';
+    if (!u) return 'SIN DATO';
+    return 'OTRA'; // MALARGÜE, VENDIDO, FUERA DE SERVICIO, etc.
+}
+
+export const SUB_SEDE_POR_CENTRO_COSTO = {
+    PMZA: 'Godoy Cruz (planta)',
+    AMZA: 'Áridos',
+    PTY: 'Tunuyán',
+    PSM: 'San Martín',
+    TMZA: 'Taller Mendoza',
+    VMZA: 'Ventas Mendoza',
+    LMZA: 'Laboratorio Mendoza',
+    CMZA: 'Compras Mendoza',
+    GMZA: 'Gerencia Mendoza',
+    SJ: 'San Juan',
+    ALT: 'Altamira'
+};
+
+/** Nombre de sub-sede a partir del código de centro de costo; si no está mapeado, muestra el código tal cual para no perder equipos de sedes nuevas. */
+export function getSubSede(centroCosto) {
+    const c = normalizeString(centroCosto).replace(/\s+/g, '');
+    if (!c) return '';
+    return SUB_SEDE_POR_CENTRO_COSTO[c] || c;
+}
+
+/**
  * Extrae el prefijo alfabético del interno ("TR-20" -> "TR", "CM43" -> "CM").
  * Es la clave con la que se agrupa la flota y se determina la denominación.
  */

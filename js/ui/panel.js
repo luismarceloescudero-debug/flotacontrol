@@ -6,14 +6,24 @@
  */
 import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos } from '../data/analyzer.js';
-import { generarDiagnostico, sugerirMeta } from '../data/diagnostico.js';
+import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES } from '../data/normalizer.js';
+import { diasHabiles } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
+import { abrirAjusteMetas } from './metas.js';
 import { registrarCalculo, limpiarCalculos } from './calcpopover.js';
 
 const view = {
     busqueda: '', denominacion: 'ALL', estado: 'ALL', orden: 'litros',
+    provincia: 'ALL', subSede: 'ALL', estacion: 'ALL',
     anio: '', mes: '', editando: null
+};
+
+/** Interpretación del ralentí según el tipo de equipo (motor de diagnóstico, ver diagnostico.js). */
+const RALENTI_INFO = {
+    estacionario: { texto: 'es su trabajo', clase: 'ralenti-ok', icono: 'fa-plug-circle-check' },
+    espera: { texto: 'espera operativa', clase: 'ralenti-warn', icono: 'fa-truck-ramp-box' },
+    desperdicio: { texto: 'a revisar', clase: 'ralenti-alert', icono: 'fa-hourglass-half' }
 };
 
 let ultimoAnalisis = null;
@@ -70,7 +80,7 @@ export async function renderPanel() {
         });
 
         renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes);
-        renderDiagnostico(ultimoAnalisis);
+        renderDiagnostico(ultimoAnalisis, rawRecords);
         poblarFiltroDenominacion(ultimoAnalisis.filas);
         renderCards(cardsEl, ultimoAnalisis);
 
@@ -145,6 +155,14 @@ function kpi({ id, label, valor, sub, clase, titulo, pasos, fuentes, nota }) {
         </div>`;
 }
 
+/** Etiqueta corta del período elegido ("junio 2026", "período seleccionado"...), reutilizada en los KPIs y en cada tarjeta para que "22 cargas" diga contra qué período se cuenta. */
+function rangoCorto() {
+    if (view.mes && view.anio) return `${MESES[view.mes - 1]} ${view.anio}`;
+    if (view.mes) return MESES[view.mes - 1];
+    if (view.anio) return `año ${view.anio}`;
+    return 'período seleccionado';
+}
+
 function renderKPIs(el, t, fuentes) {
     let rango;
     if (t.periodo_desde && t.periodo_hasta) rango = `${t.periodo_desde} → ${t.periodo_hasta}`;
@@ -158,6 +176,11 @@ function renderKPIs(el, t, fuentes) {
         nota: 'Cuando no hay filtro manual, la app usa solo el tramo donde existen Cargas y GPS a la vez.'
     });
 
+    const dh = (t.periodo_desde && t.periodo_hasta) ? diasHabiles(t.periodo_desde, t.periodo_hasta) : null;
+    const dhTxt = dh && dh.totalCorridos
+        ? ` · ${dh.dias} día${dh.dias === 1 ? '' : 's'} hábil${dh.dias === 1 ? '' : 'es'} de ${dh.totalCorridos} corridos${dh.completo ? '' : ' (sin feriados móviles confirmados para ese año)'}`
+        : '';
+
     el.innerHTML = `
         ${fuentesHTML(fuentes)}
 
@@ -167,7 +190,7 @@ function renderKPIs(el, t, fuentes) {
                 <span class="periodo-valor">${esc(rango)}</span>
             </div>
             <div class="periodo-detalle">
-                ${nf(t.cantidad_cargas)} cargas · ${nf(t.cantidad_gps)} GPS${t.cantidad_otros ? ` · ${nf(t.cantidad_otros)} otros` : ''} · ${t.equipos_con_datos}/${t.equipos} equipos con actividad
+                ${nf(t.cantidad_cargas)} cargas · ${nf(t.cantidad_gps)} GPS${t.cantidad_otros ? ` · ${nf(t.cantidad_otros)} otros` : ''} · ${t.equipos_con_datos}/${t.equipos} equipos con actividad${dhTxt}
                 <span class="kpi-calc"><i class="fa-solid fa-calculator"></i> ver cálculo</span>
             </div>
         </div>
@@ -184,10 +207,10 @@ function renderKPIs(el, t, fuentes) {
 
 // ---------------------------------------------------------------- diagnóstico
 
-function renderDiagnostico(analisis) {
+function renderDiagnostico(analisis, rawRecords = []) {
     const el = document.getElementById('panel-diagnostico');
     if (!el) return;
-    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales);
+    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords);
     if (!hallazgos.length) { el.innerHTML = ''; return; }
 
     const sev = { alta: 'sev-alta', media: 'sev-media', baja: 'sev-baja', ok: 'sev-ok' };
@@ -211,6 +234,22 @@ function renderDiagnostico(analisis) {
                     </summary>
                     <div class="diag-body">
                         <p>${h.detalle}</p>
+                        ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
+                        ${h.comparaciones ? h.comparaciones.map(c => `
+                            <div class="comparativa">
+                                <div class="comparativa-head">
+                                    <strong>${esc(c.interno)}</strong> consume <strong>${nf(c.valor, 2)}</strong> ${esc(c.unidad)},
+                                    un ${nf(c.exceso_pct)}% sobre la mediana (${nf(c.mediana, 2)}) de ${c.pares.length} ${esc(c.denominacion.toLowerCase())}s:
+                                </div>
+                                <div class="comparativa-barras">
+                                    ${c.pares.map(p => `
+                                        <div class="cmp-fila ${p.esEste ? 'cmp-este' : ''}">
+                                            <span class="cmp-eq">${esc(p.interno)}</span>
+                                            <span class="cmp-barra"><i style="width:${Math.min(p.valor / Math.max(...c.pares.map(x => x.valor)) * 100, 100)}%"></i></span>
+                                            <span class="cmp-val">${nf(p.valor, 2)}</span>
+                                        </div>`).join('')}
+                                </div>
+                            </div>`).join('') : ''}
                         ${h.equipos && h.equipos.length ? `
                         <ul class="diag-lista">
                             ${h.equipos.map(e => `
@@ -225,6 +264,9 @@ function renderDiagnostico(analisis) {
 
     el.querySelectorAll('.diag-lista li[data-interno]').forEach(li => {
         li.addEventListener('click', () => buscarEquipo(li.dataset.interno));
+    });
+    el.querySelectorAll('.btn-diag-accion').forEach(b => {
+        b.addEventListener('click', (e) => { e.stopPropagation(); abrirAjusteMetas(ultimoAnalisis, b.dataset.filtro); });
     });
 }
 
@@ -252,6 +294,65 @@ function poblarFiltroDenominacion(filas) {
     const denos = [...new Set(filas.map(f => f.equipo.denominacion).filter(Boolean))].sort();
     sel.innerHTML = '<option value="ALL">Todas las denominaciones</option>' + denos.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
     sel.value = (denos.includes(actual) || actual === 'ALL') ? actual : 'ALL';
+    poblarSugerenciasBusqueda(filas, denos);
+    poblarFiltroProvincia(filas);
+}
+
+/** Provincia → sub-sede → estación de servicio: tres filtros geográficos, cada uno armado con los valores reales del período (no una lista fija), así que solo aparecen las opciones que de verdad tienen equipos o cargas. */
+function poblarFiltroProvincia(filas) {
+    const sel = document.getElementById('filter-provincia');
+    if (!sel) return;
+    const actual = sel.value || 'ALL';
+    const provs = [...new Set(filas.map(f => f.ubicacion?.provincia).filter(v => v && v !== 'SIN DATO'))].sort();
+    sel.innerHTML = '<option value="ALL">Mendoza y San Juan</option>' + provs.map(p => `<option value="${esc(p)}">${esc(cap(p))}</option>`).join('');
+    sel.value = (provs.includes(actual) || actual === 'ALL') ? actual : 'ALL';
+    poblarFiltroSubSede(filas);
+    poblarFiltroEstacion(filas);
+}
+
+function poblarFiltroSubSede(filas) {
+    const sel = document.getElementById('filter-subsede');
+    if (!sel) return;
+    const actual = sel.value || 'ALL';
+    const base = view.provincia !== 'ALL' ? filas.filter(f => f.ubicacion?.provincia === view.provincia) : filas;
+    const sedes = [...new Set(base.map(f => f.ubicacion?.subSede).filter(Boolean))].sort();
+    sel.innerHTML = '<option value="ALL">Todas las sub-sedes</option>' + sedes.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    sel.value = (sedes.includes(actual) || actual === 'ALL') ? actual : 'ALL';
+}
+
+function poblarFiltroEstacion(filas) {
+    const sel = document.getElementById('filter-estacion');
+    if (!sel) return;
+    const actual = sel.value || 'ALL';
+    const base = view.provincia !== 'ALL' ? filas.filter(f => f.ubicacion?.provincia === view.provincia) : filas;
+    const estaciones = [...new Set(base.map(f => f.ubicacion?.lugarCarga).filter(Boolean))].sort();
+    sel.innerHTML = '<option value="ALL">Todas las estaciones</option>' + estaciones.map(e => `<option value="${esc(e)}">${esc(cap(e))}</option>`).join('');
+    sel.value = (estaciones.includes(actual) || actual === 'ALL') ? actual : 'ALL';
+}
+
+const cap = (s) => String(s || '').toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+
+/**
+ * Sugerencias del buscador (search-equip): se arman con los valores REALES de la flota ya
+ * cargada (denominación, interno, dominio, marca) en vez de una lista fija, para que escribir
+ * "Mix" sugiera "MIXER" y también los internos de mixer concretos (MX97, MX101...), y lo mismo
+ * para cualquier otra denominación, dominio o marca presente en los datos.
+ */
+function poblarSugerenciasBusqueda(filas, denos) {
+    let dl = document.getElementById('equip-suggestions');
+    if (!dl) {
+        dl = document.createElement('datalist');
+        dl.id = 'equip-suggestions';
+        document.body.appendChild(dl);
+        document.getElementById('search-equip')?.setAttribute('list', 'equip-suggestions');
+    }
+    const valores = new Set(denos);
+    filas.forEach(f => {
+        if (f.equipo.interno) valores.add(f.equipo.interno);
+        if (f.equipo.dominio) valores.add(f.equipo.dominio);
+        if (f.equipo.marca) valores.add(f.equipo.marca);
+    });
+    dl.innerHTML = [...valores].sort().map(v => `<option value="${esc(v)}">`).join('');
 }
 
 function filtrarYOrdenar(filas) {
@@ -262,6 +363,9 @@ function filtrarYOrdenar(filas) {
             .some(v => (v || '').toUpperCase().includes(q)));
     }
     if (view.denominacion !== 'ALL') out = out.filter(f => f.equipo.denominacion === view.denominacion);
+    if (view.provincia !== 'ALL') out = out.filter(f => f.ubicacion?.provincia === view.provincia);
+    if (view.subSede !== 'ALL') out = out.filter(f => f.ubicacion?.subSede === view.subSede);
+    if (view.estacion !== 'ALL') out = out.filter(f => f.ubicacion?.lugarCarga === view.estacion);
     if (view.estado === 'SOBRE') out = out.filter(f => f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15);
     else if (view.estado === 'OK') out = out.filter(f => f.metrics.desvio_pct !== null && f.metrics.desvio_pct <= 15);
     else if (view.estado === 'SIN_DATOS') out = out.filter(f => f.metrics.motivo_sin_calculo && f.metrics.tipo_calculo !== 'No Aplica');
@@ -289,7 +393,9 @@ function renderCards(container, analisis) {
     }
 
     const maxLitros = Math.max(...filas.map(f => f.metrics.total_litros), 1);
-    container.innerHTML = filas.map(f => cardHTML(f, maxLitros)).join('');
+    const precioPromedio = analisis.totales.costo_por_litro || 0;
+    const periodo = rangoCorto();
+    container.innerHTML = filas.map(f => cardHTML(f, maxLitros, precioPromedio, periodo)).join('');
 
     container.querySelectorAll('.equip-card').forEach(card => {
         const interno = card.dataset.interno;
@@ -331,7 +437,7 @@ function estadoDe(m, confirmed) {
     return { cls: 'ok', txt: 'Dentro de la meta', icon: 'fa-check' };
 }
 
-function cardHTML(f, maxLitros) {
+function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccionado') {
     const { equipo: eq, metrics: m, confirmed } = f;
     const editando = view.editando === eq.interno;
     const est = estadoDe(m, confirmed);
@@ -347,10 +453,53 @@ function cardHTML(f, maxLitros) {
         pasos: m.pasos, fuentes: m.fuentes
     });
 
+    // --- Litros + precio, con color/símbolo según cómo se compara contra el precio promedio de la flota en el período ---
+    const precioEquipo = m.total_litros > 0 ? m.total_costo / m.total_litros : 0;
+    let precioTag = '';
+    if (precioEquipo > 0 && precioPromedio > 0) {
+        const diffPct = ((precioEquipo / precioPromedio) - 1) * 100;
+        const cls = diffPct > 8 ? 'precio-alto' : (diffPct < -8 ? 'precio-bajo' : 'precio-normal');
+        const icon = diffPct > 8 ? 'fa-arrow-trend-up' : (diffPct < -8 ? 'fa-arrow-trend-down' : 'fa-minus');
+        precioTag = `<span class="stat-precio ${cls}" title="Promedio de la flota: $${nf(precioPromedio)}/L"><i class="fa-solid ${icon}"></i> $${nf(precioEquipo)}/L</span>`;
+    }
+
+    // --- Sin GPS pero con litros: cálculo inverso (litros ÷ meta) como actividad estimada ---
+    const sinActividad = factor <= 0 && m.total_litros > 0;
+    const implicita = sinActividad ? actividadImplicita(f) : null;
+
+    // --- Ralentí, interpretado según el tipo de equipo (un GE quieto está trabajando; un TR quieto, no) ---
+    let ralentiTag = '';
+    if (m.horas_ralenti > 0) {
+        const cat = categoriaRalenti(eq.interno);
+        const info = RALENTI_INFO[cat] || RALENTI_INFO.desperdicio;
+        const pct = m.total_horas > 0 ? (m.horas_ralenti / m.total_horas * 100) : 0;
+        ralentiTag = `<span class="ralenti-tag ${info.clase}" title="${nf(pct)}% del tiempo total · ${info.texto}"><i class="fa-solid ${info.icono}"></i> ${nf(m.horas_ralenti)} hs ralentí · ${info.texto}</span>`;
+    }
+
+    // --- De dónde salió cada número: se ve de un vistazo, sin tener que abrir el detalle ---
+    const fuenteBadges = [];
+    if (m.cantidad_cargas > 0) fuenteBadges.push({ t: 'Cargas de Combustible', corto: 'Cargas', i: 'fa-gas-pump', c: 'fuente-cargas' });
+    if (m.cantidad_gps > 0) fuenteBadges.push({ t: 'Resumen de Flota (GPS)', corto: 'GPS', i: 'fa-satellite-dish', c: 'fuente-gps' });
+    if (confirmed) fuenteBadges.push({ t: 'Consumos Estimados / meta cargada', corto: 'Meta', i: 'fa-bullseye', c: 'fuente-meta' });
+    if (implicita) fuenteBadges.push({ t: 'Cálculo inverso: litros ÷ meta, sin GPS', corto: 'Estimado', i: 'fa-calculator', c: 'fuente-estimado' });
+    const fuentesRow = fuenteBadges.length ? `
+        <div class="card-fuentes">
+            ${fuenteBadges.map(b => `<span class="fuente-tag ${b.c}" title="${esc(b.t)}"><i class="fa-solid ${b.i}"></i> ${esc(b.corto)}</span>`).join('')}
+        </div>` : '';
+
+    // --- Provincia / sub-sede, si hay dato ---
+    const ubi = f.ubicacion || {};
+    const ubicacionRow = (ubi.provincia && ubi.provincia !== 'SIN DATO') || ubi.subSede ? `
+        <div class="card-ubicacion">
+            ${ubi.provincia && ubi.provincia !== 'SIN DATO' ? `<span class="badge-ubic"><i class="fa-solid fa-location-dot"></i> ${esc(cap(ubi.provincia))}</span>` : ''}
+            ${ubi.subSede ? `<span class="badge-ubic"><i class="fa-solid fa-building"></i> ${esc(ubi.subSede)}</span>` : ''}
+        </div>` : '';
+
     let barra = '';
     if (m.consumo_real > 0 && confirmed && confirmed.valor > 0) {
         const pct = Math.min((m.consumo_real / confirmed.valor) * 100, 100);
         const color = m.desvio_pct > 15 ? 'var(--accent-red)' : (m.desvio_pct < -15 ? 'var(--accent-cyan)' : 'var(--accent-green)');
+        const pasoCalculo = m.pasos.find(p => p.texto.startsWith('Dividir'));
         barra = `
             <div class="meta-bar">
                 <div class="meta-bar-track"><div class="meta-bar-fill" style="width:${pct}%; background:${color}"></div></div>
@@ -358,6 +507,7 @@ function cardHTML(f, maxLitros) {
                     <span>Real <strong style="color:${color}">${nf(m.consumo_real, 2)}</strong></span>
                     <span>Meta <strong>${nf(confirmed.valor, 2)}</strong></span>
                 </div>
+                ${pasoCalculo ? `<div class="calc-inline" ${attrsConsumo}><i class="fa-solid fa-equals"></i> ${esc(pasoCalculo.calculo)} = ${esc(pasoCalculo.resultado)}</div>` : ''}
             </div>`;
     }
 
@@ -392,20 +542,31 @@ function cardHTML(f, maxLitros) {
             </div>
         </div>` : `
         <div class="card-stats">
-            <div class="stat"><span class="stat-label">Combustible</span><span class="stat-value">${nf(m.total_litros, 1)} <small>L</small></span></div>
+            <div class="stat stat-litros">
+                <span class="stat-label">Combustible</span>
+                <span class="stat-value">${nf(m.total_litros, 1)} <small>L</small></span>
+                ${precioTag}
+            </div>
             <div class="stat"><span class="stat-label">Costo</span><span class="stat-value">${money(m.total_costo)}</span></div>
-            <div class="stat"><span class="stat-label">${esHora ? 'Horas' : 'Distancia'}</span><span class="stat-value">${nf(factor, esHora ? 1 : 0)} <small>${uf}</small></span></div>
+            <div class="stat ${implicita ? 'stat-implicita' : ''}">
+                <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>
+                <span class="stat-value ${implicita ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0)} <small>${uf}</small></span>
+                ${implicita ? `<span class="stat-nota">estimado: ${esc(implicita.formula)}</span>` : ''}
+            </div>
             <div class="stat stat-clickable" ${attrsConsumo} role="button" tabindex="0">
                 <span class="stat-label">Consumo real <i class="fa-solid fa-calculator"></i></span>
                 <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? nf(m.consumo_real, 2) : '—'}</span>
             </div>
         </div>
         ${barra}
+        ${ubicacionRow}
         <div class="card-meta-line">
-            <span><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} cargas</span>
+            <span><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'} <small>· ${esc(periodo)}</small></span>
+            ${ubi.lugarCarga ? `<span><i class="fa-solid fa-charging-station"></i> ${esc(cap(ubi.lugarCarga))}${ubi.lugarCargaBreakdown && ubi.lugarCargaBreakdown[0] ? ` (${ubi.lugarCargaBreakdown[0].n}/${m.cantidad_cargas})` : ''}</span>` : ''}
             <span><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} GPS</span>
-            ${m.horas_ralenti > 0 ? `<span><i class="fa-solid fa-hourglass-half"></i> ${nf(m.horas_ralenti)} hs ralentí</span>` : ''}
+            ${ralentiTag}
         </div>
+        ${fuentesRow}
         <div class="litros-bar"><div class="litros-bar-fill" style="width:${pctLitros}%"></div></div>`;
 
     return `
@@ -471,10 +632,18 @@ export function initPanelControls() {
     document.getElementById('filter-denominacion')?.addEventListener('change', e => { view.denominacion = e.target.value; rerender(); });
     document.getElementById('filter-estado')?.addEventListener('change', e => { view.estado = e.target.value; rerender(); });
     document.getElementById('sort-by')?.addEventListener('change', e => { view.orden = e.target.value; rerender(); });
+    document.getElementById('filter-provincia')?.addEventListener('change', e => {
+        view.provincia = e.target.value; view.subSede = 'ALL'; view.estacion = 'ALL';
+        if (ultimoAnalisis) { poblarFiltroSubSede(ultimoAnalisis.filas); poblarFiltroEstacion(ultimoAnalisis.filas); }
+        rerender();
+    });
+    document.getElementById('filter-subsede')?.addEventListener('change', e => { view.subSede = e.target.value; rerender(); });
+    document.getElementById('filter-estacion')?.addEventListener('change', e => { view.estacion = e.target.value; rerender(); });
 
     // Los filtros de período cambian el conjunto de datos: hay que recalcular todo.
     document.getElementById('filter-anio')?.addEventListener('change', e => { view.anio = e.target.value; renderPanel(); });
     document.getElementById('filter-mes')?.addEventListener('change', e => { view.mes = e.target.value; renderPanel(); });
+    document.getElementById('btn-ajustar-metas')?.addEventListener('click', () => abrirAjusteMetas(ultimoAnalisis, 'todos'));
     document.getElementById('btn-limpiar-periodo')?.addEventListener('click', () => {
         view.anio = ''; view.mes = '';
         const a = document.getElementById('filter-anio'); const m = document.getElementById('filter-mes');

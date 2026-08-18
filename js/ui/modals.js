@@ -2,6 +2,9 @@
  * Modal de detalle de un equipo: muestra de dónde sale cada número del cálculo,
  * el historial de cargas y la actividad GPS del período.
  */
+import { evolucionMensual, confiabilidad } from '../data/diagnostico.js';
+
+const MESES_CORTOS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -32,6 +35,13 @@ export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps =
                 </div>
 
                 <div class="modal-body">
+                    ${(() => {
+                        const c = confiabilidad({ metrics });
+                        return c.confiable ? '' : `<div class="insight-bar insight-warn">
+                            <i class="fa-solid fa-circle-exclamation"></i>
+                            <div>Este consumo se apoya en pocos datos (${esc(c.avisos.join(', '))}). Tomalo como indicativo hasta tener más período cargado.</div>
+                        </div>`;
+                    })()}
                     ${metrics.motivo_sin_calculo ? `
                         <div class="insight-bar insight-warn">
                             <i class="fa-solid fa-triangle-exclamation"></i> ${esc(metrics.motivo_sin_calculo)}
@@ -90,6 +100,30 @@ export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps =
                         <strong>${esHora ? nf(metrics.total_litros / meta, 1) + ' horas' : nf((metrics.total_litros / meta) * 100, 0) + ' km'}</strong>.
                         ${factor > 0 ? `Registró ${nf(factor, esHora ? 1 : 0)} ${unidadFactor}.` : 'No hay registro de GPS para comparar.'}
                     </p>` : ''}
+
+                    <h3>Evolución mes a mes</h3>
+                    ${(() => {
+                        // Responde a "¿fue puntual de un mes o se sostiene?": un desvío que
+                        // aparece un solo mes suele ser una obra particular; uno que se repite
+                        // es un problema del equipo.
+                        const ev = evolucionMensual({ cargas: eqCargas, gps: eqGps, metrics });
+                        if (!ev.length) return '<p class="modal-note">No hay suficientes períodos para comparar.</p>';
+                        const maxC = Math.max(...ev.map(m => m.consumo), meta || 0, 0.001);
+                        return `
+                        <div class="evol">
+                            ${ev.map(m => {
+                                const alto = m.consumo > 0 ? Math.max((m.consumo / maxC) * 100, 3) : 0;
+                                const sobre = meta > 0 && m.consumo > meta * 1.15;
+                                return `<div class="evol-col">
+                                    <span class="evol-val">${m.consumo > 0 ? nf(m.consumo, 2) : '—'}</span>
+                                    <div class="evol-barra"><i style="height:${alto}%; background:${sobre ? 'var(--accent-red)' : 'var(--accent-cyan)'}"></i></div>
+                                    <span class="evol-mes">${MESES_CORTOS[parseInt(m.periodo.split('-')[1], 10) - 1] || m.periodo}</span>
+                                    <span class="evol-sub">${nf(m.litros)} L · ${m.cargas} cargas</span>
+                                </div>`;
+                            }).join('')}
+                            ${meta > 0 ? `<div class="evol-meta" style="bottom:calc(${(meta / maxC) * 100}% * 0.62 + 2.9rem)"><span>meta ${nf(meta, 2)}</span></div>` : ''}
+                        </div>`;
+                    })()}
 
                     <h3>Últimas cargas de combustible</h3>
                     ${ultimasCargas.length ? `
