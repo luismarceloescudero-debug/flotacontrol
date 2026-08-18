@@ -192,9 +192,82 @@ function filaMetrica(m, filas) {
     </tr>`;
 }
 
+/**
+ * Validación de criterios unificados: al comparar equipos, avisar sobre diferencias
+ * que hacen la comparación menos confiable (distintas sedes, distinta cantidad de cargas,
+ * períodos desiguales, pocas cargas, etc.).
+ */
+function validarCriterios(filas) {
+    const avisos = [];
+
+    if (filas.length < 2) return '';
+
+    // 1. Verificar sedes: si un equipo opera en una sede diferente, la comparación puede ser engañosa
+    const sedes = filas.map(f => f.ubicacion?.provincia || 'SIN DATO');
+    const sedesUnicas = [...new Set(sedes)];
+    if (sedesUnicas.length > 1) {
+        const detalle = filas.map(f => `${esc(f.equipo.interno)}: ${esc(f.ubicacion?.provincia || 'sin dato')}`).join(' · ');
+        avisos.push({
+            tipo: 'sede', icono: 'fa-location-dot', color: 'aviso-alta',
+            texto: `Equipos en sedes distintas: ${detalle}. Un equipo de San Juan con datos de Mendoza puede ser un error de sede en los datos.`
+        });
+    }
+
+    // 2. Cantidad de cargas: diferencias grandes sugieren comparación desigual
+    const cargas = filas.map(f => f.metrics.cantidad_cargas);
+    const maxCargas = Math.max(...cargas);
+    const minCargas = Math.min(...cargas);
+    if (maxCargas > 0 && minCargas > 0 && maxCargas / minCargas > 2) {
+        avisos.push({
+            tipo: 'cargas', icono: 'fa-gas-pump', color: 'aviso-media',
+            texto: `Cantidad de cargas desigual (${minCargas} vs ${maxCargas}). Para una comparación justa, conviene igualar períodos y verificar que ambos equipos operaron los mismos días.`
+        });
+    }
+
+    // 3. Pocas cargas: <10 puede deberse a vacaciones, taller, fuera de servicio
+    const pocas = filas.filter(f => f.metrics.cantidad_cargas > 0 && f.metrics.cantidad_cargas < 10);
+    if (pocas.length) {
+        avisos.push({
+            tipo: 'pocas', icono: 'fa-triangle-exclamation', color: 'aviso-media',
+            texto: `${pocas.map(f => esc(f.equipo.interno)).join(', ')} ${pocas.length === 1 ? 'tiene' : 'tienen'} menos de 10 cargas. Posibles causas: vacaciones del chofer, fuera de servicio, taller externo. Verificar antes de concluir.`
+        });
+    }
+
+    // 4. Tipo de cálculo diferente: no se puede comparar L/Hora con L/100Km
+    const tipos = [...new Set(filas.map(f => f.metrics.tipo_calculo).filter(t => t === 'L/Hora' || t === 'L/100Km'))];
+    if (tipos.length > 1) {
+        avisos.push({
+            tipo: 'unidad', icono: 'fa-scale-unbalanced', color: 'aviso-alta',
+            texto: `Se mezclan unidades (${tipos.join(' y ')}): el consumo real no es comparable entre estos equipos.`
+        });
+    }
+
+    // 5. Lugar de carga diferente: puede indicar datos cruzados
+    const lugares = filas.map(f => f.ubicacion?.lugarCarga || '').filter(Boolean);
+    const lugaresUnicos = [...new Set(lugares)];
+    if (lugaresUnicos.length > 1) {
+        avisos.push({
+            tipo: 'lugar', icono: 'fa-warehouse', color: 'aviso-baja',
+            texto: `Cargan en lugares distintos (${lugaresUnicos.map(esc).join(', ')}). Esto puede afectar el precio por litro.`
+        });
+    }
+
+    if (!avisos.length) return '';
+
+    return `
+        <div class="comparar-avisos">
+            <div class="comparar-avisos-head"><i class="fa-solid fa-clipboard-check"></i> Criterios de comparación</div>
+            ${avisos.map(a => `
+                <div class="comparar-aviso ${a.color}">
+                    <i class="fa-solid ${a.icono}"></i>
+                    <span>${a.texto}</span>
+                </div>`).join('')}
+        </div>`;
+}
+
 /** Frases tipo "MX101 hizo 27 cargas más que MX96 (+44%)". Solo con exactamente 2 equipos: con 3+ no hay un "más que" claro sin elegir un par. */
 function resumenComparativo(filas) {
-    if (filas.length !== 2) return '';
+    if (filas.length !== 2) return validarCriterios(filas);
     const [a, b] = filas;
 
     const frases = RESUMEN_ITEMS.map(it => {
@@ -213,6 +286,7 @@ function resumenComparativo(filas) {
         return `<li><strong>${esc(mayor.equipo.interno)}</strong> ${it.verbo} ${valTxt}${sufTxt} más de ${esc(it.label)} que <strong>${esc(menor.equipo.interno)}</strong>${pct !== null ? ` <span class="cmp-pct">(+${nf(pct)}%)</span>` : ''}</li>`;
     }).filter(Boolean);
 
-    if (!frases.length) return '';
-    return `<ul class="comparar-resumen">${frases.join('')}</ul>`;
+    const criterios = validarCriterios(filas);
+    const resumen = frases.length ? `<ul class="comparar-resumen">${frases.join('')}</ul>` : '';
+    return criterios + resumen;
 }

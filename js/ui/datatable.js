@@ -10,7 +10,7 @@
  *    año/mes, porque son el registro histórico de lo que pasó.
  */
 import {
-    getAllEquipos, getAllRawRecords, updateEquipo, deleteEquipo, editarCampoEquipo,
+    getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, deleteEquipo, editarCampoEquipo,
     getColumnasExtra, setColumnasExtra, getTiposDeMovimiento
 } from '../data/database.js';
 import { periodosDisponibles, filtrarPorPeriodo } from '../data/analyzer.js';
@@ -39,6 +39,7 @@ export async function renderDataTable(tipo) {
         columnasExtra = await getColumnasExtra();
 
         if (estado.tipo === 'maestro') await renderMaestro();
+        else if (estado.tipo === 'estimados') await renderEstimados();
         else await renderMovimientos(estado.tipo);
     } catch (e) {
         console.error('Error al renderizar la tabla:', e);
@@ -52,7 +53,12 @@ async function renderTabs() {
     const tipos = await getTiposDeMovimiento();
     const equipos = await getAllEquipos();
 
-    const tabs = [{ tipo: 'maestro', etiqueta: 'Maestro de Equipos', n: equipos.length }, ...tipos];
+    const estimados = await getAllEstimados();
+    const tabs = [
+        { tipo: 'maestro', etiqueta: 'Maestro de Equipos', n: equipos.length },
+        { tipo: 'estimados', etiqueta: 'Consumos Estimados', n: estimados.length },
+        ...tipos
+    ];
     cont.innerHTML = tabs.map(t => `
         <button class="btn-tab ${estado.tipo === t.tipo ? 'active' : ''}" data-tipo="${esc(t.tipo)}">
             ${esc(t.etiqueta || t.tipo)} <span class="tab-n">${nf(t.n)}</span>
@@ -76,8 +82,16 @@ const CAMPOS_MAESTRO = [
     { k: 'capacidad', label: 'Capacidad', editable: true },
     { k: 'meta_valor', label: 'Meta', editable: true, num: true },
     { k: 'meta_unidad', label: 'Unidad', editable: true, opciones: ['', 'L/Hora', 'L/100Km', 'No Aplica'] },
-    { k: 'ubicacion', label: 'Ubicación', editable: true }
+    { k: 'ubicacion', label: 'Ubicación', editable: true },
+    { k: 'equipo_asociado', label: 'Equipo asociado', editable: true }
 ];
+
+/**
+ * Equipos pareados: BOMBAS tienen dos filas en Excel (la bomba telescópica y el camión
+ * asociado con su propio INTERNO+DOMINIO). El campo `equipo_asociado` vincula ambas filas.
+ * Se puede usar en cualquier caso donde un equipo depende de otro (bomba ↔ camión,
+ * acoplado ↔ tractor, etc.).
+ */
 
 async function renderMaestro() {
     const equipos = await getAllEquipos();
@@ -104,7 +118,8 @@ async function renderMaestro() {
     const pagina = filas.slice(estado.pagina * PAGINA, (estado.pagina + 1) * PAGINA);
     document.getElementById('table-body').innerHTML = pagina.map(e => {
         const editados = e.editado_manual || [];
-        return `<tr data-interno="${esc(e.interno)}">
+        const tieneAsociado = e.equipo_asociado ? 'row-asociado' : '';
+        return `<tr data-interno="${esc(e.interno)}" class="${tieneAsociado}" ${e.equipo_asociado ? `title="Asociado a ${esc(e.equipo_asociado)}"` : ''}>
             ${CAMPOS_MAESTRO.map(c => {
                 const v = c.k === 'denominacion' ? (e.denominacion || getDenominacion(e.interno, e.tipo)) : (e[c.k] ?? '');
                 if (c.clave) return `<td class="cell-key">${esc(v)}</td>`;
@@ -192,6 +207,85 @@ function conectarEdicionMaestro() {
 function flash(el) {
     el.classList.add('cell-guardado');
     setTimeout(() => el.classList.remove('cell-guardado'), 900);
+}
+
+// ============================================================ CONSUMOS ESTIMADOS
+
+const CAMPOS_ESTIMADOS = [
+    { k: 'interno', label: 'Interno' },
+    { k: 'consumo_estimado', label: 'Consumo estimado' },
+    { k: 'consumo_estimado_valor', label: 'Valor', num: true },
+    { k: 'consumo_estimado_unidad', label: 'Unidad' }
+];
+
+async function renderEstimados() {
+    const estimados = await getAllEstimados();
+    const equipos = await getAllEquipos();
+    const rawRecords = await getAllRawRecords();
+
+    document.getElementById('table-title').textContent = 'Consumos Estimados';
+    document.getElementById('table-desc').innerHTML =
+        'Metas de consumo importadas desde la planilla de Consumos Estimados. Se cruzan con el maestro de equipos por interno. ' +
+        'Los equipos marcados como <strong>"sin actividad"</strong> tienen cargas de combustible pero no tienen registros de horas ni km en el GPS: su consumo real no se puede calcular.';
+    mostrarBotonesMaestro(false);
+    mostrarFiltrosFecha(false);
+
+    // Enriquecer estimados con datos del equipo y detección de "sin actividad"
+    const cargasPorInterno = new Map();
+    const gpsPorInterno = new Map();
+    rawRecords.forEach(r => {
+        const k = r.interno_key || r.interno || '';
+        if (r.type === 'carga') { cargasPorInterno.set(k, (cargasPorInterno.get(k) || 0) + 1); }
+        if (r.type === 'gps') { gpsPorInterno.set(k, (gpsPorInterno.get(k) || 0) + 1); }
+    });
+
+    let filas = estimados.map(e => {
+        const key = normalizeEquipoKey(e.interno);
+        const eq = equipos.find(x => (x.interno_key || normalizeEquipoKey(x.interno)) === key);
+        const nCargas = cargasPorInterno.get(key) || 0;
+        const nGps = gpsPorInterno.get(key) || 0;
+        return {
+            ...e,
+            denominacion: eq?.denominacion || getDenominacion(e.interno, ''),
+            dominio: eq?.dominio || '',
+            en_maestro: !!eq,
+            cargas: nCargas,
+            gps: nGps,
+            sin_actividad: nCargas > 0 && nGps === 0
+        };
+    }).sort((a, b) => (a.interno || '').localeCompare(b.interno || ''));
+
+    if (estado.buscar) {
+        const q = estado.buscar.toUpperCase();
+        filas = filas.filter(e => JSON.stringify(e).toUpperCase().includes(q));
+    }
+    filasActuales = filas;
+
+    const cols = ['Interno', 'Dominio', 'Denominación', 'Consumo estimado', 'Valor', 'Unidad', 'Cargas', 'GPS', 'Estado'];
+    document.getElementById('table-header').innerHTML = cols.map(c => `<th>${esc(c)}</th>`).join('');
+
+    const pagina = filas.slice(estado.pagina * PAGINA, (estado.pagina + 1) * PAGINA);
+    document.getElementById('table-body').innerHTML = pagina.map(e => {
+        const estadoTxt = !e.en_maestro ? '<span class="badge-warn">Sin maestro</span>'
+            : e.sin_actividad ? '<span class="badge-warn">Sin actividad</span>'
+            : e.gps > 0 ? '<span class="badge-ok">Con GPS</span>'
+            : '<span class="badge-neutral">—</span>';
+        return `<tr>
+            <td class="cell-key">${esc(e.interno)}</td>
+            <td>${esc(e.dominio)}</td>
+            <td>${esc(e.denominacion)}</td>
+            <td>${esc(e.consumo_estimado || '')}</td>
+            <td class="cell-num">${e.consumo_estimado_valor ? nf(e.consumo_estimado_valor, 2) : '—'}</td>
+            <td>${esc(e.consumo_estimado_unidad || '')}</td>
+            <td class="cell-num">${nf(e.cargas)}</td>
+            <td class="cell-num">${nf(e.gps)}</td>
+            <td>${estadoTxt}</td>
+        </tr>`;
+    }).join('') || '<tr><td colspan="9">No hay datos de consumos estimados. Subí la planilla de Consumos Estimados.</td></tr>';
+
+    actualizarContador(filas.length, pagina.length,
+        `${filas.filter(e => e.sin_actividad).length} sin actividad`);
+    renderPaginacion(filas.length);
 }
 
 // ============================================================ MOVIMIENTOS

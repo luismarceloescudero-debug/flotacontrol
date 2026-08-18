@@ -192,10 +192,76 @@
 .diag-val { display: flex; flex-direction: column; text-align: right; font-weight: 600; color: var(--text-primary); font-size: 0.85rem; }
 .diag-val small { font-weight: 400; color: var(--text-muted); font-size: 0.72rem; }
 
+/* --- Barra de acciones en cada hallazgo --- */
+.diag-acciones-bar {
+    display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center;
+    margin: 0.6rem 0 0.9rem; padding-top: 0.6rem;
+    border-top: 1px solid var(--border-color);
+}
+.diag-acciones-sep { flex: 1; min-width: 1rem; }
+.btn-diag-propuesta {
+    background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border-color);
+    border-radius: 6px; padding: 0.3rem 0.65rem; font-size: 0.78rem; cursor: pointer; transition: all var(--transition-fast);
+    display: inline-flex; align-items: center; gap: 0.35rem;
+}
+.btn-diag-propuesta:hover { background: var(--accent-cyan); color: var(--bg-main); border-color: var(--accent-cyan); }
+.btn-diag-propuesta i { font-size: 0.72rem; }
+.btn-diag-ignorar, .btn-diag-ignorar-todos {
+    background: transparent; color: var(--text-muted); border: 1px solid transparent;
+    border-radius: 6px; padding: 0.3rem 0.6rem; font-size: 0.75rem; cursor: pointer; transition: all var(--transition-fast);
+    display: inline-flex; align-items: center; gap: 0.3rem;
+}
+.btn-diag-ignorar:hover, .btn-diag-ignorar-todos:hover { color: var(--accent-amber); border-color: var(--accent-amber); }
+.btn-diag-restaurar {
+    background: transparent; color: var(--accent-cyan); border: 1px solid var(--accent-cyan);
+    border-radius: 6px; padding: 0.3rem 0.6rem; font-size: 0.75rem; cursor: pointer; transition: all var(--transition-fast);
+    display: inline-flex; align-items: center; gap: 0.3rem;
+}
+.btn-diag-restaurar:hover { background: var(--accent-cyan); color: var(--bg-main); }
+
+/* Badge de "Ignorado" y "en seguimiento" en el summary */
+.diag-badge-ignorado {
+    font-size: 0.68rem; background: var(--text-muted); color: var(--bg-main); border-radius: 4px;
+    padding: 0.1rem 0.45rem; margin-left: 0.5rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.diag-badge-seguimiento {
+    font-size: 0.68rem; background: var(--accent-cyan); color: var(--bg-main); border-radius: 4px;
+    padding: 0.1rem 0.45rem; margin-left: 0.4rem; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 0.2rem;
+}
+
+/* Hallazgo ignorado: opacidad reducida */
+.diag-card.diag-ignorado { opacity: 0.55; }
+.diag-card.diag-ignorado:hover { opacity: 0.85; }
+
+/* Sección de ignorados colapsada */
+.diag-ignorados-section { margin-top: 0.8rem; }
+.diag-ignorados-toggle {
+    display: flex; align-items: center; gap: 0.5rem;
+    color: var(--text-muted); font-size: 0.82rem; cursor: pointer; padding: 0.5rem 0;
+    list-style: none;
+}
+.diag-ignorados-toggle::-webkit-details-marker { display: none; }
+.diag-ignorados-toggle i { font-size: 0.75rem; }
+.btn-diag-restaurar-todos {
+    background: transparent; color: var(--accent-cyan); border: 1px solid transparent;
+    border-radius: 6px; padding: 0.2rem 0.5rem; font-size: 0.72rem; cursor: pointer;
+    margin-left: auto; display: inline-flex; align-items: center; gap: 0.25rem;
+}
+.btn-diag-restaurar-todos:hover { border-color: var(--accent-cyan); }
+
+/* Botón seguir/dejar de seguir por equipo dentro de un hallazgo */
+.btn-xs { padding: 0.2rem 0.45rem; font-size: 0.7rem; border-radius: 4px; border: 1px solid var(--border-color); background: transparent; color: var(--text-muted); cursor: pointer; display: inline-flex; align-items: center; gap: 0.2rem; transition: all var(--transition-fast); flex-shrink: 0; }
+.btn-diag-seguir:hover { color: var(--accent-cyan); border-color: var(--accent-cyan); }
+.btn-diag-seguir.active { color: var(--accent-cyan); border-color: var(--accent-cyan); background: rgba(0, 188, 212, 0.1); }
+.diag-li-seguimiento { border-left: 3px solid var(--accent-cyan) !important; }
+
 @media (max-width: 720px) {
     .diag-body { padding-left: 1.1rem; }
     .diag-lista li { flex-direction: column; align-items: flex-start; gap: 0.2rem; }
     .diag-val { text-align: left; }
+    .diag-acciones-bar { flex-direction: column; align-items: stretch; }
+    .diag-acciones-sep { display: none; }
 }
 
 /* ---------- Toolbar ---------- */
@@ -287,6 +353,19 @@
 .stat-litros.stat-emphasis .stat-value { color: var(--accent-blue); }
 .stat-litros.stat-emphasis .stat-value small { color: var(--accent-blue); opacity: 0.75; }
 .stat-costo.stat-emphasis .stat-value { color: var(--accent-amber); }
+
+/* Tipo de combustible dentro de la stat de litros */
+.stat-combustible {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    font-size: 0.72rem; color: var(--text-muted); margin-top: 0.15rem;
+    background: var(--bg-input); border-radius: 4px; padding: 0.1rem 0.4rem;
+}
+.stat-combustible i { font-size: 0.62rem; color: var(--accent-blue); }
+
+/* Precio detalle bajo el costo total */
+.stat-precio-detalle {
+    font-size: 0.72rem; color: var(--text-muted); margin-top: 0.1rem;
+}
 .stat-litros { position: relative; }
 .stat-precio {
     display: inline-flex; align-items: center; gap: 0.3rem;
@@ -696,6 +775,14 @@
 .th-del { background: none; border: none; color: var(--text-muted); cursor: pointer; margin-left: 0.3rem; font-size: 0.75rem; }
 .th-del:hover { color: var(--accent-red); }
 .th-acciones { width: 44px; }
+.row-asociado { border-left: 3px solid var(--accent-purple) !important; }
+.row-asociado td:first-child::after { content: ' \2194'; color: var(--accent-purple); font-size: 0.7rem; }
+
+/* Badges de estado en tablas */
+.badge-warn { display: inline-block; background: rgba(245,158,11,0.15); color: var(--accent-amber); border-radius: 4px; padding: 0.1rem 0.45rem; font-size: 0.72rem; font-weight: 600; }
+.badge-ok { display: inline-block; background: rgba(16,185,129,0.15); color: var(--accent-green); border-radius: 4px; padding: 0.1rem 0.45rem; font-size: 0.72rem; font-weight: 600; }
+.badge-neutral { color: var(--text-muted); }
+.cell-num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .tabla-paginacion { display: flex; align-items: center; justify-content: center; gap: 0.9rem; margin-top: 0.9rem; font-size: 0.83rem; color: var(--text-muted); }
 
@@ -840,6 +927,25 @@
 }
 .comparar-resumen li strong { color: var(--text-primary); }
 .comparar-resumen .cmp-pct { color: var(--accent-cyan); font-weight: 600; }
+
+/* --- Avisos de criterios de comparación --- */
+.comparar-avisos { margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.comparar-avisos-head { font-size: 0.82rem; font-weight: 700; color: var(--text-secondary); margin-bottom: 0.25rem; display: flex; align-items: center; gap: 0.4rem; }
+.comparar-avisos-head i { font-size: 0.78rem; color: var(--accent-amber); }
+.comparar-aviso {
+    display: flex; align-items: flex-start; gap: 0.5rem;
+    background: var(--bg-input); border-radius: 8px; padding: 0.55rem 0.8rem;
+    font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;
+    border-left: 3px solid var(--border-color);
+}
+.comparar-aviso i { margin-top: 0.15rem; flex-shrink: 0; }
+.comparar-aviso.aviso-alta { border-left-color: var(--accent-red); }
+.comparar-aviso.aviso-alta i { color: var(--accent-red); }
+.comparar-aviso.aviso-media { border-left-color: var(--accent-amber); }
+.comparar-aviso.aviso-media i { color: var(--accent-amber); }
+.comparar-aviso.aviso-baja { border-left-color: var(--accent-blue); }
+.comparar-aviso.aviso-baja i { color: var(--accent-blue); }
+
 .comparar-tabla { flex: 1; overflow-y: auto; }
 .comparar-caption { caption-side: top; text-align: left; padding: 1rem 0; color: var(--text-muted); font-size: 0.85rem; }
 .comparar-tabla .th-sub { font-size: 0.7rem; color: var(--text-muted); font-weight: 500; margin-top: 0.15rem; }

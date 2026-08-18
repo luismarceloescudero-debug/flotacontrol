@@ -41,6 +41,12 @@ const comparSeleccion = new Set();
 let diagHallazgosPrevios = null; // null = todavía no se calculó ningún diagnóstico
 const diagAbiertos = new Map();
 
+// Estado de acciones del usuario sobre hallazgos individuales y equipos dentro de hallazgos.
+// diagIgnorados: Set de ids de hallazgos completos ignorados ("ignorar" / "ignorar todos").
+// diagSeguimiento: Map<hallazgoId, Set<interno>> — equipos marcados para seguimiento en cada hallazgo.
+const diagIgnorados = new Set();
+const diagSeguimiento = new Map();
+
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -53,6 +59,48 @@ const money = (n) => Math.abs(n) >= 1e6 ? `$${nf(n / 1e6, 1)} M` : `$${nf(n)}`;
 
 /** Unidad de consumo tal como se mide el equipo, para mostrarla siempre junto al número (nunca un valor "pelado" sin L/Hora o L/100Km). */
 const unidadConsumoLabel = (tipoCalculo) => (tipoCalculo === 'L/Hora' || tipoCalculo === 'L/100Km') ? tipoCalculo : '';
+
+/**
+ * Acciones propuestas por tipo de hallazgo: cada una genera un botón que al hacer click
+ * ejecuta algo concreto (abrir la comparativa, navegar a una tarjeta, ajustar metas, etc.).
+ * No son genéricas: cada hallazgo conoce su propio siguiente paso.
+ */
+const ACCIONES_PROPUESTAS = {
+    sobreconsumo: [
+        { texto: 'Comparar los excedidos entre sí', icono: 'fa-code-compare', accion: 'comparar_excedidos' },
+        { texto: 'Revisar metas de estos equipos', icono: 'fa-bullseye', accion: 'ajustar_metas_excedidos' }
+    ],
+    ahorro: [
+        { texto: 'Verificar que no falten cargas', icono: 'fa-magnifying-glass', accion: 'verificar_cargas' }
+    ],
+    metas: [
+        { texto: 'Ajustar metas a consumo real', icono: 'fa-sliders', accion: 'ajustar_metas_raras' }
+    ],
+    sin_meta: [
+        { texto: 'Cargar metas faltantes', icono: 'fa-sliders', accion: 'ajustar_sin_meta' }
+    ],
+    pares: [
+        { texto: 'Comparar peores vs mejores', icono: 'fa-code-compare', accion: 'comparar_pares' }
+    ],
+    ralenti: [
+        { texto: 'Ver detalle de ralentí por equipo', icono: 'fa-chart-simple', accion: 'detalle_ralenti' }
+    ],
+    ralenti_espera: [
+        { texto: 'Comparar espera mes a mes', icono: 'fa-chart-line', accion: 'comparar_espera' }
+    ],
+    sin_medicion: [
+        { texto: 'Cargar metas para estimar actividad', icono: 'fa-bullseye', accion: 'ajustar_sin_medicion' }
+    ],
+    nofl_vehiculo_sin_interno: [
+        { texto: 'Dar de alta en maestro de equipos', icono: 'fa-plus', accion: 'alta_equipo' }
+    ],
+    nofl_otros: [
+        { texto: 'Asignar centro de costo', icono: 'fa-building', accion: 'asignar_cc' }
+    ],
+    anomalas: [
+        { texto: 'Revisar cargas en detalle', icono: 'fa-magnifying-glass-chart', accion: 'revisar_anomalas' }
+    ]
+};
 
 export async function renderPanel() {
     const kpiEl = document.getElementById('panel-kpis');
@@ -236,6 +284,9 @@ function renderDiagnostico(analisis, rawRecords = []) {
     diagAbiertos.forEach((_, id) => { if (!idsNuevos.has(id)) diagAbiertos.delete(id); }); // no arrastrar estado de categorías que ya no existen
     diagHallazgosPrevios = new Map(hallazgos.map(h => [h.id, h.titulo]));
 
+    // Limpiar seguimientos de hallazgos que ya no existen
+    diagSeguimiento.forEach((_, id) => { if (!idsNuevos.has(id)) diagSeguimiento.delete(id); });
+
     const bannerResueltos = resueltos.length ? `
         <div class="diag-resuelto">
             <i class="fa-solid fa-broom"></i>
@@ -244,7 +295,11 @@ function renderDiagnostico(analisis, rawRecords = []) {
             </div>
         </div>` : '';
 
-    if (!hallazgos.length) {
+    // Separar: visibles vs ignorados
+    const visibles = hallazgos.filter(h => !diagIgnorados.has(h.id));
+    const ignorados = hallazgos.filter(h => diagIgnorados.has(h.id));
+
+    if (!visibles.length && !ignorados.length) {
         el.innerHTML = bannerResueltos || (esPrimerCalculo ? '' : `
             <div class="diag-resuelto">
                 <i class="fa-solid fa-circle-check"></i>
@@ -256,61 +311,93 @@ function renderDiagnostico(analisis, rawRecords = []) {
     const sev = { alta: 'sev-alta', media: 'sev-media', baja: 'sev-baja', ok: 'sev-ok' };
     const txt = { alta: 'Prioridad alta', media: 'Revisar', baja: 'Menor', ok: 'Positivo' };
 
+    const renderHallazgoCard = (h, i, esIgnorado) => {
+        const abierto = diagAbiertos.has(h.id) ? diagAbiertos.get(h.id) : (esPrimerCalculo && i === 0 && !esIgnorado);
+        const seguidos = diagSeguimiento.get(h.id) || new Set();
+        const acciones = ACCIONES_PROPUESTAS[h.id] || [];
+        return `
+        <details class="diag-card ${sev[h.severidad]} ${esIgnorado ? 'diag-ignorado' : ''}" data-id="${esc(h.id)}" ${abierto ? 'open' : ''}>
+            <summary>
+                <i class="fa-solid ${h.icono} diag-icon"></i>
+                <div class="diag-titulo">
+                    <span class="diag-badge">${txt[h.severidad]}</span>
+                    <h3>${esc(h.titulo)}</h3>
+                    ${esIgnorado ? '<span class="diag-badge-ignorado">Ignorado</span>' : ''}
+                    ${seguidos.size ? `<span class="diag-badge-seguimiento"><i class="fa-solid fa-eye"></i> ${seguidos.size} en seguimiento</span>` : ''}
+                </div>
+                <i class="fa-solid fa-chevron-down diag-chevron"></i>
+            </summary>
+            <div class="diag-body">
+                <p>${h.detalle}</p>
+                <div class="diag-acciones-bar">
+                    ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
+                    ${acciones.map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
+                    <span class="diag-acciones-sep"></span>
+                    ${esIgnorado
+                        ? `<button class="btn-sm btn-diag-restaurar" data-hallazgo="${esc(h.id)}" title="Volver a mostrar este hallazgo"><i class="fa-solid fa-eye"></i> Restaurar</button>`
+                        : `<button class="btn-sm btn-diag-ignorar" data-hallazgo="${esc(h.id)}" title="Ocultar este hallazgo hasta que cambien los datos"><i class="fa-solid fa-eye-slash"></i> Ignorar</button>`
+                    }
+                    ${!esIgnorado && visibles.length > 1 ? `<button class="btn-sm btn-diag-ignorar-todos" title="Ocultar todos los hallazgos"><i class="fa-solid fa-eye-slash"></i> Ignorar todos</button>` : ''}
+                </div>
+                ${h.comparaciones ? h.comparaciones.map(c => `
+                    <div class="comparativa">
+                        <div class="comparativa-head">
+                            <strong>${esc(c.interno)}</strong> consume <strong>${nf(c.valor, 2)}</strong> ${esc(c.unidad)},
+                            un ${nf(c.exceso_pct)}% sobre la mediana (${nf(c.mediana, 2)}) de ${c.pares.length} ${esc(c.denominacion.toLowerCase())}s:
+                        </div>
+                        <div class="comparativa-barras">
+                            ${c.pares.map(p => `
+                                <div class="cmp-fila ${p.esEste ? 'cmp-este' : ''}">
+                                    <span class="cmp-eq">${esc(p.interno)}</span>
+                                    <span class="cmp-barra"><i style="width:${Math.min(p.valor / Math.max(...c.pares.map(x => x.valor)) * 100, 100)}%"></i></span>
+                                    <span class="cmp-val">${nf(p.valor, 2)}</span>
+                                </div>`).join('')}
+                        </div>
+                    </div>`).join('') : ''}
+                ${h.equipos && h.equipos.length ? `
+                <ul class="diag-lista">
+                    ${h.equipos.map(e => {
+                        const enSeg = seguidos.has(e.interno);
+                        return `
+                        <li data-interno="${esc(e.interno)}" class="${enSeg ? 'diag-li-seguimiento' : ''}">
+                            <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
+                            <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small></span>
+                            <button class="btn-xs btn-diag-seguir ${enSeg ? 'active' : ''}" data-hallazgo="${esc(h.id)}" data-interno="${esc(e.interno)}" title="${enSeg ? 'Quitar seguimiento' : 'Marcar para seguimiento'}">
+                                <i class="fa-solid ${enSeg ? 'fa-eye-slash' : 'fa-eye'}"></i>
+                            </button>
+                        </li>`;
+                    }).join('')}
+                </ul>` : ''}
+            </div>
+        </details>`;
+    };
+
     el.innerHTML = `
         ${bannerResueltos}
         <div class="diag-head">
             <h2><i class="fa-solid fa-clipboard-check"></i> Diagnóstico automático</h2>
-            <span class="diag-sub">${hallazgos.length} hallazgos calculados sobre los datos del período</span>
+            <span class="diag-sub">${hallazgos.length} hallazgo${hallazgos.length === 1 ? '' : 's'} calculado${hallazgos.length === 1 ? '' : 's'} sobre los datos del período${ignorados.length ? ` · ${ignorados.length} ignorado${ignorados.length === 1 ? '' : 's'}` : ''}</span>
         </div>
         <div class="diag-grid">
-            ${hallazgos.map((h, i) => {
-                // Se respeta lo que el usuario tenía abierto/cerrado entre un render y otro; un
-                // hallazgo que aparece por primera vez arranca cerrado, salvo el primero en el
-                // primerísimo cálculo (antes de que el usuario haya tocado nada todavía).
-                const abierto = diagAbiertos.has(h.id) ? diagAbiertos.get(h.id) : (esPrimerCalculo && i === 0);
-                return `
-                <details class="diag-card ${sev[h.severidad]}" data-id="${esc(h.id)}" ${abierto ? 'open' : ''}>
-                    <summary>
-                        <i class="fa-solid ${h.icono} diag-icon"></i>
-                        <div class="diag-titulo">
-                            <span class="diag-badge">${txt[h.severidad]}</span>
-                            <h3>${esc(h.titulo)}</h3>
-                        </div>
-                        <i class="fa-solid fa-chevron-down diag-chevron"></i>
-                    </summary>
-                    <div class="diag-body">
-                        <p>${h.detalle}</p>
-                        ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
-                        ${h.comparaciones ? h.comparaciones.map(c => `
-                            <div class="comparativa">
-                                <div class="comparativa-head">
-                                    <strong>${esc(c.interno)}</strong> consume <strong>${nf(c.valor, 2)}</strong> ${esc(c.unidad)},
-                                    un ${nf(c.exceso_pct)}% sobre la mediana (${nf(c.mediana, 2)}) de ${c.pares.length} ${esc(c.denominacion.toLowerCase())}s:
-                                </div>
-                                <div class="comparativa-barras">
-                                    ${c.pares.map(p => `
-                                        <div class="cmp-fila ${p.esEste ? 'cmp-este' : ''}">
-                                            <span class="cmp-eq">${esc(p.interno)}</span>
-                                            <span class="cmp-barra"><i style="width:${Math.min(p.valor / Math.max(...c.pares.map(x => x.valor)) * 100, 100)}%"></i></span>
-                                            <span class="cmp-val">${nf(p.valor, 2)}</span>
-                                        </div>`).join('')}
-                                </div>
-                            </div>`).join('') : ''}
-                        ${h.equipos && h.equipos.length ? `
-                        <ul class="diag-lista">
-                            ${h.equipos.map(e => `
-                                <li data-interno="${esc(e.interno)}">
-                                    <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
-                                    <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small></span>
-                                </li>`).join('')}
-                        </ul>` : ''}
-                    </div>
-                </details>`;
-            }).join('')}
-        </div>`;
+            ${visibles.map((h, i) => renderHallazgoCard(h, i, false)).join('')}
+        </div>
+        ${ignorados.length ? `
+        <details class="diag-ignorados-section">
+            <summary class="diag-ignorados-toggle">
+                <i class="fa-solid fa-eye-slash"></i> ${ignorados.length} hallazgo${ignorados.length === 1 ? '' : 's'} ignorado${ignorados.length === 1 ? '' : 's'}
+                <button class="btn-xs btn-diag-restaurar-todos" title="Restaurar todos"><i class="fa-solid fa-eye"></i> Restaurar todos</button>
+            </summary>
+            <div class="diag-grid">
+                ${ignorados.map((h, i) => renderHallazgoCard(h, i, true)).join('')}
+            </div>
+        </details>` : ''}`;
 
+    // --- Event listeners ---
     el.querySelectorAll('.diag-lista li[data-interno]').forEach(li => {
-        li.addEventListener('click', () => buscarEquipo(li.dataset.interno));
+        li.addEventListener('click', (e) => {
+            if (e.target.closest('.btn-diag-seguir')) return; // no navegar si clickeó el botón de seguimiento
+            buscarEquipo(li.dataset.interno);
+        });
     });
     el.querySelectorAll('.btn-diag-accion').forEach(b => {
         b.addEventListener('click', (e) => { e.stopPropagation(); abrirAjusteMetas(ultimoAnalisis, b.dataset.filtro); });
@@ -318,6 +405,97 @@ function renderDiagnostico(analisis, rawRecords = []) {
     el.querySelectorAll('details.diag-card[data-id]').forEach(det => {
         det.addEventListener('toggle', () => diagAbiertos.set(det.dataset.id, det.open));
     });
+
+    // Botón "Ignorar" individual
+    el.querySelectorAll('.btn-diag-ignorar').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            diagIgnorados.add(b.dataset.hallazgo);
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    // Botón "Ignorar todos"
+    el.querySelectorAll('.btn-diag-ignorar-todos').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            visibles.forEach(h => diagIgnorados.add(h.id));
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    // Botón "Restaurar" individual
+    el.querySelectorAll('.btn-diag-restaurar').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            diagIgnorados.delete(b.dataset.hallazgo);
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    // Botón "Restaurar todos"
+    el.querySelectorAll('.btn-diag-restaurar-todos').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            diagIgnorados.clear();
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    // Botón "Marcar para seguimiento" por equipo
+    el.querySelectorAll('.btn-diag-seguir').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const hid = b.dataset.hallazgo;
+            const int = b.dataset.interno;
+            if (!diagSeguimiento.has(hid)) diagSeguimiento.set(hid, new Set());
+            const s = diagSeguimiento.get(hid);
+            if (s.has(int)) s.delete(int); else s.add(int);
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    // Acciones propuestas — cada una ejecuta algo concreto
+    el.querySelectorAll('.btn-diag-propuesta').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            ejecutarAccionPropuesta(b.dataset.accion, b.dataset.hallazgo, analisis);
+        });
+    });
+}
+
+/** Ejecuta la acción propuesta para un hallazgo: abrir comparativa, ajustar metas, etc. */
+function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
+    const h = generarDiagnostico(analisis.filas, analisis.totales, []).find(x => x.id === hallazgoId);
+    const internos = h && h.equipos ? h.equipos.map(e => e.interno) : [];
+
+    switch (accion) {
+        case 'comparar_excedidos':
+        case 'comparar_pares':
+        case 'comparar_espera':
+            if (internos.length >= 2) abrirComparativa(analisis, internos.slice(0, 8));
+            break;
+        case 'ajustar_metas_excedidos':
+        case 'ajustar_metas_raras':
+            abrirAjusteMetas(ultimoAnalisis, hallazgoId === 'sobreconsumo' ? 'excedidos' : 'metas_raras');
+            break;
+        case 'ajustar_sin_meta':
+        case 'ajustar_sin_medicion':
+            abrirAjusteMetas(ultimoAnalisis, 'sin_meta');
+            break;
+        case 'verificar_cargas':
+        case 'revisar_anomalas':
+        case 'detalle_ralenti':
+            if (internos.length) buscarEquipo(internos[0]);
+            break;
+        case 'alta_equipo':
+        case 'asignar_cc':
+            // Futuro: abrir modal de alta de equipo o asignación de centro de costo
+            if (internos.length) buscarEquipo(internos[0]);
+            break;
+        default:
+            if (internos.length) buscarEquipo(internos[0]);
+    }
 }
 
 function buscarEquipo(interno) {
@@ -725,13 +903,15 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
         <div class="card-periodo"><i class="fa-solid fa-calendar-days"></i> ${esc(periodo)}</div>
         <div class="card-stats">
             <div class="stat stat-litros stat-emphasis">
-                <span class="stat-label"><i class="fa-solid fa-gas-pump"></i> Combustible</span>
+                <span class="stat-label"><i class="fa-solid fa-gas-pump"></i> Litros</span>
                 <span class="stat-value">${nf(m.total_litros, 1)} <small class="stat-unit">L</small></span>
                 ${precioTag}
+                ${ubi.combustible ? `<span class="stat-combustible" title="${ubi.bandera ? esc(ubi.bandera) : ''}"><i class="fa-solid fa-droplet"></i> ${ubi.bandera ? `${esc(ubi.bandera)} ` : ''}${esc(cap(ubi.combustible))}</span>` : ''}
             </div>
             <div class="stat stat-costo stat-emphasis">
                 <span class="stat-label"><i class="fa-solid fa-sack-dollar"></i> Costo</span>
                 <span class="stat-value">${money(m.total_costo)}</span>
+                ${precioEquipo > 0 ? `<span class="stat-precio-detalle">$${nf(precioEquipo)}/L</span>` : ''}
             </div>
             <div class="stat ${implicita ? 'stat-implicita' : ''}">
                 <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>

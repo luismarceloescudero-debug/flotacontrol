@@ -19,8 +19,9 @@ const MIN_CARGAS_CONFIABLE = 3;
 /**
  * Equipos que trabajan ESTACIONARIOS: el motor encendido sin desplazarse es exactamente
  * su función. Contarles el ralentí como desperdicio sería un error de lectura.
+ * EX (excavadoras): son equipos de trabajo estacionario, NO de desplazamiento.
  */
-export const OPERA_ESTACIONARIO = ['GE', 'MT', 'MH', 'CL', 'MC', 'AE'];
+export const OPERA_ESTACIONARIO = ['GE', 'MT', 'MH', 'CL', 'MC', 'AE', 'EX'];
 
 /**
  * Equipos con espera operativa legítima: mixers y bombas pasan tiempo detenidos con el
@@ -234,18 +235,23 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
         const litros = excedidos.reduce((s, x) => s + x.exceso.exceso_litros, 0);
         const costo = excedidos.reduce((s, x) => s + x.exceso.exceso_costo, 0);
         const dudosos = excedidos.filter(x => !x.conf.confiable).length;
+        const ajustados = excedidos.filter(x => x.fila.confirmed.source === 'Maestro').length;
         hallazgos.push({
             id: 'sobreconsumo', severidad: 'alta', icono: 'fa-fire',
             titulo: `${excedidos.length} equipos consumieron ${fmt(litros)} L por encima de su meta`,
             detalle: `Equivale a <strong>$${fmt(costo)}</strong> en el período. Se comparan los litros realmente cargados contra los que corresponderían a la meta según la actividad (km u horas) del GPS.` +
+                (ajustados ? ` <em>${ajustados} de ellos usan una meta ajustada manualmente; si aún exceden, puede ser un desvío puntual de ese período.</em>` : '') +
                 (dudosos ? ` <em>${dudosos} de estos casos se apoyan en pocos datos: conviene confirmarlos antes de accionar.</em>` : ''),
             impacto_costo: costo,
-            equipos: excedidos.slice(0, 12).map(x => ({
-                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
-                texto: `+${fmt(x.exceso.exceso_litros)} L · $${fmt(x.exceso.exceso_costo)}`,
-                sub: `real ${fmt(x.fila.metrics.consumo_real, 2)} vs meta ${fmt(x.fila.confirmed.valor, 2)} ${x.fila.metrics.tipo_calculo} (+${fmt(x.fila.metrics.desvio_pct)}%)` +
-                     (x.conf.confiable ? ` · ${x.fila.metrics.cantidad_cargas} cargas` : ` · ⚠ ${x.conf.avisos.join(', ')}`)
-            }))
+            equipos: excedidos.slice(0, 12).map(x => {
+                const fuenteMeta = x.fila.confirmed.source === 'Maestro' ? 'ajustada' : 'estimada';
+                return {
+                    interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
+                    texto: `+${fmt(x.exceso.exceso_litros)} L · $${fmt(x.exceso.exceso_costo)}`,
+                    sub: `real ${fmt(x.fila.metrics.consumo_real, 2)} vs meta ${fmt(x.fila.confirmed.valor, 2)} ${x.fila.metrics.tipo_calculo} (${fuenteMeta}, +${fmt(x.fila.metrics.desvio_pct)}%)` +
+                         (x.conf.confiable ? ` · ${x.fila.metrics.cantidad_cargas} cargas` : ` · ⚠ ${x.conf.avisos.join(', ')}`)
+                };
+            })
         });
     }
 
