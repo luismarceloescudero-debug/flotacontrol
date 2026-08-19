@@ -100,6 +100,18 @@ const ACCIONES_PROPUESTAS = {
     ],
     anomalas: [
         { texto: 'Revisar cargas en detalle', icono: 'fa-magnifying-glass-chart', accion: 'revisar_anomalas' }
+    ],
+    sin_cc: [
+        { texto: 'Asignar centro de costo', icono: 'fa-building', accion: 'asignar_cc' },
+        { texto: 'Ver en tabla de cargas', icono: 'fa-table-list', accion: 'ver_cargas' }
+    ],
+    huerfanos_gps: [
+        { texto: 'Dar de alta en maestro', icono: 'fa-plus', accion: 'alta_equipo' },
+        { texto: 'Ver registros GPS huérfanos', icono: 'fa-satellite-dish', accion: 'ver_gps' }
+    ],
+    cargas_error: [
+        { texto: 'Revisar cargas con errores', icono: 'fa-triangle-exclamation', accion: 'revisar_anomalas' },
+        { texto: 'Ver en tabla de cargas', icono: 'fa-table-list', accion: 'ver_cargas' }
     ]
 };
 
@@ -440,6 +452,9 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
                     ${acciones.map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
                     <span class="diag-acciones-sep"></span>
+                    ${h.equipos && h.equipos.length ? `<button class="btn-sm btn-diag-seguir-todos" data-hallazgo="${esc(h.id)}" title="${seguidos.size === h.equipos.length ? 'Quitar seguimiento de todos' : 'Marcar todos para seguimiento'}"><i class="fa-solid ${seguidos.size === h.equipos.length ? 'fa-eye-slash' : 'fa-eye'}"></i> ${seguidos.size === h.equipos.length ? 'Quitar seguimiento' : 'Seguimiento de todos'}</button>` : ''}
+                    ${h.equipos && h.equipos.length >= 2 ? `<button class="btn-sm btn-diag-comparar-lista" data-hallazgo="${esc(h.id)}" title="Abrir comparativa con estos equipos"><i class="fa-solid fa-code-compare"></i> Comparar estos equipos</button>` : ''}
+                    <span class="diag-acciones-sep"></span>
                     ${esIgnorado
                         ? `<button class="btn-sm btn-diag-restaurar" data-hallazgo="${esc(h.id)}" title="Volver a mostrar este hallazgo"><i class="fa-solid fa-eye"></i> Restaurar</button>`
                         : `<button class="btn-sm btn-diag-ignorar" data-hallazgo="${esc(h.id)}" title="Ocultar este hallazgo hasta que cambien los datos"><i class="fa-solid fa-eye-slash"></i> Ignorar</button>`
@@ -562,6 +577,36 @@ function renderDiagnostico(analisis, rawRecords = []) {
         });
     });
 
+    // Botón "Seguimiento de todos" — toggle masivo para todos los equipos del hallazgo
+    el.querySelectorAll('.btn-diag-seguir-todos').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const hid = b.dataset.hallazgo;
+            const h = hallazgos.find(x => x.id === hid);
+            if (!h || !h.equipos) return;
+            if (!diagSeguimiento.has(hid)) diagSeguimiento.set(hid, new Set());
+            const s = diagSeguimiento.get(hid);
+            const todosSeguidos = h.equipos.every(eq => s.has(eq.interno));
+            if (todosSeguidos) {
+                s.clear();
+            } else {
+                h.equipos.forEach(eq => s.add(eq.interno));
+            }
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    // Botón "Comparar estos equipos" — abre comparativa con los equipos del hallazgo
+    el.querySelectorAll('.btn-diag-comparar-lista').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const hid = b.dataset.hallazgo;
+            const h = hallazgos.find(x => x.id === hid);
+            if (!h || !h.equipos || h.equipos.length < 2) return;
+            abrirComparativa(analisis, h.equipos.map(eq => eq.interno).slice(0, 8));
+        });
+    });
+
     // Acciones propuestas — cada una ejecuta algo concreto
     el.querySelectorAll('.btn-diag-propuesta').forEach(b => {
         b.addEventListener('click', (e) => {
@@ -597,8 +642,35 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
             break;
         case 'alta_equipo':
         case 'asignar_cc':
-            // Futuro: abrir modal de alta de equipo o asignación de centro de costo
-            if (internos.length) buscarEquipo(internos[0]);
+            // Navegar a la tabla para que el usuario pueda editar / dar de alta
+            if (typeof window.renderDataTable === 'function') {
+                document.getElementById('nav-datos')?.click();
+                setTimeout(() => window.renderDataTable('maestro'), 100);
+            }
+            break;
+        case 'ver_cargas':
+            if (typeof window.renderDataTable === 'function') {
+                document.getElementById('nav-datos')?.click();
+                setTimeout(() => {
+                    window.renderDataTable('carga');
+                    if (internos.length) {
+                        const buscador = document.getElementById('tabla-buscar');
+                        if (buscador) { buscador.value = internos[0]; buscador.dispatchEvent(new Event('input')); }
+                    }
+                }, 100);
+            }
+            break;
+        case 'ver_gps':
+            if (typeof window.renderDataTable === 'function') {
+                document.getElementById('nav-datos')?.click();
+                setTimeout(() => {
+                    window.renderDataTable('gps');
+                    if (internos.length) {
+                        const buscador = document.getElementById('tabla-buscar');
+                        if (buscador) { buscador.value = internos[0]; buscador.dispatchEvent(new Event('input')); }
+                    }
+                }, 100);
+            }
             break;
         default:
             if (internos.length) buscarEquipo(internos[0]);

@@ -133,13 +133,38 @@
             <div id="tabla-tabs" class="tabs"></div>
 
             <div class="tabla-filtros">
-                <div class="search-wrap">
+                <div class="search-wrap search-wrap-tabla">
                     <i class="fa-solid fa-magnifying-glass"></i>
-                    <input type="text" id="tabla-buscar" placeholder="Buscar en la tabla...">
+                    <input type="text" id="tabla-buscar" placeholder="Interno o dominio…" autocomplete="off">
+                    <select id="tabla-buscar-col" title="Buscar en esta columna">
+                        <option value="id">Interno / Dominio</option>
+                        <option value="all">Toda la tabla</option>
+                    </select>
                 </div>
+                <select id="tabla-filtro-deno" style="display:none"><option value="ALL">Todas las denom.</option></select>
+                <select id="tabla-filtro-estado" style="display:none">
+                    <option value="ALL">Todos</option>
+                    <option value="con_meta">Con meta</option>
+                    <option value="sin_meta">Sin meta</option>
+                    <option value="con_estimado">Con estimado</option>
+                    <option value="editado">Editado manual</option>
+                </select>
                 <select id="tabla-anio"><option value="">Todos los años</option></select>
                 <select id="tabla-mes"><option value="">Todos los meses</option></select>
                 <span id="tabla-count" class="cards-count"></span>
+            </div>
+            <div id="tabla-bulk-bar" class="tabla-bulk-bar" style="display:none">
+                <label class="checkbox-line"><input type="checkbox" id="tabla-sel-todos"> Todos</label>
+                <span id="tabla-sel-count" class="cards-count"></span>
+                <select id="tabla-bulk-accion">
+                    <option value="">Acción masiva…</option>
+                    <option value="adoptar_estimado">Adoptar estimado como meta</option>
+                    <option value="limpiar_meta">Limpiar meta</option>
+                    <option value="set_unidad_lh">Unidad → L/Hora</option>
+                    <option value="set_unidad_lkm">Unidad → L/100Km</option>
+                    <option value="set_no_aplica">Unidad → No Aplica</option>
+                </select>
+                <button class="btn-primary btn-sm" id="tabla-bulk-aplicar"><i class="fa-solid fa-check"></i> Aplicar</button>
             </div>
 
             <div class="table-responsive">

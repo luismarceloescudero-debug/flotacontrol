@@ -784,6 +784,39 @@
 .badge-neutral { color: var(--text-muted); }
 .cell-num { text-align: right; font-variant-numeric: tabular-nums; }
 
+/* Barra de búsqueda mejorada con selector de columna */
+.search-wrap-tabla { display: flex; align-items: center; gap: 0; }
+.search-wrap-tabla input { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; border-right: none !important; }
+.search-wrap-tabla select {
+    border-top-left-radius: 0 !important; border-bottom-left-radius: 0 !important;
+    font-size: 0.75rem !important; padding: 0.5rem 0.5rem !important;
+    max-width: 130px; color: var(--text-muted) !important;
+}
+
+/* Barra de acciones masivas */
+.tabla-bulk-bar {
+    display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+    background: var(--bg-card); border: 1px solid var(--border-color);
+    border-radius: 8px; padding: 0.45rem 0.8rem; margin-bottom: 0.5rem;
+    font-size: 0.83rem;
+}
+.tabla-bulk-bar select, .tabla-bulk-bar input {
+    background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary);
+    border-radius: 6px; padding: 0.35rem 0.55rem; font-size: 0.82rem; font-family: inherit;
+}
+
+/* Selección de filas */
+.th-sel, .td-sel { width: 34px; text-align: center; }
+.td-sel input { accent-color: var(--accent-blue); cursor: pointer; }
+.row-sel { background: rgba(59,130,246,0.08) !important; }
+.row-sel:hover { background: rgba(59,130,246,0.14) !important; }
+
+/* Comparación estimado vs meta */
+.cmp-ok { color: var(--accent-green); font-weight: 600; font-size: 0.82rem; }
+.cmp-alto { color: var(--accent-red); font-weight: 600; font-size: 0.82rem; }
+.cmp-bajo { color: var(--accent-amber); font-weight: 600; font-size: 0.82rem; }
+.cmp-nuevo { color: var(--accent-cyan); font-size: 0.78rem; font-style: italic; }
+
 .tabla-paginacion { display: flex; align-items: center; justify-content: center; gap: 0.9rem; margin-top: 0.9rem; font-size: 0.83rem; color: var(--text-muted); }
 
 @media (max-width: 900px) {
