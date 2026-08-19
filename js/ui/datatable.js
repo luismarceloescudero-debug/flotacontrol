@@ -19,7 +19,9 @@
  */
 import {
     getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, deleteEquipo, editarCampoEquipo,
-    getColumnasExtra, setColumnasExtra, getTiposDeMovimiento, updateEstimado
+    getColumnasExtra, setColumnasExtra, getTiposDeMovimiento, updateEstimado,
+    huellaCarga, getCorreccionesCargas, saveCorreccionCarga, deleteCorreccionCarga,
+    updateRawRecord, deleteRawRecord
 } from '../data/database.js';
 import { periodosDisponibles, filtrarPorPeriodo } from '../data/analyzer.js';
 import { MESES, getDenominacion, normalizeEquipoKey, slugCampo } from '../data/normalizer.js';
@@ -117,6 +119,7 @@ async function renderMaestro() {
     document.getElementById('table-desc').innerHTML =
         'Padrón + metas de consumo en una sola tabla. <strong>Todas las celdas son editables</strong> y lo que corrijas a mano queda protegido: si volvés a importar la planilla, no se pisa. La llave es <strong>interno + dominio</strong>.';
     mostrarBotonesMaestro(true);
+    mostrarBotonesEstimados(false);
     mostrarFiltrosFecha(false);
     mostrarFiltrosMaestro(true);
     mostrarBulkBar(true);
@@ -271,6 +274,7 @@ async function renderEstimados() {
         'Metas de consumo importadas de la planilla. La columna <strong>"vs Meta"</strong> muestra la diferencia con la meta actual del maestro. ' +
         'Usá <strong>"Adoptar estimado como meta"</strong> en la barra de acciones para trasladar el estimado al maestro de un grupo de equipos.';
     mostrarBotonesMaestro(false);
+    mostrarBotonesEstimados(true);
     mostrarFiltrosFecha(false);
     mostrarFiltrosMaestro(true);
     mostrarBulkBar(true);
@@ -324,7 +328,7 @@ async function renderEstimados() {
 
     const cols = [
         '', 'Interno', 'Dominio', 'Denominación',
-        'Estimado (texto)', 'Estimado', 'Unidad',
+        'Estimado', 'Unidad',
         'Meta actual', 'vs Meta',
         'Cargas', 'GPS', 'Estado'
     ];
@@ -357,7 +361,6 @@ async function renderEstimados() {
             <td class="cell-key">${esc(e.interno)}</td>
             <td>${esc(e.dominio)}</td>
             <td>${esc(e.denominacion)}</td>
-            <td class="cell-muted">${esc(e.consumo_estimado || '')}</td>
             <td class="cell-num"><strong>${e.consumo_estimado_valor ? nf(e.consumo_estimado_valor, 2) : '—'}</strong></td>
             <td>${esc(e.consumo_estimado_unidad || '')}</td>
             <td class="cell-num">${e.meta_actual ? nf(e.meta_actual, 2) : '<span class="cell-muted">—</span>'}</td>
@@ -366,7 +369,7 @@ async function renderEstimados() {
             <td class="cell-num">${nf(e.gps)}</td>
             <td>${estadoTxt}</td>
         </tr>`;
-    }).join('') || '<tr><td colspan="12">No hay datos de consumos estimados. Subí la planilla de Consumos Estimados.</td></tr>';
+    }).join('') || '<tr><td colspan="11">No hay datos de consumos estimados. Subí la planilla de Consumos Estimados.</td></tr>';
 
     actualizarContador(filas.length, pagina.length,
         `${filas.filter(e => e.sin_actividad).length} sin actividad · ${filas.filter(e => !e.meta_actual && e.consumo_estimado_valor).length} sin meta`);
@@ -398,13 +401,24 @@ async function renderMovimientos(tipo) {
     const etiqueta = todos[0]?.type_label || tipo;
 
     document.getElementById('table-title').textContent = etiqueta;
-    document.getElementById('table-desc').innerHTML =
-        'Registro histórico, en solo lectura. Se muestra <strong>interno + dominio</strong> de cada fila: es la llave con la que se cruza contra el maestro.';
+    document.getElementById('table-desc').innerHTML = tipo === 'carga'
+        ? 'Registro histórico de cargas. Las filas marcadas en naranja tienen un interno desconocido — hacé clic en <strong>Corregir</strong> para asignarlas a un equipo o eliminarlas. La corrección se guarda y se re-aplica automáticamente al reimportar el mismo archivo.'
+        : 'Registro histórico, en solo lectura. Se muestra <strong>interno + dominio</strong> de cada fila: es la llave con la que se cruza contra el maestro.';
     mostrarBotonesMaestro(false);
+    mostrarBotonesEstimados(false);
     mostrarFiltrosFecha(true);
     mostrarFiltrosMaestro(false);
     mostrarBulkBar(false);
     poblarFiltrosFecha(todos);
+
+    // Para cargas: armar el set de internos del maestro y el mapa de correcciones ya guardadas
+    let equiposSet = new Set();
+    let correccionesMap = new Map();
+    if (tipo === 'carga') {
+        const [eqs, corrs] = await Promise.all([getAllEquipos(), getCorreccionesCargas()]);
+        eqs.forEach(e => equiposSet.add(e.interno_key || normalizeEquipoKey(e.interno)));
+        corrs.forEach(c => correccionesMap.set(c.huella, c));
+    }
 
     let filas = filtrarPorPeriodo(todos, { anio: estado.anio || null, mes: estado.mes || null });
     if (estado.buscar) filas = filas.filter(r => matchBusqueda(r, estado.buscar));
@@ -422,13 +436,35 @@ async function renderMovimientos(tipo) {
     }
     columnasVisibles = ['Interno', 'Dominio', ...cols.map(c => c.label)];
 
+    const colspan = cols.length + 2 + (tipo === 'carga' ? 1 : 0);
     document.getElementById('table-header').innerHTML =
-        '<th>Interno</th><th>Dominio</th>' + cols.map(c => `<th>${esc(c.label)}</th>`).join('');
+        '<th>Interno</th><th>Dominio</th>' + cols.map(c => `<th>${esc(c.label)}</th>`).join('') +
+        (tipo === 'carga' ? '<th class="th-acciones"></th>' : '');
 
     const pagina = filas.slice(estado.pagina * PAGINA, (estado.pagina + 1) * PAGINA);
+    let nHuerfanas = 0;
+
     document.getElementById('table-body').innerHTML = pagina.map(r => {
         const h = (r.horas && typeof r.horas === 'object') ? r.horas : { ralenti: 0, movimiento: parseFloat(r.horas) || 0, total: parseFloat(r.horas) || 0 };
-        return `<tr>
+
+        let esHuerfana = false;
+        let yaCorregida = false;
+        if (tipo === 'carga') {
+            const ikey = r.interno_key || normalizeEquipoKey(r.interno || '');
+            esHuerfana = !ikey || !equiposSet.has(ikey);
+            yaCorregida = correccionesMap.has(huellaCarga(r));
+            if (esHuerfana && !yaCorregida) nHuerfanas++;
+        }
+
+        const rowClass = esHuerfana && !yaCorregida ? 'carga-huerfana' : (yaCorregida ? 'carga-corregida' : '');
+        const dataAttrs = tipo === 'carga' ? ` data-recid="${r.id}"` : '';
+        const accionTd = tipo === 'carga' ? `<td class="td-correc">${
+            esHuerfana && !yaCorregida
+                ? `<button class="btn-corregir-carga btn-warn btn-sm"><i class="fa-solid fa-wand-magic-sparkles"></i> Corregir</button>`
+                : (yaCorregida ? `<span class="badge-corregida"><i class="fa-solid fa-check"></i> Corregido</span>` : '')
+        }</td>` : '';
+
+        return `<tr${rowClass ? ` class="${rowClass}"` : ''}${dataAttrs}>
             <td class="cell-key">${esc(r.interno || '—')}</td>
             <td class="cell-dom">${esc(r.dominio || '—')}</td>
             ${cols.map(c => {
@@ -442,11 +478,204 @@ async function renderMovimientos(tipo) {
                 else v = esc(r[c.k] ?? '');
                 return `<td>${v}</td>`;
             }).join('')}
+            ${accionTd}
         </tr>`;
-    }).join('') || `<tr><td colspan="10">No hay registros${estado.anio || estado.mes ? ' en el período elegido' : ''}.</td></tr>`;
+    }).join('') || `<tr><td colspan="${colspan}">No hay registros${estado.anio || estado.mes ? ' en el período elegido' : ''}.</td></tr>`;
 
-    actualizarContador(filas.length, pagina.length, resumenNumerico(filas, tipo));
+    const resExtra = tipo === 'carga' && nHuerfanas > 0
+        ? ` · <span style="color:#f5a623;font-weight:600">${nHuerfanas} sin asignar</span>` : '';
+    actualizarContador(filas.length, pagina.length, resumenNumerico(filas, tipo) + resExtra);
     renderPaginacion(filas.length);
+
+    // Listener delegado para el panel de corrección (solo cargas)
+    if (tipo === 'carga') {
+        const tbody = document.getElementById('table-body');
+        tbody.addEventListener('click', async (e) => {
+            const btn = e.target.closest('.btn-corregir-carga');
+            if (!btn) return;
+            const tr = btn.closest('tr');
+            const recid = parseInt(tr.dataset.recid, 10);
+            const record = todos.find(r => r.id === recid);
+            if (!record) return;
+
+            // Toggle: cerrar si ya está abierto para esta misma fila
+            const prevPanel = tbody.querySelector('.carga-correccion-row');
+            if (prevPanel) {
+                const esMismaFila = prevPanel.previousElementSibling === tr;
+                prevPanel.remove();
+                if (esMismaFila) return;
+            }
+
+            const equipos = await getAllEquipos();
+            const panelTr = buildCorrecionRow(record, todos, equipos, colspan);
+            tr.insertAdjacentElement('afterend', panelTr);
+            conectarPanelCorreccion(panelTr, record, todos);
+        });
+    }
+}
+
+/** Construye el <tr> con el panel de corrección inline para una carga huérfana. */
+function buildCorrecionRow(record, todasCargas, equipos, colspan) {
+    const fecha = record.fecha || '';
+    const anioMes = fecha.slice(0, 7); // 'YYYY-MM'
+
+    // Calcular actividad por período y día para el ranking de candidatos
+    const cargasDia = new Map();     // interno_key → n cargas ese día exacto
+    const cargasPeriodo = new Map(); // interno_key → n cargas en el mismo mes
+    todasCargas.forEach(r => {
+        const ik = r.interno_key || normalizeEquipoKey(r.interno || '');
+        if (!ik) return;
+        if (r.fecha === fecha) cargasDia.set(ik, (cargasDia.get(ik) || 0) + 1);
+        if (anioMes && r.fecha && r.fecha.startsWith(anioMes)) {
+            cargasPeriodo.set(ik, (cargasPeriodo.get(ik) || 0) + 1);
+        }
+    });
+
+    const candidatos = equipos.map(eq => {
+        const ik = eq.interno_key || normalizeEquipoKey(eq.interno);
+        let score = 0;
+        const razones = [];
+        const nPer = cargasPeriodo.get(ik) || 0;
+        const nDia = cargasDia.get(ik) || 0;
+
+        if (nPer > 0) { score += 2; razones.push('activo en el período'); }
+        else score -= 1;
+
+        if (nDia === 0 && nPer > 0) { score += 1; razones.push('no cargó ese día'); }
+        else if (nDia > 0) { score -= 3; razones.push('ya cargó ese día'); }
+
+        if (record.centro_costo && eq.centro_costo && record.centro_costo === eq.centro_costo) {
+            score += 2; razones.push('mismo CC');
+        }
+        if (record.lugar_carga && eq.ubicacion &&
+            String(record.lugar_carga).toUpperCase().includes(String(eq.ubicacion).toUpperCase().slice(0, 4))) {
+            score += 3; razones.push('mismo lugar');
+        }
+
+        return { eq, ik, score, razones, nDia, nPer };
+    }).filter(c => c.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 8);
+
+    const candidatosHtml = candidatos.length
+        ? candidatos.map(c => `
+            <div class="candidato-item">
+                <div class="candidato-info">
+                    <span class="candidato-interno">${esc(c.eq.interno)}</span>
+                    <span class="candidato-deno">${esc(c.eq.denominacion || c.eq.marca || '')}</span>
+                    <span class="candidato-score">Score ${c.score}</span>
+                    <span class="candidato-razones">${c.razones.join(' · ')}</span>
+                </div>
+                <button class="btn-asignar-cand btn-primary btn-sm"
+                    data-interno="${esc(c.eq.interno)}" data-dominio="${esc(c.eq.dominio || '')}">
+                    Asignar a ${esc(c.eq.interno)}
+                </button>
+            </div>`).join('')
+        : '<p class="correc-sin-cand">Sin candidatos claros para este período. Usá el campo manual.</p>';
+
+    const listaSugg = equipos
+        .map(e => `<option value="${esc(e.interno)}">${esc(e.interno)}${e.denominacion ? ' – ' + esc(e.denominacion) : ''}</option>`)
+        .join('');
+
+    const tr = document.createElement('tr');
+    tr.className = 'carga-correccion-row';
+    tr.dataset.recid = record.id;
+    tr.innerHTML = `<td colspan="${colspan}"><div class="correc-panel">
+        <div class="correc-header">
+            <span class="badge-huerfana"><i class="fa-solid fa-triangle-exclamation"></i> Sin asignar</span>
+            <span class="correc-detalle">
+                ${esc(record.fecha || '—')} &nbsp;·&nbsp;
+                ${nf(record.litros, 1)} L &nbsp;·&nbsp;
+                $${nf(record.importe, 2)} &nbsp;·&nbsp;
+                Lugar: ${esc(record.lugar_carga || '—')} &nbsp;·&nbsp;
+                CC: ${esc(record.centro_costo || '—')} &nbsp;·&nbsp;
+                Chofer / interno original: <strong>${esc(record.interno || '—')}</strong>
+            </span>
+            <button class="btn-cerrar-correc btn-icon" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="correc-cuerpo">
+            <div class="correc-candidatos-wrap">
+                <p class="correc-titulo">Equipos candidatos — actividad del período</p>
+                <div class="candidato-list">${candidatosHtml}</div>
+            </div>
+            <div class="correc-manual-wrap">
+                <p class="correc-titulo">O asigná manualmente</p>
+                <div class="correc-manual-row">
+                    <datalist id="correc-sugg-${record.id}">${listaSugg}</datalist>
+                    <input type="text" class="correc-interno-input"
+                        placeholder="Interno (ej: MX66)" list="correc-sugg-${record.id}" autocomplete="off">
+                    <button class="btn-asignar-manual btn-primary btn-sm">Asignar</button>
+                </div>
+            </div>
+        </div>
+        <div class="correc-footer">
+            <button class="btn-eliminar-carga btn-danger btn-sm">
+                <i class="fa-solid fa-trash"></i> Eliminar registro
+            </button>
+            <span class="correc-footer-hint">La corrección se re-aplica automáticamente si reimportás el archivo.</span>
+        </div>
+    </div></td>`;
+    return tr;
+}
+
+/** Conecta los handlers dentro del panel de corrección inline. */
+function conectarPanelCorreccion(panelTr, record, todasCargas) {
+    const huella = huellaCarga(record);
+
+    async function asignarA(interno, dominio) {
+        interno = (interno || '').toUpperCase().trim();
+        if (!interno) { alert('Ingresá un interno válido (ej: MX66).'); return; }
+        const ikey = interno.replace(/[\s\-\.]/g, '');
+        await saveCorreccionCarga({
+            huella,
+            accion: 'asignar',
+            interno_correcto: interno,
+            dominio_correcto: dominio || '',
+            interno_original: record.interno || '',
+            fecha: record.fecha,
+            litros: record.litros,
+            importe: record.importe
+        });
+        await updateRawRecord(record.id, {
+            interno,
+            interno_key: ikey,
+            dominio: dominio || record.dominio || '',
+            dominio_key: (dominio || record.dominio || '').toUpperCase().replace(/[\s\-]/g, ''),
+            _corregido: true,
+            _interno_original: record.interno
+        });
+        panelTr.remove();
+        renderDataTable();
+        if (typeof window.renderPanel === 'function') window.renderPanel();
+    }
+
+    panelTr.querySelectorAll('.btn-asignar-cand').forEach(btn => {
+        btn.addEventListener('click', () => asignarA(btn.dataset.interno, btn.dataset.dominio));
+    });
+
+    panelTr.querySelector('.btn-asignar-manual')?.addEventListener('click', () => {
+        const inp = panelTr.querySelector('.correc-interno-input');
+        asignarA(inp?.value, '');
+    });
+
+    panelTr.querySelector('.btn-eliminar-carga')?.addEventListener('click', async () => {
+        const litros = nf(parseFloat(record.litros) || 0, 1);
+        if (!confirm(`¿Eliminar este registro (${litros} L del ${record.fecha})?\n\nSi reimportás el archivo, el registro se va a omitir automáticamente.`)) return;
+        await saveCorreccionCarga({
+            huella,
+            accion: 'eliminar',
+            interno_original: record.interno || '',
+            fecha: record.fecha,
+            litros: record.litros,
+            importe: record.importe
+        });
+        await deleteRawRecord(record.id);
+        panelTr.remove();
+        renderDataTable();
+        if (typeof window.renderPanel === 'function') window.renderPanel();
+    });
+
+    panelTr.querySelector('.btn-cerrar-correc')?.addEventListener('click', () => panelTr.remove());
 }
 
 function resumenNumerico(filas, tipo) {
@@ -579,6 +808,11 @@ function mostrarBotonesMaestro(v) {
     });
 }
 
+function mostrarBotonesEstimados(v) {
+    const b = document.getElementById('btn-ajustar-metas-estimados');
+    if (b) b.style.display = v ? '' : 'none';
+}
+
 function mostrarFiltrosFecha(v) {
     ['tabla-anio', 'tabla-mes'].forEach(id => {
         const s = document.getElementById(id);
@@ -654,6 +888,12 @@ export function initDataTableControls() {
         const accion = document.getElementById('tabla-bulk-accion')?.value;
         if (!accion) { alert('Elegí una acción masiva del desplegable.'); return; }
         ejecutarAccionMasiva(accion);
+    });
+
+    document.getElementById('btn-ajustar-metas-estimados')?.addEventListener('click', () => {
+        if (typeof window.abrirAjusteMetasDesdeTabla === 'function') {
+            window.abrirAjusteMetasDesdeTabla('sin_meta');
+        }
     });
 
     document.getElementById('btn-add-col')?.addEventListener('click', async () => {

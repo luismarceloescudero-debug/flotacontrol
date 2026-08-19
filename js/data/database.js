@@ -2,24 +2,28 @@
  * IndexedDB Wrapper para FlotaControl
  *
  * Modelo de datos:
- *   MAESTRO (`equipos`)     -> el padrón editable. Fusiona la planilla de Equipos y la de
- *                              Consumos Estimados en una sola fila por equipo, identificada
- *                              por INTERNO + DOMINIO (el común denominador de todo el sistema).
- *                              Admite columnas propias definidas por el usuario.
- *   MOVIMIENTOS (`raw_records`) -> todo lo que pasa en el tiempo: cargas de combustible,
- *                              resúmenes de GPS, cubiertas, insumos, filtros y cualquier
- *                              planilla futura. Cada registro guarda además TODAS sus columnas
- *                              originales en `datos`, para no perder información al importar.
- *   `mapeos`                -> cómo se traduce cada columna de un tipo de planilla a los
- *                              campos del sistema. Editable, así un cambio de nombre de
- *                              columna en el Excel no rompe la importación.
- *   `config`                -> definición de las columnas propias del maestro y otros ajustes.
+ *   MAESTRO (`equipos`)          -> el padrón editable. Fusiona la planilla de Equipos y la de
+ *                                   Consumos Estimados en una sola fila por equipo, identificada
+ *                                   por INTERNO + DOMINIO (el común denominador de todo el sistema).
+ *                                   Admite columnas propias definidas por el usuario.
+ *   MOVIMIENTOS (`raw_records`)  -> todo lo que pasa en el tiempo: cargas de combustible,
+ *                                   resúmenes de GPS, cubiertas, insumos, filtros y cualquier
+ *                                   planilla futura. Cada registro guarda además TODAS sus columnas
+ *                                   originales en `datos`, para no perder información al importar.
+ *   `correccionesCargas`         -> correcciones persistentes de cargas sin asignar. Keyed por
+ *                                   "huella" (fecha|litros|importe|interno_original). Se re-aplican
+ *                                   automáticamente cada vez que se reimporta el mismo archivo.
+ *   `disponibilidad`             -> estado diario de cada equipo (Operativo, Taller, Transferido…).
+ *                                   Keyed por "interno|fecha". Se usa para cruzar con cargas sin
+ *                                   asignar y reducir la lista de candidatos.
+ *   `mapeos`                     -> cómo se traduce cada columna de un tipo de planilla a los
+ *                                   campos del sistema.
+ *   `config`                     -> definición de las columnas propias del maestro y otros ajustes.
  */
 
 const DB_NAME = 'FlotaControlDB';
-// v4: maestro unificado (equipos + metas), columnas propias, mapeos de columnas y
-// movimientos genéricos con todas sus columnas originales.
-const DB_VERSION = 4;
+// v5: correcciones persistentes de cargas y disponibilidad diaria de equipos.
+const DB_VERSION = 5;
 
 let dbInstance = null;
 
@@ -60,8 +64,33 @@ export function initDB() {
             if (!db.objectStoreNames.contains('config')) {
                 db.createObjectStore('config', { keyPath: 'k' });
             }
+            // v5 — correcciones de cargas y disponibilidad diaria
+            if (!db.objectStoreNames.contains('correccionesCargas')) {
+                const s = db.createObjectStore('correccionesCargas', { keyPath: 'huella' });
+                s.createIndex('interno_original', 'interno_original', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('disponibilidad')) {
+                const s = db.createObjectStore('disponibilidad', { keyPath: 'id' }); // id = 'interno|fecha'
+                s.createIndex('interno', 'interno', { unique: false });
+                s.createIndex('fecha', 'fecha', { unique: false });
+            }
         };
     });
+}
+
+/**
+ * Huella estable para una carga de combustible.
+ * Se calcula a partir de campos que no varían entre reimportaciones del mismo archivo.
+ * Si el mismo registro (misma fecha, litros, importe, interno_original) se vuelve a importar,
+ * la corrección guardada se re-aplica automáticamente.
+ */
+export function huellaCarga(r) {
+    return [
+        r.fecha || '',
+        String(r.litros || ''),
+        String(r.importe || ''),
+        String(r.interno || '').toUpperCase().trim()
+    ].join('|');
 }
 
 export function getDB() {
@@ -206,10 +235,63 @@ export function saveMapeo(tipo, columnas) {
 
 // ============================ MOVIMIENTOS ============================
 
-export function insertRawRecords(arr) {
-    return writeTx(['raw_records'], ([store]) => { arr.forEach(r => store.add(r)); return arr.length; });
+/**
+ * Inserta registros en raw_records aplicando las correcciones persistentes guardadas.
+ *
+ * Para cada carga (type === 'carga') calcula su huella y busca si el usuario ya la
+ * corrigió antes: si la marcó para eliminar, la saltea; si la asignó a otro equipo,
+ * reemplaza interno/dominio antes de insertarla. El resto de los registros (GPS,
+ * cubiertas, etc.) se insertan sin cambios.
+ */
+export async function insertRawRecords(arr) {
+    const correcciones = await getCorreccionesCargas();
+    const mapa = new Map(correcciones.map(c => [c.huella, c]));
+
+    const finales = [];
+    for (const r of arr) {
+        if (r.type !== 'carga') { finales.push(r); continue; }
+        const h = huellaCarga(r);
+        const corr = mapa.get(h);
+        if (!corr) { finales.push(r); continue; }
+        if (corr.accion === 'eliminar') continue;               // descartado por el usuario
+        if (corr.accion === 'asignar') {
+            const key = corr.interno_correcto.toUpperCase().replace(/[\s\-\.]/g, '');
+            finales.push({
+                ...r,
+                interno: corr.interno_correcto,
+                interno_key: key,
+                dominio: corr.dominio_correcto || r.dominio || '',
+                dominio_key: (corr.dominio_correcto || r.dominio || '').toUpperCase().replace(/[\s\-]/g, ''),
+                _corregido: true,                               // marca visible en la UI
+                _interno_original: r.interno                   // conserva el valor del Excel
+            });
+        }
+    }
+    return writeTx(['raw_records'], ([store]) => { finales.forEach(r => store.add(r)); return finales.length; });
 }
+
 export function getAllRawRecords() { return readAll('raw_records'); }
+
+/** Actualiza campos puntuales de un raw_record ya almacenado (por ejemplo al corregir inline). */
+export async function updateRawRecord(id, cambios) {
+    const tx = getDB().transaction(['raw_records'], 'readwrite');
+    const store = tx.objectStore('raw_records');
+    return new Promise((resolve, reject) => {
+        const req = store.get(id);
+        req.onsuccess = () => {
+            const rec = req.result;
+            if (!rec) { reject(new Error(`raw_record ${id} no encontrado`)); return; }
+            store.put({ ...rec, ...cambios });
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = (e) => reject(e.target.error);
+    });
+}
+
+/** Elimina un raw_record por su id autoincrement. */
+export function deleteRawRecord(id) {
+    return writeTx(['raw_records'], ([store]) => { store.delete(id); });
+}
 
 /** Borra los movimientos de un archivo puntual, para poder reimportarlo sin duplicar. */
 export function deleteRecordsPorArchivo(filename) {
@@ -272,10 +354,52 @@ export function clearMovimientos() {
     return writeTx(['raw_records', 'files_meta'], (stores) => { stores.forEach(s => s.clear()); });
 }
 
+// ============================ CORRECCIONES DE CARGAS ============================
+
+/**
+ * Corrección persistente de una carga huérfana.
+ * { huella, accion: 'asignar'|'eliminar', interno_correcto, dominio_correcto,
+ *   interno_original, fecha, litros, importe, nota, timestamp }
+ */
+export function getCorreccionesCargas() { return readAll('correccionesCargas'); }
+
+export function saveCorreccionCarga(corr) {
+    return writeTx(['correccionesCargas'], ([store]) => { store.put({ ...corr, timestamp: new Date().toISOString() }); return corr; });
+}
+
+export function deleteCorreccionCarga(huella) {
+    return writeTx(['correccionesCargas'], ([store]) => { store.delete(huella); });
+}
+
+// ============================ DISPONIBILIDAD DIARIA ============================
+
+/**
+ * Estado de un equipo en un día específico.
+ * { id: 'INTERNO|FECHA', interno, interno_key, fecha, estado, nota, timestamp }
+ *
+ * Estados reconocidos: 'operativo', 'taller_ext', 'taller_int',
+ *                      'chofer_ausente', 'transferido', 'fuera_servicio'
+ * Para 'transferido': se puede agregar `sede` (ej: 'San Juan', 'Tunuyán').
+ */
+export function getDisponibilidad() { return readAll('disponibilidad'); }
+
+export function upsertDisponibilidad(d) {
+    const id = `${d.interno}|${d.fecha}`;
+    return writeTx(['disponibilidad'], ([store]) => {
+        store.put({ ...d, id, timestamp: new Date().toISOString() });
+        return d;
+    });
+}
+
+export function deleteDisponibilidad(interno, fecha) {
+    return writeTx(['disponibilidad'], ([store]) => { store.delete(`${interno}|${fecha}`); });
+}
+
 /** Borra absolutamente todo, incluido el maestro y las columnas propias. */
 export function clearAllData() {
     return writeTx(
-        ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config'],
+        ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
+         'correccionesCargas', 'disponibilidad'],
         (stores) => { stores.forEach(s => s.clear()); }
     );
 }
