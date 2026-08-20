@@ -59,6 +59,14 @@ export async function renderDataTable(tipo) {
     const header = document.getElementById('table-header');
     if (!tbody || !header) return;
 
+    // Sincronizar el input de búsqueda con el estado interno: si se llegó acá desde
+    // abrirTablaConBusqueda() el valor ya está en `estado.buscar`, pero el <input> del DOM
+    // sigue mostrando lo que había antes si no se actualiza acá también.
+    const inputBuscar = document.getElementById('tabla-buscar');
+    if (inputBuscar && inputBuscar.value !== estado.buscar) inputBuscar.value = estado.buscar;
+    const selCol = document.getElementById('tabla-buscar-col');
+    if (selCol && selCol.value !== estado.buscarCol) selCol.value = estado.buscarCol;
+
     tbody.innerHTML = '<tr><td colspan="10">Cargando...</td></tr>';
 
     try {
@@ -72,6 +80,21 @@ export async function renderDataTable(tipo) {
         console.error('Error al renderizar la tabla:', e);
         tbody.innerHTML = `<tr><td colspan="10" style="color:var(--accent-red)">Error: ${esc(e.message)}</td></tr>`;
     }
+}
+
+/**
+ * Punto de entrada único para "ir a la tabla y buscar algo" desde otras vistas (Panel,
+ * diagnóstico, hallazgos). Antes cada botón intentaba llamar a `window.renderDataTable`
+ * directamente, pero esa función nunca se publicaba en `window` — por eso "Ver cargas" y
+ * varias acciones de los hallazgos no hacían nada. Ahora todo pasa por acá, que sí queda
+ * expuesta como `window.abrirTablaConBusqueda` desde app.js.
+ */
+export function abrirTablaConBusqueda(tipo, query = '', buscarCol = 'id') {
+    estado.tipo = tipo || estado.tipo;
+    estado.buscar = query || '';
+    estado.buscarCol = buscarCol;
+    estado.pagina = 0;
+    return renderDataTable(estado.tipo);
 }
 
 async function renderTabs() {
@@ -692,7 +715,12 @@ function conectarPanelCorreccion(panelTr, record, todasCargas) {
     async function asignarA(interno, dominioHint) {
         interno = (interno || '').toUpperCase().trim();
         if (!interno) { alert('Ingresá un interno válido (ej: MX66).'); return; }
-        const ikey = interno.replace(/[\s\-\.]/g, '');
+        // Misma normalización que se usa para cruzar Cargas/GPS/Equipos en todos lados
+        // (normalizeEquipoKey saca ceros a la izquierda: BM07 y BM7 tienen que quedar con la
+        // misma clave). Antes acá se armaba la clave a mano sin esa normalización, así que una
+        // asignación manual podía terminar con una interno_key que no calzaba con el resto de
+        // las planillas del mismo equipo — justo el tipo de desvío que puede afectar un análisis.
+        const ikey = normalizeEquipoKey(interno);
         const extra = leerCamposExtra();
         const dominio = extra.dominio_correcto || dominioHint || '';
         await saveCorreccionCarga({
@@ -713,7 +741,7 @@ function conectarPanelCorreccion(panelTr, record, todasCargas) {
             interno,
             interno_key: ikey,
             dominio: dominio || record.dominio || '',
-            dominio_key: (dominio || record.dominio || '').toUpperCase().replace(/[\s\-]/g, ''),
+            dominio_key: normalizeEquipoKey(dominio || record.dominio || ''),
             _corregido: true,
             _interno_original: record.interno
         };

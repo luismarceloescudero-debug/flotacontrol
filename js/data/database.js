@@ -20,6 +20,7 @@
  *                                   campos del sistema.
  *   `config`                     -> definición de las columnas propias del maestro y otros ajustes.
  */
+import { normalizeEquipoKey } from './normalizer.js';
 
 const DB_NAME = 'FlotaControlDB';
 // v5: correcciones persistentes de cargas y disponibilidad diaria de equipos.
@@ -255,7 +256,12 @@ export async function insertRawRecords(arr) {
         if (!corr) { finales.push(r); continue; }
         if (corr.accion === 'eliminar') continue;               // descartado por el usuario
         if (corr.accion === 'asignar') {
-            const key = corr.interno_correcto.toUpperCase().replace(/[\s\-\.]/g, '');
+            // Misma normalización que usa el resto del sistema para cruzar Cargas/GPS/Equipos
+            // (normalizeEquipoKey saca ceros a la izquierda: BM07 y BM7 quedan con la misma
+            // clave). Antes esta clave se armaba a mano cada vez que se reimportaba el archivo,
+            // así que una carga asignada manualmente podía quedar con una interno_key que no
+            // calzaba con el resto de las planillas de ese equipo, afectando su análisis.
+            const key = normalizeEquipoKey(corr.interno_correcto);
             const overrides = {};
             if (corr.centro_costo_correcto) overrides.centro_costo = corr.centro_costo_correcto;
             if (corr.lugar_carga_correcto)  overrides.lugar_carga  = corr.lugar_carga_correcto;
@@ -266,7 +272,7 @@ export async function insertRawRecords(arr) {
                 interno: corr.interno_correcto,
                 interno_key: key,
                 dominio: corr.dominio_correcto || r.dominio || '',
-                dominio_key: (corr.dominio_correcto || r.dominio || '').toUpperCase().replace(/[\s\-]/g, ''),
+                dominio_key: normalizeEquipoKey(corr.dominio_correcto || r.dominio || ''),
                 _corregido: true,                               // marca visible en la UI
                 _interno_original: r.interno                   // conserva el valor del Excel
             });

@@ -7,7 +7,7 @@
 import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos } from '../data/analyzer.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita } from '../data/diagnostico.js';
-import { TIPO_POR_PREFIJO, MESES, getBandera } from '../data/normalizer.js';
+import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga } from '../data/normalizer.js';
 import { diasHabiles } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
@@ -541,14 +541,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const hallazgoId = li.dataset.hallazgo || '';
             if (hallazgoId.startsWith('nofl_')) {
                 // Para hallazgos nofl_*, navegar a tabla de cargas y buscar el valor
-                if (typeof window.renderDataTable === 'function') {
-                    document.getElementById('nav-datos')?.click();
-                    setTimeout(() => {
-                        window.renderDataTable('carga');
-                        const buscador = document.getElementById('tabla-buscar');
-                        if (buscador) { buscador.value = li.dataset.interno; buscador.dispatchEvent(new Event('input')); }
-                    }, 100);
-                }
+                if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', li.dataset.interno);
             } else {
                 buscarEquipo(li.dataset.interno);
             }
@@ -559,14 +552,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
     el.querySelectorAll('.btn-ver-cargas').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
-            if (typeof window.renderDataTable === 'function') {
-                document.getElementById('nav-datos')?.click();
-                setTimeout(() => {
-                    window.renderDataTable('carga');
-                    const buscador = document.getElementById('tabla-buscar');
-                    if (buscador) { buscador.value = btn.dataset.interno; buscador.dispatchEvent(new Event('input')); }
-                }, 100);
-            }
+            if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', btn.dataset.interno);
         });
     });
     el.querySelectorAll('.btn-diag-accion').forEach(b => {
@@ -576,11 +562,25 @@ function renderDiagnostico(analisis, rawRecords = []) {
         det.addEventListener('toggle', () => diagAbiertos.set(det.dataset.id, det.open));
     });
 
-    // Botón "Ignorar" individual
+    // Botón "Ignorar" individual — antes de ocultar el hallazgo sin más, si tiene una acción
+    // propuesta concreta se avisa y se da la chance de aplicarla primero. "Ignorar" oculta la
+    // tarjeta (se puede restaurar), no borra ni corrige nada: la corrección real la hace la
+    // acción propuesta (ajustar metas, dar de alta el equipo, etc.), no el botón de ignorar.
     el.querySelectorAll('.btn-diag-ignorar').forEach(b => {
         b.addEventListener('click', (e) => {
             e.stopPropagation();
-            diagIgnorados.add(b.dataset.hallazgo);
+            const hid = b.dataset.hallazgo;
+            const h = hallazgos.find(x => x.id === hid);
+            const acciones = (h && ACCIONES_PROPUESTAS[hid]) || [];
+            if (acciones.length) {
+                const ok = confirm(
+                    `Antes de ignorar "${h.titulo}":\n\n` +
+                    `Hay una acción sugerida que puede corregir esto: "${acciones[0].texto}".\n\n` +
+                    `Aceptar = ignorar igual (se puede restaurar después).\nCancelar = quedarme y aplicar esa acción.`
+                );
+                if (!ok) { ejecutarAccionPropuesta(acciones[0].accion, hid, analisis); return; }
+            }
+            diagIgnorados.add(hid);
             renderDiagnostico(analisis, rawRecords);
         });
     });
@@ -589,6 +589,13 @@ function renderDiagnostico(analisis, rawRecords = []) {
     el.querySelectorAll('.btn-diag-ignorar-todos').forEach(b => {
         b.addEventListener('click', (e) => {
             e.stopPropagation();
+            const conAccion = visibles.filter(h => (ACCIONES_PROPUESTAS[h.id] || []).length).length;
+            const ok = confirm(
+                `¿Ignorar los ${visibles.length} hallazgos visibles?\n\n` +
+                (conAccion ? `${conAccion} de ellos tienen una acción sugerida (ajustar metas, dar de alta un equipo, etc.) que los podría corregir en vez de solo ocultarlos. ` : '') +
+                `Quedan ocultos, no borrados: se pueden restaurar en cualquier momento desde "hallazgos ignorados".`
+            );
+            if (!ok) return;
             visibles.forEach(h => diagIgnorados.add(h.id));
             renderDiagnostico(analisis, rawRecords);
         });
@@ -690,35 +697,14 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
             break;
         case 'alta_equipo':
         case 'asignar_cc':
-            // Navegar a la tabla para que el usuario pueda editar / dar de alta
-            if (typeof window.renderDataTable === 'function') {
-                document.getElementById('nav-datos')?.click();
-                setTimeout(() => window.renderDataTable('maestro'), 100);
-            }
+            // Navegar al maestro y dejar buscado el primer equipo del hallazgo, listo para editar
+            if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('maestro', internos[0] || '');
             break;
         case 'ver_cargas':
-            if (typeof window.renderDataTable === 'function') {
-                document.getElementById('nav-datos')?.click();
-                setTimeout(() => {
-                    window.renderDataTable('carga');
-                    if (internos.length) {
-                        const buscador = document.getElementById('tabla-buscar');
-                        if (buscador) { buscador.value = internos[0]; buscador.dispatchEvent(new Event('input')); }
-                    }
-                }, 100);
-            }
+            if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', internos[0] || '');
             break;
         case 'ver_gps':
-            if (typeof window.renderDataTable === 'function') {
-                document.getElementById('nav-datos')?.click();
-                setTimeout(() => {
-                    window.renderDataTable('gps');
-                    if (internos.length) {
-                        const buscador = document.getElementById('tabla-buscar');
-                        if (buscador) { buscador.value = internos[0]; buscador.dispatchEvent(new Event('input')); }
-                    }
-                }, 100);
-            }
+            if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('gps', internos[0] || '');
             break;
         default:
             if (internos.length) buscarEquipo(internos[0]);
@@ -778,20 +764,27 @@ function poblarFiltroProvincia(filas) {
     poblarFiltroCentroCosto(filas);
 }
 
-/** Lugar de carga, agrupado en dos optgroups (sede propia / estación de servicio de terceros) para que se note de un vistazo qué tipo de sitio es cada uno. */
+/**
+ * Lugar de carga, agrupado en dos optgroups (sede propia / estación de servicio de terceros).
+ *
+ * Fix: antes se armaba solo con el lugar MÁS FRECUENTE de cada equipo (`ubicacion.lugarCarga`),
+ * así que un lugar que nunca es el "top" de ningún equipo —como una estación de servicio, que
+ * casi siempre es secundaria frente a la sede propia— no aparecía nunca como opción, aunque
+ * tuviera cargas reales. Ahora se recorre el desglose completo (`lugarCargaBreakdown`) de cada
+ * equipo, así entran todos los lugares que de verdad tienen al menos una carga en el período.
+ */
 function poblarFiltroLugarCarga(filas) {
     const sel = document.getElementById('filter-lugarcarga');
     if (!sel) return;
     const actual = sel.value || 'ALL';
     const base = view.provincia !== 'ALL' ? filas.filter(f => f.ubicacion?.provincia === view.provincia) : filas;
     const porTipo = new Map(); // 'Sede' | 'Estación de servicio' -> Set(lugares)
-    base.forEach(f => {
-        const l = f.ubicacion?.lugarCarga;
-        if (!l) return;
-        const t = f.ubicacion.tipoLugarCarga || 'Sede';
+    base.forEach(f => (f.ubicacion?.lugarCargaBreakdown || []).forEach(l => {
+        if (!l.valor) return;
+        const t = tipoLugarCarga(l.valor) || 'Sede';
         if (!porTipo.has(t)) porTipo.set(t, new Set());
-        porTipo.get(t).add(l);
-    });
+        porTipo.get(t).add(l.valor);
+    }));
     const grupos = [...porTipo.keys()].sort((a, b) => a === 'Sede' ? -1 : (b === 'Sede' ? 1 : a.localeCompare(b)));
 
     sel.innerHTML = '<option value="ALL">Todos los lugares de carga</option>' +
@@ -800,15 +793,30 @@ function poblarFiltroLugarCarga(filas) {
     sel.value = (todos.includes(actual) || actual === 'ALL') ? actual : 'ALL';
 }
 
-/** Centro de costo: la unidad administrativa que paga la carga (PMZA, AMZA, PTY...), mostrada con su nombre legible. */
+/**
+ * Centro de costo: la unidad administrativa que paga la carga. Se muestra el CÓDIGO real
+ * (PMZA, AMZA, LMZA, CMZA, VMZA...) como valor y etiqueta principal —es el identificador que
+ * usa HSV— con el nombre legible al lado solo como referencia cuando hay uno mapeado.
+ *
+ * Mismo fix que lugar de carga: antes solo entraban los centros que eran "el top" de al menos
+ * un equipo (`ubicacion.centroCosto`), así que un centro siempre minoritario quedaba afuera del
+ * filtro aunque tuviera cargas reales. Ahora se recorre `centroCostoBreakdown` completo.
+ */
 function poblarFiltroCentroCosto(filas) {
     const sel = document.getElementById('filter-centrocosto');
     if (!sel) return;
     const actual = sel.value || 'ALL';
     const base = view.provincia !== 'ALL' ? filas.filter(f => f.ubicacion?.provincia === view.provincia) : filas;
-    const centros = [...new Set(base.map(f => f.ubicacion?.centroCosto).filter(Boolean))].sort();
-    sel.innerHTML = '<option value="ALL">Todos los centros de costo</option>' + centros.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
-    sel.value = (centros.includes(actual) || actual === 'ALL') ? actual : 'ALL';
+    const nombrePorCodigo = new Map();
+    base.forEach(f => (f.ubicacion?.centroCostoBreakdown || []).forEach(c => {
+        if (c.codigo) nombrePorCodigo.set(c.codigo, c.valor);
+    }));
+    const codigos = [...nombrePorCodigo.keys()].sort();
+    sel.innerHTML = '<option value="ALL">Todos los centros de costo</option>' + codigos.map(c => {
+        const nombre = nombrePorCodigo.get(c);
+        return `<option value="${esc(c)}">${esc(c)}${nombre && nombre !== c ? ` — ${esc(nombre)}` : ''}</option>`;
+    }).join('');
+    sel.value = (codigos.includes(actual) || actual === 'ALL') ? actual : 'ALL';
 }
 
 /**
@@ -890,7 +898,12 @@ function poblarSugerenciasBusqueda(filas, denos) {
 }
 
 function filtrarYOrdenar(filas) {
-    let out = filas.slice();
+    // Cargas de Combustible es la planilla maestra: de ahí salen lugar de carga, interno/
+    // dominio, tipo de combustible, precio y centro de costo, y sobre esa base se arman las
+    // comparativas. Un equipo del padrón (Equipos.xlsx) que no cargó combustible en el período
+    // no tiene nada que analizar todavía — mostrar su tarjeta vacía solo agrega ruido. El KPI
+    // "Equipos" arriba sigue contando el padrón completo; esto solo afecta qué tarjetas se ven.
+    let out = filas.filter(f => f.metrics.cantidad_cargas > 0);
     if (view.busqueda) {
         const q = view.busqueda.toUpperCase();
         out = out.filter(f => [f.equipo.interno, f.equipo.dominio, f.equipo.denominacion, f.equipo.marca, f.equipo.modelo]
@@ -898,8 +911,11 @@ function filtrarYOrdenar(filas) {
     }
     if (view.denominacion !== 'ALL') out = out.filter(f => f.equipo.denominacion === view.denominacion);
     if (view.provincia !== 'ALL') out = out.filter(f => f.ubicacion?.provincia === view.provincia);
-    if (view.lugarCarga !== 'ALL') out = out.filter(f => f.ubicacion?.lugarCarga === view.lugarCarga);
-    if (view.centroCosto !== 'ALL') out = out.filter(f => f.ubicacion?.centroCosto === view.centroCosto);
+    // Se compara contra el desglose completo (¿tuvo ALGUNA carga ahí?), no solo contra el lugar
+    // o centro más frecuente del equipo: un equipo que carga casi siempre en su sede pero una
+    // vez pasó por una estación de servicio debe aparecer al filtrar por esa estación.
+    if (view.lugarCarga !== 'ALL') out = out.filter(f => (f.ubicacion?.lugarCargaBreakdown || []).some(l => l.valor === view.lugarCarga));
+    if (view.centroCosto !== 'ALL') out = out.filter(f => (f.ubicacion?.centroCostoBreakdown || []).some(c => c.codigo === view.centroCosto));
     if (view.combustible !== 'ALL') out = out.filter(f => f.ubicacion?.combustible === view.combustible);
     if (view.anioEquipo !== 'ALL') out = out.filter(f => String(f.equipo.anio ?? '') === view.anioEquipo);
     if (view.potencia !== 'ALL') out = out.filter(f => f.equipo.potencia === view.potencia);
@@ -1093,9 +1109,14 @@ function cardPeriodoInfo(f, m, ubi, ralentiTag) {
         </div>`;
 }
 
-function estadoDe(m, confirmed) {
+function estadoDe(m, confirmed, implicita = null) {
     if (m.tipo_calculo === 'No Aplica') return { cls: 'neutral', txt: 'Sin motor propio', icon: 'fa-ban' };
-    if (m.motivo_sin_calculo) return { cls: 'warn', txt: m.motivo_sin_calculo, icon: 'fa-circle-info' };
+    // Si no hay GPS pero se pudo estimar la actividad por cálculo inverso (litros ÷ meta), no
+    // repetir la misma advertencia de "falta GPS" acá abajo: ya se explica arriba, junto al número.
+    if (m.motivo_sin_calculo) {
+        if (implicita) return { cls: 'warn', txt: 'Sin GPS · actividad estimada por cálculo inverso', icon: 'fa-calculator' };
+        return { cls: 'warn', txt: m.motivo_sin_calculo, icon: 'fa-circle-info' };
+    }
     if (!confirmed || !confirmed.valor) return { cls: 'neutral', txt: 'Consumo calculado, falta meta', icon: 'fa-circle-question' };
     const d = m.desvio_pct;
     if (d === null) return { cls: 'neutral', txt: 'Sin comparación', icon: 'fa-circle-question' };
@@ -1107,7 +1128,6 @@ function estadoDe(m, confirmed) {
 function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccionado', preciosPorTipo = new Map()) {
     const { equipo: eq, metrics: m, confirmed } = f;
     const editando = view.editando === eq.interno;
-    const est = estadoDe(m, confirmed);
     const esHora = m.tipo_calculo === 'L/Hora';
     const factor = esHora ? m.total_horas : m.total_km;
     const uf = esHora ? 'hs' : 'km';
@@ -1173,6 +1193,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
     // --- Sin GPS pero con litros: cálculo inverso (litros ÷ meta) como actividad estimada ---
     const sinActividad = factor <= 0 && m.total_litros > 0;
     const implicita = sinActividad ? actividadImplicita(f) : null;
+    const est = estadoDe(m, confirmed, implicita);
 
     // --- Ralentí, interpretado según el tipo de equipo (un GE quieto está trabajando; un TR quieto, no) ---
     let ralentiTag = '';
@@ -1324,11 +1345,17 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
  */
 function abrirOverlayEquipo(fila, analisis) {
     const { equipo: eq, metrics: m, confirmed } = fila;
-    const est = estadoDe(m, confirmed);
     const esHora = m.tipo_calculo === 'L/Hora';
     const factor = esHora ? m.total_horas : m.total_km;
     const uf = esHora ? 'hs' : 'km';
     const ubi = fila.ubicacion || {};
+
+    // Sin GPS pero con litros: mismo cálculo inverso (litros ÷ meta) que se usa en la tarjeta,
+    // para no repetir acá el bug de mostrar "0,0 hs" y "Consumo real —" cuando en realidad se
+    // puede estimar la actividad a partir de lo cargado.
+    const sinActividad = factor <= 0 && m.total_litros > 0;
+    const implicita = sinActividad ? actividadImplicita(fila) : null;
+    const est = estadoDe(m, confirmed, implicita);
 
     // Sugerencia de meta (igual que en la tarjeta)
     const sug = ultimoAnalisis ? sugerirMeta(fila, ultimoAnalisis.filas) : null;
@@ -1389,15 +1416,18 @@ function abrirOverlayEquipo(fila, analisis) {
                 <span class="stat-label"><i class="fa-solid fa-sack-dollar"></i> Costo</span>
                 <span class="stat-value">${Math.abs(m.total_costo) >= 1e6 ? `$${nf(m.total_costo / 1e6, 1)} M` : `$${nf(m.total_costo)}`}</span>
               </div>
-              <div class="stat">
-                <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}</span>
-                <span class="stat-value">${nf(factor, esHora ? 1 : 0)} <small class="stat-unit">${uf}</small></span>
+              <div class="stat ${implicita ? 'stat-implicita' : ''}">
+                <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>
+                <span class="stat-value ${implicita ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0)} <small class="stat-unit">${uf}</small></span>
+                ${implicita ? `<span class="stat-nota">estimado: ${esc(implicita.formula)}</span>` : ''}
               </div>
               <div class="stat">
                 <span class="stat-label">Consumo real</span>
                 <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? `${nf(m.consumo_real, 2)} <small class="stat-unit">${esc(m.tipo_calculo !== 'No Aplica' ? m.tipo_calculo : '')}</small>` : '—'}</span>
+                ${implicita ? `<span class="stat-nota">no hay GPS: no se puede medir el consumo real de forma independiente, solo estimar la actividad</span>` : ''}
               </div>
             </div>
+            ${implicita ? `<div class="overlay-line overlay-implicita-nota"><i class="fa-solid fa-circle-info"></i> No hay dato de GPS para este equipo en el período: la actividad (${uf}) se estimó de forma inversa, dividiendo los litros cargados por la meta cargada. Si el resultado no parece razonable, revisá o ajustá la meta debajo, o los litros cargados en el registro de cargas de este equipo.</div>` : ''}
             ${confirmed ? `
             <div class="card-meta-hero overlay-meta-hero">
               <span class="meta-label"><i class="fa-solid fa-bullseye"></i> Meta ${confirmed.source === 'Maestro' ? '(ajustada)' : '(estimada)'}</span>
@@ -1421,6 +1451,7 @@ function abrirOverlayEquipo(fila, analisis) {
               ${m.cantidad_cargas > 0 ? `<span class="fuente-tag fuente-cargas"><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} cargas</span>` : ''}
               ${m.cantidad_gps > 0 ? `<span class="fuente-tag fuente-gps"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} GPS</span>` : ''}
               ${confirmed ? `<span class="fuente-tag fuente-meta"><i class="fa-solid fa-bullseye"></i> Meta</span>` : ''}
+              ${implicita ? `<span class="fuente-tag fuente-estimado" title="Cálculo inverso: litros ÷ meta, sin GPS"><i class="fa-solid fa-calculator"></i> Estimado</span>` : ''}
             </div>
           </div>
 

@@ -148,3 +148,111 @@ no versionado) que levanta la app en un servidor local y sube los 9 archivos rea
    `renderFileList()` final volvía a pintar todos los badges con el texto crudo del estado
    (`f.status.toUpperCase()`), pisando el texto en español. Corregido con una tabla de
    etiquetas (`BADGE_LABEL`) usada en los dos lugares donde se pinta el badge.
+
+## Correcciones aplicadas (20/08/2026, segunda tanda — feedback con capturas de la app en producción)
+
+Mismo harness de Playwright contra los 9 archivos reales, más inspección directa de celdas
+con `openpyxl` para los casos de identificación de equipos.
+
+1. **Filtros de "Centro de costo" y "Lugar de carga" perdían valores minoritarios**:
+   `poblarFiltroCentroCosto()`/`poblarFiltroLugarCarga()` armaban el desplegable con el
+   valor MÁS FRECUENTE de cada equipo (`ubicacion.centroCosto`), no con todos los valores
+   reales que aparecen en las cargas. Un equipo que cargó mayormente para "AMZA" pero alguna
+   vez para una estación de servicio externa nunca mostraba esa segunda opción, así que el
+   filtro terminaba con una lista incompleta y "adivinada". Corregido para construir ambos
+   desplegables a partir de `ubicacion.centroCostoBreakdown` / `ubicacion.lugarCargaBreakdown`
+   (todos los valores distintos, con conteo), y el filtro ahora matchea contra el desglose
+   completo, no solo el top 1. Verificado con datos reales: el filtro de centro de costo
+   ahora muestra los códigos reales de la planilla (AMZA, CMZA, LMZA, PMZA, PSM, PTY, SJ,
+   TMZA), y el de lugar de carga ya incluye estaciones de servicio de terceros (ej. "EE SS
+   CORONEL DIAZ").
+
+2. **`MX108VL`/`MX63TK` con el interno mal extraído desde el GPS**: la columna "Unidad" del
+   Resumen de Flota trae a veces interno + patente juntos en la misma celda, separados por
+   espacio (ej. "MX-63-TK OXZ 911"). `extraerIdentidad()` partía la celda por espacios ANTES
+   de clasificar cada token, así que una patente con espacio interno ("OXZ 911") se rompía en
+   dos fragmentos que no calificaban ni como interno ni como dominio, y el algoritmo terminaba
+   quedándose con una lectura incorrecta. Se reescribió `clasificarIdentificador()` para
+   reconocer primero el candidato completo (interno con guiones tipo "MX-63-TK", patente con
+   espacio tipo "OXZ 911") antes de partir por espacios, y `extraerIdentidad()` para probar
+   esa clasificación de candidato completo antes de caer al partido por palabras. Verificado
+   directamente contra los valores reales extraídos del Excel: ambos casos quedan con el
+   interno correcto y sin romper ningún otro caso ya cubierto (celdas mixtas típicas, códigos
+   atípicos).
+
+3. **Tarjetas de equipos sin ninguna carga de combustible en el período**: aparecían en el
+   panel igual que cualquier otro equipo, mostrando solo datos de GPS o quedando vacías. Por
+   pedido explícito: la planilla de Cargas de Combustible es la que manda — es sobre esa que
+   se arman los cruces de lugares de carga, interno/dominio, tipo de combustible, precio y
+   centro de costo, y son las tarjetas que importan para el análisis. Se agregó un filtro base
+   en `filtrarYOrdenar()` que oculta cualquier equipo con `cantidad_cargas === 0`, antes de
+   aplicar el resto de los filtros de la UI.
+
+4. **La tarjeta de detalle (overlay de pantalla completa) no usaba el cálculo inverso ya
+   disponible en la grilla**: `cardHTML()` (la tarjeta chica) ya calculaba una actividad
+   estimada (litros ÷ meta) cuando un equipo no tiene GPS, pero `abrirOverlayEquipo()` (la
+   vista de detalle que se abre al hacer click en la tarjeta) es una función separada que no
+   tenía esa lógica — mostraba "0,0 hs" y "Consumo real —" sin ninguna explicación, tal como
+   se veía en la captura de AE01. Se portó la misma lógica de `actividadImplicita()` al
+   overlay: ahora muestra "≈ X hs/km" con la fórmula usada, una nota explicando que no hay GPS
+   y cómo se llegó al número, y el mismo badge "Estimado" que ya tenía la tarjeta. También se
+   corrigió el estado (`estadoDe()`) para no repetir la advertencia genérica de "falta GPS"
+   cuando ya se está mostrando la estimación arriba. Verificado en vivo contra un equipo real
+   sin GPS (CF38): el overlay ahora muestra "≈ 1.044,5 hs — estimado: 8.355,8 L ÷ 8,00
+   L/hora" en vez de un dato vacío.
+
+5. **El hallazgo "N equipos cargan combustible sin dato de actividad" mezclaba dos
+   situaciones distintas**: equipos que de verdad no se pueden estimar (sin meta ni GPS) con
+   equipos que YA tienen una estimación por cálculo inverso — mostrando el mismo tono de
+   advertencia para ambos casos, cuando el segundo no es un problema sin resolver. Se separó
+   en dos hallazgos: uno de severidad media solo para los que no tienen ninguna base para
+   estimar, y otro de severidad baja/informativa ("N equipos sin GPS, con actividad estimada
+   por cálculo inverso") para los que sí, con una nota invitando a revisar la meta o los
+   litros cargados si el número estimado no parece razonable.
+
+6. **Botón "Ver cargas" (y varias acciones de los hallazgos: dar de alta un equipo, asignar
+   centro de costo, ver registros GPS huérfanos) no hacían nada**: todos llamaban a
+   `window.renderDataTable`, una función que nunca se publicaba en `window` — el guard
+   `typeof window.renderDataTable === 'function'` daba `false` silenciosamente y el botón
+   quedaba decorativo. Se agregó `abrirTablaConBusqueda()` en `datatable.js` (navega a la
+   tabla correcta y deja la búsqueda ya aplicada por interno/dominio) y se publicó como
+   `window.abrirTablaConBusqueda` desde `app.js`; todos los puntos de `panel.js` que antes
+   armaban la navegación a mano ahora pasan por acá. Verificado en vivo: "Ver cargas" navega a
+   Base de Datos con la búsqueda ya cargada y filas visibles.
+
+7. **"Comparar estos equipos" no seguía el diseño visual del resto de las acciones del
+   hallazgo**: el botón (y "Ver cargas") no tenían una regla de CSS propia, así que caían en
+   el estilo de botón genérico en vez del mismo tratamiento visual que ya usan las demás
+   acciones propuestas (`.btn-diag-propuesta`). Se agregó esa regla en `panel.css`. La
+   funcionalidad en sí (abre la comparativa real con los equipos del hallazgo, con acceso al
+   registro de carga vía el buscador) ya estaba conectada — se verificó en vivo que abre
+   correctamente con los equipos precargados.
+
+8. **"Ignorar" / "Ignorar todos" solo ocultaban el hallazgo, sin ofrecer la corrección**: por
+   pedido explícito ("sugerir y ejecutar cambios"), ahora, si el hallazgo tiene una acción
+   propuesta concreta (ajustar metas, dar de alta un equipo, etc.), "Ignorar" avisa antes de
+   ocultar y da la opción de aplicar esa acción en su lugar; "Ignorar todos" avisa cuántos de
+   los hallazgos visibles tienen una acción disponible. Sigue siendo reversible (no borra
+   nada, se puede restaurar), pero ya no es un simple "taparlo y listo".
+
+9. **Bug real encontrado al revisar el caso de BM07 (carga asignada a mano sin interno ni
+   dominio)**: tanto el panel de corrección de cargas huérfanas (`datatable.js`) como el
+   re-aplicado automático de esas correcciones al reimportar (`database.js`) armaban la
+   `interno_key`/`dominio_key` a mano (`.toUpperCase().replace(...)`) en vez de usar
+   `normalizeEquipoKey()` — la misma función que normaliza esas claves en todo el resto del
+   sistema (la que se corrigió en la primera tanda para CF1/CF01, TR9/TR09). Una carga
+   asignada manualmente a un interno con cero a la izquierda (ej. "BM07") podía terminar con
+   una clave que NO coincidía con la que usan las demás planillas de ese mismo equipo,
+   sacándolo silenciosamente de los cruces con GPS/Estimados. Corregido para usar
+   `normalizeEquipoKey()` en los dos lugares. Recomendación: reabrir el panel de corrección de
+   esa carga de BM07 (Base de Datos → Movimientos de cargas → buscar el registro) y
+   reasignarla una vez subido este cambio, para que quede guardada con la clave correcta.
+
+### No implementado en esta tanda (evaluado y descartado por alcance/riesgo)
+
+- Automatizar por completo "Ignorar" para que ejecute una corrección de datos sin
+  intervención (más allá de sugerirla y dejar aplicarla con un click): implica decidir de
+  antemano qué corrección es "la correcta" para hallazgos con varias causas posibles
+  (sobreconsumo, metas raras, pares), con riesgo de modificar datos del maestro sin que la
+  persona lo confirme puntualmente. Se prefirió el punto intermedio (avisar + ofrecer
+  aplicar) hasta tener una regla de negocio explícita de qué se puede auto-corregir.

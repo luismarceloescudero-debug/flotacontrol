@@ -474,20 +474,36 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
     ).map(f => ({ fila: f, implicita: actividadImplicita(f) }))
      .sort((a, b) => b.fila.metrics.total_litros - a.fila.metrics.total_litros);
 
-    if (sinMedicion.length) {
-        const litros = sinMedicion.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
-        const conMeta = sinMedicion.filter(x => x.implicita).length;
+    // Separados en dos: los que YA tienen una estimación por cálculo inverso no son un problema
+    // sin resolver (ya se muestra "≈ X hs/km" en su tarjeta) — no tiene sentido repetirles la
+    // misma advertencia acá. Solo son un problema real los que ni siquiera tienen meta para estimar.
+    const sinMedicionSinMeta = sinMedicion.filter(x => !x.implicita);
+    const sinMedicionEstimada = sinMedicion.filter(x => x.implicita);
+
+    if (sinMedicionSinMeta.length) {
+        const litros = sinMedicionSinMeta.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
         hallazgos.push({
             id: 'sin_medicion', severidad: 'media', icono: 'fa-eye-slash',
-            titulo: `${sinMedicion.length} equipos cargan combustible sin dato de actividad`,
-            detalle: `Suman <strong>${fmt(litros)} L</strong>. Falta el km u hora del Resumen de Flota, normalmente porque el equipo no tiene GPS. ` +
-                (conMeta ? `Para ${conMeta} de ellos se puede estimar por <strong>cálculo inverso</strong>: con su meta y los litros cargados se deduce cuánta actividad debería haber tenido. Sirve como control de razonabilidad hasta que tengan GPS.` : `Sin meta ni GPS no hay forma de estimarlos: cargarles una meta es el primer paso.`),
-            equipos: sinMedicion.slice(0, 10).map(x => ({
+            titulo: `${sinMedicionSinMeta.length} equipos cargan combustible sin dato de actividad`,
+            detalle: `Suman <strong>${fmt(litros)} L</strong>. Falta el km u hora del Resumen de Flota (normalmente porque el equipo no tiene GPS) y tampoco tienen una meta cargada para poder estimar por cálculo inverso. Cargarles una meta en "Consumos Estimados" es el primer paso para poder controlarlos.`,
+            equipos: sinMedicionSinMeta.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.total_litros)} L`,
-                sub: x.implicita
-                    ? `≈ ${fmt(x.implicita.valor)} ${x.implicita.unidad} implícitas  (${x.implicita.formula})`
-                    : (x.fila.metrics.motivo_sin_calculo || 'sin datos de actividad') + ' · sin meta para estimar'
+                sub: (x.fila.metrics.motivo_sin_calculo || 'sin datos de actividad') + ' · sin meta para estimar'
+            }))
+        });
+    }
+
+    if (sinMedicionEstimada.length) {
+        const litros = sinMedicionEstimada.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
+        hallazgos.push({
+            id: 'sin_gps_estimado', severidad: 'baja', icono: 'fa-calculator',
+            titulo: `${sinMedicionEstimada.length} equipos sin GPS, con actividad estimada por cálculo inverso`,
+            detalle: `Suman <strong>${fmt(litros)} L</strong>. No tienen km u hora del Resumen de Flota, pero con su meta y los litros cargados se pudo estimar cuánta actividad deberían haber tenido — no es una falla, es un control de razonabilidad hasta que tengan GPS. Si algún número no parece creíble, entrá al equipo y revisá la meta o los litros cargados: de ahí sale la estimación.`,
+            equipos: sinMedicionEstimada.slice(0, 10).map(x => ({
+                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
+                texto: `${fmt(x.fila.metrics.total_litros)} L`,
+                sub: `≈ ${fmt(x.implicita.valor)} ${x.implicita.unidad} implícitas  (${x.implicita.formula})`
             }))
         });
     }

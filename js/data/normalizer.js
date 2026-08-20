@@ -253,7 +253,24 @@ export function normalizeEquipoKey(interno) {
  * ("BM09 JNU923") o repartidos en columnas distintas según el archivo.
  */
 export function clasificarIdentificador(token) {
-    const t = normalizeString(token).replace(/[\s\-_.]/g, '');
+    const raw = normalizeString(token).trim();
+    if (!raw) return { tipo: 'vacio', valor: '' };
+
+    // Verificado contra Resumen de Flota real: la columna "Unidad" del GPS a veces trae un
+    // sufijo extra después de un segundo guión — "MX-108-VL", "MX-63-TK" — donde "VL"/"TK" es
+    // un código de sitio o grupo, no parte del equipo. Antes esto rompía de dos formas: al
+    // quitar los guiones sin mirar la forma, "MX-108-VL" quedaba "MX108VL", que por longitud
+    // coincidía por casualidad con el patrón de patente Mercosur (2 letras+3 números+2 letras)
+    // y se clasificaba como DOMINIO falso. Las patentes de esta flota nunca llevan guión (ver
+    // Equipos.xlsx: "AF974DX", "OXZ911"...), así que un token con guión nunca se evalúa como
+    // patente: se toma como interno (prefijo de letras + primer bloque de 1 a 3 números) y
+    // cualquier segmento posterior con guión se descarta como sufijo de sitio/grupo.
+    if (raw.includes('-')) {
+        const m = raw.match(/^([A-Z]+)-?(\d{1,3})/);
+        if (m) return { tipo: 'interno', valor: `${m[1]}${m[2]}` };
+    }
+
+    const t = raw.replace(/[\s\-_.]/g, '');
     if (!t) return { tipo: 'vacio', valor: '' };
     if (/^[A-Z]{3}\d{3}$/.test(t)) return { tipo: 'dominio', valor: t };        // JNU923
     if (/^[A-Z]{2}\d{3}[A-Z]{2}$/.test(t)) return { tipo: 'dominio', valor: t }; // AF809IC
@@ -275,12 +292,34 @@ export function extraerIdentidad(...valores) {
     let interno = '', dominio = '', sueltos = [];
 
     valores.filter(Boolean).forEach(val => {
-        normalizeString(val).split(/[\s/|]+/).filter(Boolean).forEach(tok => {
-            const c = clasificarIdentificador(tok);
-            if (c.tipo === 'dominio' && !dominio) dominio = c.valor;
-            else if (c.tipo === 'interno' && !interno) interno = c.valor;
-            else if (c.tipo === 'desconocido') sueltos.push(c.valor);
-        });
+        const raw = normalizeString(val);
+        if (!raw) return;
+
+        // Se intenta clasificar la celda ENTERA primero (es el caso normal: cada columna trae
+        // un solo dato — "TR-21", "AF974DX", o incluso una patente con un espacio de más como
+        // "OXZ 911" u "AB 205 QO", que clasificarIdentificador ya sabe limpiar). Solo si eso no
+        // da nada reconocible Y la celda tiene más de un token se prueba dividirla por espacios:
+        // es el caso de una celda que mezcla dos identificadores juntos, ej. "BM09 JNU923".
+        // Fix: antes SIEMPRE se dividía primero, así que una patente con espacio interno se
+        // partía en fragmentos ("OXZ" + "911") que por separado no calificaban como nada.
+        const entero = clasificarIdentificador(raw);
+        if (entero.tipo === 'dominio' || entero.tipo === 'interno') {
+            if (entero.tipo === 'dominio' && !dominio) dominio = entero.valor;
+            else if (entero.tipo === 'interno' && !interno) interno = entero.valor;
+            return;
+        }
+
+        const partes = raw.split(/[\s/|]+/).filter(Boolean);
+        if (partes.length > 1) {
+            partes.forEach(tok => {
+                const c = clasificarIdentificador(tok);
+                if (c.tipo === 'dominio' && !dominio) dominio = c.valor;
+                else if (c.tipo === 'interno' && !interno) interno = c.valor;
+                else if (c.tipo === 'desconocido') sueltos.push(c.valor);
+            });
+        } else if (entero.valor) {
+            sueltos.push(entero.valor);
+        }
     });
 
     // Si no se pudo clasificar nada (códigos atípicos como "CALDERA", "DEMO"), se usa el

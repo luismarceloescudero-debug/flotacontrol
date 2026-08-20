@@ -4,7 +4,7 @@
 import { initDB, clearAllData, clearMovimientos, getDBStats } from './data/database.js';
 import { initUploadUI, renderDBStatus } from './ui/upload.js';
 import { renderPanel, initPanelControls } from './ui/panel.js';
-import { renderDataTable, initDataTableControls, exportarTablaVisible } from './ui/datatable.js';
+import { renderDataTable, initDataTableControls, exportarTablaVisible, abrirTablaConBusqueda } from './ui/datatable.js';
 import { initCalcPopover } from './ui/calcpopover.js';
 import { openConfigModal } from './ui/config.js';
 import { initAIChat } from './ai/chat.js';
@@ -42,6 +42,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.exportTableToXLSX = exportarTablaVisible;
     window.showDataTable = (t) => { irA('datos'); renderDataTable(t); };
     window.renderPanel = renderPanel;
+    // Punto único para navegar a Base de Datos con una búsqueda ya aplicada (interno/dominio),
+    // usado desde los hallazgos del diagnóstico y desde las tarjetas del Panel. Antes esos
+    // botones llamaban a `window.renderDataTable`, que nunca se publicó acá — por eso no hacían
+    // nada ("Ver cargas" y las acciones de alta/asignación de los hallazgos, entre otras).
+    window.abrirTablaConBusqueda = (tipo, query = '', buscarCol = 'id') => {
+        irA('datos');
+        return abrirTablaConBusqueda(tipo, query, buscarCol);
+    };
 
     await renderDBStatus();
 

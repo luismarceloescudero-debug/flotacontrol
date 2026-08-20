@@ -206,6 +206,15 @@
 }
 .btn-diag-propuesta:hover { background: var(--accent-cyan); color: var(--bg-main); border-color: var(--accent-cyan); }
 .btn-diag-propuesta i { font-size: 0.72rem; }
+/* "Comparar estos equipos" y "Ver cargas": mismo tratamiento visual que el resto de las
+   acciones propuestas del hallazgo — antes quedaban con el botón "pelado" por defecto. */
+.btn-diag-comparar-lista, .btn-ver-cargas {
+    background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border-color);
+    border-radius: 6px; padding: 0.3rem 0.65rem; font-size: 0.78rem; cursor: pointer; transition: all var(--transition-fast);
+    display: inline-flex; align-items: center; gap: 0.35rem;
+}
+.btn-diag-comparar-lista:hover, .btn-ver-cargas:hover { background: var(--accent-cyan); color: var(--bg-main); border-color: var(--accent-cyan); }
+.btn-diag-comparar-lista i, .btn-ver-cargas i { font-size: 0.72rem; }
 .btn-diag-ignorar, .btn-diag-ignorar-todos {
     background: transparent; color: var(--text-muted); border: 1px solid transparent;
     border-radius: 6px; padding: 0.3rem 0.6rem; font-size: 0.75rem; cursor: pointer; transition: all var(--transition-fast);
