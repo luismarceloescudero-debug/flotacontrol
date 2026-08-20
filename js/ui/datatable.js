@@ -28,7 +28,7 @@ import { MESES, getDenominacion, normalizeEquipoKey, slugCampo } from '../data/n
 
 const PAGINA = 300;
 
-const estado = { tipo: 'maestro', buscar: '', buscarCol: 'id', filtroDeno: 'ALL', filtroEstado: 'ALL', anio: '', mes: '', pagina: 0 };
+const estado = { tipo: 'maestro', buscar: '', buscarCol: 'id', filtroDeno: 'ALL', filtroEstado: 'ALL', anio: '', mes: '', pagina: 0, soloHuerfanas: false };
 let filasActuales = [];
 let columnasExtra = [];
 let columnasVisibles = [];
@@ -54,7 +54,7 @@ function matchBusqueda(fila, q) {
 }
 
 export async function renderDataTable(tipo) {
-    if (tipo) { estado.tipo = tipo; estado.pagina = 0; }
+    if (tipo) { estado.tipo = tipo; estado.pagina = 0; estado.soloHuerfanas = false; }
     const tbody = document.getElementById('table-body');
     const header = document.getElementById('table-header');
     if (!tbody || !header) return;
@@ -422,6 +422,15 @@ async function renderMovimientos(tipo) {
 
     let filas = filtrarPorPeriodo(todos, { anio: estado.anio || null, mes: estado.mes || null });
     if (estado.buscar) filas = filas.filter(r => matchBusqueda(r, estado.buscar));
+    // Filtro "Solo sin asignar" (huérfanas)
+    if (tipo === 'carga' && estado.soloHuerfanas) {
+        filas = filas.filter(r => {
+            const ikey = r.interno_key || normalizeEquipoKey(r.interno || '');
+            const esHuerfana = !ikey || !equiposSet.has(ikey);
+            const yaCorregida = correccionesMap.has(huellaCarga(r));
+            return esHuerfana && !yaCorregida;
+        });
+    }
     filas.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
     filasActuales = filas;
 
@@ -482,10 +491,30 @@ async function renderMovimientos(tipo) {
         </tr>`;
     }).join('') || `<tr><td colspan="${colspan}">No hay registros${estado.anio || estado.mes ? ' en el período elegido' : ''}.</td></tr>`;
 
-    const resExtra = tipo === 'carga' && nHuerfanas > 0
+    // Botón "Sin asignar" en contador (solo cargas)
+    let btnHuerfanasHtml = '';
+    if (tipo === 'carga') {
+        const nHuerfanasTotal = todos.filter(r => {
+            const ikey = r.interno_key || normalizeEquipoKey(r.interno || '');
+            return (!ikey || !equiposSet.has(ikey)) && !correccionesMap.has(huellaCarga(r));
+        }).length;
+        if (nHuerfanasTotal > 0) {
+            const activo = estado.soloHuerfanas ? ' btn-warn-active' : '';
+            btnHuerfanasHtml = ` <button class="btn-sm btn-warn btn-filtro-huerfanas${activo}" style="margin-left:8px">` +
+                `<i class="fa-solid fa-triangle-exclamation"></i> ${estado.soloHuerfanas ? 'Todos' : `Sin asignar (${nHuerfanasTotal})`}</button>`;
+        }
+    }
+    const resExtra = tipo === 'carga' && nHuerfanas > 0 && !estado.soloHuerfanas
         ? ` · <span style="color:#f5a623;font-weight:600">${nHuerfanas} sin asignar</span>` : '';
-    actualizarContador(filas.length, pagina.length, resumenNumerico(filas, tipo) + resExtra);
+    actualizarContador(filas.length, pagina.length, resumenNumerico(filas, tipo) + resExtra + btnHuerfanasHtml);
     renderPaginacion(filas.length);
+
+    // Listener del botón filtro huérfanas
+    document.querySelector('.btn-filtro-huerfanas')?.addEventListener('click', () => {
+        estado.soloHuerfanas = !estado.soloHuerfanas;
+        estado.pagina = 0;
+        renderDataTable();
+    });
 
     // Listener delegado para el panel de corrección (solo cargas)
     if (tipo === 'carga') {
@@ -599,12 +628,40 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan) {
                 <div class="candidato-list">${candidatosHtml}</div>
             </div>
             <div class="correc-manual-wrap">
-                <p class="correc-titulo">O asigná manualmente</p>
+                <p class="correc-titulo">Asignación manual y datos extra</p>
                 <div class="correc-manual-row">
                     <datalist id="correc-sugg-${record.id}">${listaSugg}</datalist>
+                    <label class="correc-field-label">Interno</label>
                     <input type="text" class="correc-interno-input"
-                        placeholder="Interno (ej: MX66)" list="correc-sugg-${record.id}" autocomplete="off">
-                    <button class="btn-asignar-manual btn-primary btn-sm">Asignar</button>
+                        placeholder="Ej: MX66" list="correc-sugg-${record.id}" autocomplete="off">
+                </div>
+                <div class="correc-manual-row">
+                    <label class="correc-field-label">Dominio</label>
+                    <input type="text" class="correc-dominio-input"
+                        placeholder="Ej: JNU923" value="${esc(record.dominio || '')}">
+                </div>
+                <div class="correc-manual-row">
+                    <label class="correc-field-label">Centro de costo</label>
+                    <input type="text" class="correc-cc-input"
+                        placeholder="Ej: HORMIGÓN" value="${esc(record.centro_costo || '')}">
+                </div>
+                <div class="correc-manual-row">
+                    <label class="correc-field-label">Lugar de carga</label>
+                    <input type="text" class="correc-lugar-input"
+                        placeholder="Ej: GRIS" value="${esc(record.lugar_carga || '')}">
+                </div>
+                <div class="correc-manual-row">
+                    <label class="correc-field-label">Sector</label>
+                    <input type="text" class="correc-sector-input"
+                        placeholder="Ej: BOMBAS" value="${esc(record.sector || '')}">
+                </div>
+                <div class="correc-manual-row">
+                    <label class="correc-field-label">Observación</label>
+                    <input type="text" class="correc-obs-input"
+                        placeholder="Nota libre" value="">
+                </div>
+                <div class="correc-manual-row" style="margin-top:10px">
+                    <button class="btn-asignar-manual btn-primary btn-sm"><i class="fa-solid fa-check"></i> Guardar corrección</button>
                 </div>
             </div>
         </div>
@@ -622,35 +679,62 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan) {
 function conectarPanelCorreccion(panelTr, record, todasCargas) {
     const huella = huellaCarga(record);
 
-    async function asignarA(interno, dominio) {
+    function leerCamposExtra() {
+        return {
+            dominio_correcto:    (panelTr.querySelector('.correc-dominio-input')?.value || '').trim(),
+            centro_costo_correcto: (panelTr.querySelector('.correc-cc-input')?.value || '').trim(),
+            lugar_carga_correcto:  (panelTr.querySelector('.correc-lugar-input')?.value || '').trim(),
+            sector_correcto:     (panelTr.querySelector('.correc-sector-input')?.value || '').trim(),
+            observacion:         (panelTr.querySelector('.correc-obs-input')?.value || '').trim(),
+        };
+    }
+
+    async function asignarA(interno, dominioHint) {
         interno = (interno || '').toUpperCase().trim();
         if (!interno) { alert('Ingresá un interno válido (ej: MX66).'); return; }
         const ikey = interno.replace(/[\s\-\.]/g, '');
+        const extra = leerCamposExtra();
+        const dominio = extra.dominio_correcto || dominioHint || '';
         await saveCorreccionCarga({
             huella,
             accion: 'asignar',
             interno_correcto: interno,
-            dominio_correcto: dominio || '',
+            dominio_correcto: dominio,
+            centro_costo_correcto: extra.centro_costo_correcto,
+            lugar_carga_correcto: extra.lugar_carga_correcto,
+            sector_correcto: extra.sector_correcto,
+            observacion: extra.observacion,
             interno_original: record.interno || '',
             fecha: record.fecha,
             litros: record.litros,
             importe: record.importe
         });
-        await updateRawRecord(record.id, {
+        const cambiosRecord = {
             interno,
             interno_key: ikey,
             dominio: dominio || record.dominio || '',
             dominio_key: (dominio || record.dominio || '').toUpperCase().replace(/[\s\-]/g, ''),
             _corregido: true,
             _interno_original: record.interno
-        });
+        };
+        if (extra.centro_costo_correcto) cambiosRecord.centro_costo = extra.centro_costo_correcto;
+        if (extra.lugar_carga_correcto) cambiosRecord.lugar_carga = extra.lugar_carga_correcto;
+        if (extra.sector_correcto) cambiosRecord.sector = extra.sector_correcto;
+        await updateRawRecord(record.id, cambiosRecord);
         panelTr.remove();
         renderDataTable();
         if (typeof window.renderPanel === 'function') window.renderPanel();
     }
 
     panelTr.querySelectorAll('.btn-asignar-cand').forEach(btn => {
-        btn.addEventListener('click', () => asignarA(btn.dataset.interno, btn.dataset.dominio));
+        btn.addEventListener('click', () => {
+            // Pre-fill the interno/dominio fields from candidate
+            const inpI = panelTr.querySelector('.correc-interno-input');
+            const inpD = panelTr.querySelector('.correc-dominio-input');
+            if (inpI) inpI.value = btn.dataset.interno;
+            if (inpD && btn.dataset.dominio) inpD.value = btn.dataset.dominio;
+            asignarA(btn.dataset.interno, btn.dataset.dominio);
+        });
     });
 
     panelTr.querySelector('.btn-asignar-manual')?.addEventListener('click', () => {

@@ -51,6 +51,8 @@ function detectVisualType(filename) {
     return 'unknown';
 }
 
+const BADGE_LABEL = { pending: 'PENDING', processing: 'PROCESANDO', done: 'LISTO', error: 'ERROR' };
+
 function renderFileList() {
     const list = document.getElementById('file-list');
     if (!list) return;
@@ -72,7 +74,7 @@ function renderFileList() {
                 </div>
             </div>
             <div class="file-status">
-                <span class="badge ${f.status}" id="badge-${safeId(f.file.name)}">${f.status.toUpperCase()}</span>
+                <span class="badge ${f.status}" id="badge-${safeId(f.file.name)}">${BADGE_LABEL[f.status] || f.status.toUpperCase()}</span>
                 <button class="btn-icon" onclick="window.removeFile('${f.file.name.replace(/'/g, "\\'")}')">
                     <i class="fa-solid fa-trash"></i>
                 </button>

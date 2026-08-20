@@ -98,8 +98,53 @@ No funciona abriendo `index.html` directo ni con un servidor estático simple si
 
 - `normalizeTimeGranularity()` para alinear correctamente cargas diarias vs. GPS
   mensual (hoy `calculateAlignedPeriod()` calcula la intersección de fechas pero no
-  normaliza granularidad).
+  normaliza granularidad) — parcialmente cubierto por `evolucionMensual()` (ya
+  agrupaba cargas diarias en cubetas mensuales por equipo) y por los botones "Últimos
+  N meses" agregados el 20/08/2026; sigue faltando una alineación multi-archivo a nivel
+  de flota completa, no solo por equipo.
 - Exportador a PDF (`exportUnitToPDF` sigue siendo un `alert()` placeholder).
 - Tests automatizados (unitarios + E2E) con CI en GitHub Actions.
 - Revisar la lógica de "ARIDOS" en `determineConsumptionType()` (condición de negocio
   ambigua, no se tocó — ver comentarios en `analyzer.js`).
+
+## Correcciones aplicadas (20/08/2026)
+
+Verificadas contra los Excel reales de `ARCHIVOS/` con un harness de Playwright (headless,
+no versionado) que levanta la app en un servidor local y sube los 9 archivos reales
+(Equipos, Cargas, Consumos Estimados y 6 meses de Resumen de Flota).
+
+1. **`normalizeEquipoKey()` no igualaba códigos con y sin ceros a la izquierda**: el GPS
+   exporta el interno sin relleno ("CF1", "TR9") pero el padrón de Equipos lo trae relleno
+   ("CF01", "TR09") para el mismo equipo físico. Como la clave normalizada no igualaba
+   ambas grafías, esos equipos perdían sus horas y km de GPS todos los meses (quedaban en
+   "huérfanos" sin que se notara). Confirmado con datos reales: al aplicar el fix, CF1↔CF01
+   y TR9↔TR09 cruzan correctamente y `equipos_con_datos` sube de 122 a 124 sobre el mismo
+   dataset de 6 meses. La clave ahora le quita el cero a la izquierda solo al primer bloque
+   de dígitos después del prefijo, sin tocar sufijos ("MX108VL" no se altera) ni colapsar
+   códigos genuinamente distintos ("MX63" y "MX630" siguen siendo claves distintas).
+   Quedan sin resolver (causas distintas, no son el mismo bug): `MX` suelto sin número,
+   `CF40` (no es un problema de ceros), y `MX108VL`/`MX63TK` (sufijo pegado al código en el
+   Excel de GPS) — se dejan en huérfanos para revisión manual, como ya preveía el flujo de
+   correcciones de cargas.
+
+2. **`confiabilidad()` usaba un umbral fijo de cantidad de cargas, sin importar cuán largo
+   era el período analizado**: "3 cargas" pasaba como confiable igual si el período era una
+   semana o 6 meses (130 días hábiles), cuando son señales muy distintas. Ahora, cuando se
+   le pasa el período analizado, calcula además la **cobertura real**: días con al menos una
+   carga sobre los días hábiles del período (reutilizando `diasHabiles()` de `feriados.js`,
+   el mismo cálculo que ya se mostraba en el KPI de período). Se muestra en el modal de
+   detalle de cada equipo ("Cargó combustible en 38 de 63 días hábiles del período
+   analizado (60%)") y entra en los avisos de confiabilidad usados por "Ajustar metas" y el
+   diagnóstico automático cuando la cobertura baja de 40%.
+
+3. **Alinear varios archivos al mismo período reciente requería tildar mes por mes**: se
+   agregaron botones "Últimos 3 meses" / "Últimos 6 meses" / "Últimos 12 meses" (cuando hay
+   suficientes períodos con datos) junto al ya existente "N meses cruzados", para elegir de
+   un click el tramo reciente sobre el que se quiere combinar/comparar Cargas + GPS + otras
+   planillas, en vez de tildar cada mes a mano.
+
+4. **Badge de archivo procesado mostraba "DONE"/"ERROR" en vez de "LISTO"/"ERROR"**:
+   `processAllFiles()` en `upload.js` fijaba el texto correcto por archivo, pero el
+   `renderFileList()` final volvía a pintar todos los badges con el texto crudo del estado
+   (`f.status.toUpperCase()`), pisando el texto en español. Corregido con una tabla de
+   etiquetas (`BADGE_LABEL`) usada en los dos lugares donde se pinta el badge.

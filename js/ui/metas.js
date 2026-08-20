@@ -17,11 +17,13 @@ const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractio
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 let filasRef = [];
+let periodoRef = null;
 let seleccion = new Set();
 let overlay = null;
 
 export function abrirAjusteMetas(analisis, filtroInicial = 'todos') {
     filasRef = (analisis?.filas || []).filter(f => ['L/Hora', 'L/100Km'].includes(f.metrics.tipo_calculo));
+    periodoRef = analisis?.totales ? { desde: analisis.totales.periodo_desde, hasta: analisis.totales.periodo_hasta } : null;
     seleccion = new Set();
     cerrar();
 
@@ -120,7 +122,7 @@ function filtrar() {
         // Un equipo sin cargas en el período no aporta información para fijar una meta.
         if (f.metrics.cantidad_cargas === 0) return false;
         if (deno !== 'ALL' && f.equipo.denominacion !== deno) return false;
-        if (soloConf && !confiabilidad(f).confiable) return false;
+        if (soloConf && !confiabilidad(f, periodoRef).confiable) return false;
 
         if (filtro === 'sin_meta') return !f.confirmed || !f.confirmed.valor;
         if (filtro === 'sobre' || filtro === 'excedidos') return f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15;
@@ -156,7 +158,7 @@ function pintar() {
     body.innerHTML = filas.map(f => {
         const nm = nuevaMeta(f);
         const marcado = seleccion.has(f.equipo.interno);
-        const conf = confiabilidad(f);
+        const conf = confiabilidad(f, periodoRef);
         return `<tr class="${marcado ? 'fila-sel' : ''}">
             <td><input type="checkbox" data-interno="${esc(f.equipo.interno)}" ${marcado ? 'checked' : ''}></td>
             <td class="cell-key">${esc(f.equipo.interno)}</td>

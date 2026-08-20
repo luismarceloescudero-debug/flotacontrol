@@ -51,6 +51,9 @@ const MESES_CORTO = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Se
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+/** Rango de fechas efectivamente analizado (el mismo que ya se muestra en el KPI de período). */
+const periodoDeAnalisis = (analisis) => ({ desde: analisis?.totales?.periodo_desde, hasta: analisis?.totales?.periodo_hasta });
+
 /**
  * Importes de la flota en pesos llegan a diez cifras y no entran en una tarjeta sin
  * romperse en dos líneas a mitad del número. Se muestran abreviados en millones y el
@@ -154,6 +157,9 @@ export async function renderPanel() {
             equipos, rawRecords, estimados,
             filtro: { anio: view.anio || null, periodos: [...view.meses] }
         });
+        // Exponer para que datatable.js pueda abrir el modal de metas sin importar directamente
+        window.ultimoAnalisis = ultimoAnalisis;
+        window.abrirAjusteMetasDesdeTabla = (filtro) => abrirAjusteMetas(ultimoAnalisis, filtro);
 
         renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes);
         renderDiagnostico(ultimoAnalisis, rawRecords);
@@ -253,9 +259,15 @@ function renderMesesGrid(todosLosPeriodos, mesesCargas, mesesGps) {
     });
     html += '</div>';
 
-    // Acciones rápidas
+    // Acciones rápidas. Los períodos reales disponibles (sin importar el filtro de año activo)
+    // son la base para "últimos N meses": alinear rápido varias planillas (Cargas + varios
+    // meses de GPS) al mismo tramo reciente, en vez de tildar mes por mes.
+    const periodosReales = [...new Set(todosLosPeriodos)].sort();
     html += `<div class="meses-grid-actions">`;
     html += `<button class="btn-meses-action" id="meses-solo-cruzados" title="Seleccionar solo los meses que tienen cargas Y GPS a la vez">${ambos.length} meses cruzados</button>`;
+    [3, 6, 12].filter(n => periodosReales.length > n).forEach(n => {
+        html += `<button class="btn-meses-action" data-ultimos="${n}" title="Seleccionar los últimos ${n} meses con datos">Últimos ${n} meses</button>`;
+    });
     if (haySeleccion) html += `<button class="btn-meses-action" id="meses-limpiar">Limpiar</button>`;
     html += `</div>`;
 
@@ -274,6 +286,14 @@ function renderMesesGrid(todosLosPeriodos, mesesCargas, mesesGps) {
         view.meses.clear();
         ambos.forEach(ym => view.meses.add(ym));
         renderPanel();
+    });
+    grid.querySelectorAll('[data-ultimos]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const n = parseInt(btn.dataset.ultimos, 10);
+            view.meses.clear();
+            periodosReales.slice(-n).forEach(ym => view.meses.add(ym));
+            renderPanel();
+        });
     });
     grid.querySelector('#meses-limpiar')?.addEventListener('click', () => {
         view.meses.clear();
@@ -451,8 +471,6 @@ function renderDiagnostico(analisis, rawRecords = []) {
                 <div class="diag-acciones-bar">
                     ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
                     ${acciones.map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
-                    <span class="diag-acciones-sep"></span>
-                    ${h.equipos && h.equipos.length ? `<button class="btn-sm btn-diag-seguir-todos" data-hallazgo="${esc(h.id)}" title="${seguidos.size === h.equipos.length ? 'Quitar seguimiento de todos' : 'Marcar todos para seguimiento'}"><i class="fa-solid ${seguidos.size === h.equipos.length ? 'fa-eye-slash' : 'fa-eye'}"></i> ${seguidos.size === h.equipos.length ? 'Quitar seguimiento' : 'Seguimiento de todos'}</button>` : ''}
                     ${h.equipos && h.equipos.length >= 2 ? `<button class="btn-sm btn-diag-comparar-lista" data-hallazgo="${esc(h.id)}" title="Abrir comparativa con estos equipos"><i class="fa-solid fa-code-compare"></i> Comparar estos equipos</button>` : ''}
                     <span class="diag-acciones-sep"></span>
                     ${esIgnorado
@@ -480,10 +498,12 @@ function renderDiagnostico(analisis, rawRecords = []) {
                 <ul class="diag-lista">
                     ${h.equipos.map(e => {
                         const enSeg = seguidos.has(e.interno);
+                        const esNofl = h.id.startsWith('nofl_');
                         return `
-                        <li data-interno="${esc(e.interno)}" class="${enSeg ? 'diag-li-seguimiento' : ''}">
+                        <li data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" class="${enSeg ? 'diag-li-seguimiento' : ''}${esNofl ? ' diag-li-nofl' : ''}">
                             <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
                             <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small></span>
+                            ${esNofl ? `<button class="btn-xs btn-ver-cargas" data-interno="${esc(e.interno)}" title="Ver en tabla de cargas"><i class="fa-solid fa-table-list"></i> Ver cargas</button>` : ''}
                             <button class="btn-xs btn-diag-seguir ${enSeg ? 'active' : ''}" data-hallazgo="${esc(h.id)}" data-interno="${esc(e.interno)}" title="${enSeg ? 'Quitar seguimiento' : 'Marcar para seguimiento'}">
                                 <i class="fa-solid ${enSeg ? 'fa-eye-slash' : 'fa-eye'}"></i>
                             </button>
@@ -517,8 +537,36 @@ function renderDiagnostico(analisis, rawRecords = []) {
     // --- Event listeners ---
     el.querySelectorAll('.diag-lista li[data-interno]').forEach(li => {
         li.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-diag-seguir')) return; // no navegar si clickeó el botón de seguimiento
-            buscarEquipo(li.dataset.interno);
+            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas')) return;
+            const hallazgoId = li.dataset.hallazgo || '';
+            if (hallazgoId.startsWith('nofl_')) {
+                // Para hallazgos nofl_*, navegar a tabla de cargas y buscar el valor
+                if (typeof window.renderDataTable === 'function') {
+                    document.getElementById('nav-datos')?.click();
+                    setTimeout(() => {
+                        window.renderDataTable('carga');
+                        const buscador = document.getElementById('tabla-buscar');
+                        if (buscador) { buscador.value = li.dataset.interno; buscador.dispatchEvent(new Event('input')); }
+                    }, 100);
+                }
+            } else {
+                buscarEquipo(li.dataset.interno);
+            }
+        });
+    });
+
+    // Botón "Ver cargas" en items nofl
+    el.querySelectorAll('.btn-ver-cargas').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (typeof window.renderDataTable === 'function') {
+                document.getElementById('nav-datos')?.click();
+                setTimeout(() => {
+                    window.renderDataTable('carga');
+                    const buscador = document.getElementById('tabla-buscar');
+                    if (buscador) { buscador.value = btn.dataset.interno; buscador.dispatchEvent(new Event('input')); }
+                }, 100);
+            }
         });
     });
     el.querySelectorAll('.btn-diag-accion').forEach(b => {
@@ -929,13 +977,19 @@ function renderCards(container, analisis) {
         });
         card.querySelector('.btn-card-detail')?.addEventListener('click', (e) => {
             e.stopPropagation();
-            if (fila) openUnitModal(fila.equipo, fila.metrics, fila.confirmed, fila.cargas, fila.gps, fila.ubicacion);
+            if (fila) openUnitModal(fila.equipo, fila.metrics, fila.confirmed, fila.cargas, fila.gps, fila.ubicacion, periodoDeAnalisis(analisis));
         });
         card.querySelector('.btn-card-compare')?.addEventListener('click', (e) => {
             e.stopPropagation();
             if (comparSeleccion.has(interno)) comparSeleccion.delete(interno);
             else comparSeleccion.add(interno);
             renderCards(container, analisis);
+        });
+
+        // Click en la tarjeta (fuera de botones) → abrir overlay de pantalla completa
+        card.addEventListener('click', (e) => {
+            if (e.target.closest('button, a, input, select, label, [role="button"]')) return;
+            if (fila) abrirOverlayEquipo(fila, analisis);
         });
     });
 
@@ -1262,6 +1316,199 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
             ${cuerpo}
             <div class="card-status status-${est.cls}"><i class="fa-solid ${est.icon}"></i> <span>${esc(est.txt)}</span></div>
         </div>`;
+}
+
+/**
+ * Abre una capa de pantalla completa con toda la información del equipo y controles
+ * de edición siempre visibles. Se activa al hacer click en cualquier tarjeta del Panel.
+ */
+function abrirOverlayEquipo(fila, analisis) {
+    const { equipo: eq, metrics: m, confirmed } = fila;
+    const est = estadoDe(m, confirmed);
+    const esHora = m.tipo_calculo === 'L/Hora';
+    const factor = esHora ? m.total_horas : m.total_km;
+    const uf = esHora ? 'hs' : 'km';
+    const ubi = fila.ubicacion || {};
+
+    // Sugerencia de meta (igual que en la tarjeta)
+    const sug = ultimoAnalisis ? sugerirMeta(fila, ultimoAnalisis.filas) : null;
+
+    // Estado de comparación
+    const enComparacion = comparSeleccion.has(eq.interno);
+
+    // Desvío
+    let desvioHTML = '';
+    if (m.consumo_real > 0 && confirmed?.valor) {
+        const pct = m.desvio_pct;
+        const cls = pct > 15 ? 'desvio-alto' : (pct < -15 ? 'desvio-bajo' : 'desvio-ok');
+        desvioHTML = `<span class="meta-desvio overlay-desvio ${cls}">${pct >= 0 ? '+' : ''}${nf(pct)}% vs meta</span>`;
+    }
+
+    // Combustible
+    let combustibleLine = '';
+    if (ubi.combustible) {
+        const ban = getBandera(ubi.combustible) || '';
+        combustibleLine = `<div class="overlay-line">${ban ? `<span class="combustible-bandera">${esc(ban)}</span>` : ''}<span>${esc(ubi.combustible)}</span></div>`;
+    }
+
+    // Ralentí
+    let ralentiLine = '';
+    if (m.horas_ralenti > 0) {
+        const cat = categoriaRalenti(eq.interno);
+        const info = RALENTI_INFO[cat] || RALENTI_INFO.desperdicio;
+        const pct = m.total_horas > 0 ? (m.horas_ralenti / m.total_horas * 100) : 0;
+        ralentiLine = `<div class="overlay-line"><span class="ralenti-tag ${info.clase}"><i class="fa-solid ${info.icono}"></i> ${nf(m.horas_ralenti, 1)} hs ralentí (${nf(pct)}%) · ${info.texto}</span></div>`;
+    }
+
+    const html = `
+    <div class="equip-overlay" id="equip-overlay">
+      <div class="equip-overlay-panel">
+        <div class="equip-overlay-header">
+          <div class="equip-overlay-ident">
+            <div class="overlay-id-row">
+              <h2>${esc(eq.interno)}</h2>
+              ${eq.dominio ? `<span class="card-dominio">${esc(eq.dominio)}</span>` : '<em class="card-dominio">sin dominio</em>'}
+            </div>
+            <p class="card-deno">${esc(eq.denominacion || 'SIN CLASIFICAR')}</p>
+            ${[eq.marca, eq.modelo].filter(Boolean).length ? `<p class="card-modelo">${esc([eq.marca, eq.modelo].filter(Boolean).join(' '))}</p>` : ''}
+            ${(eq.anio || eq.potencia || eq.capacidad) ? `<p class="card-specs">${[eq.anio, eq.potencia, eq.capacidad].filter(Boolean).map(esc).join(' · ')}</p>` : ''}
+            <div class="card-status status-${est.cls}"><i class="fa-solid ${est.icon}"></i> <span>${esc(est.txt)}</span></div>
+          </div>
+          <button class="btn-icon btn-overlay-close" title="Cerrar (Esc)"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <div class="equip-overlay-body">
+          <!-- MÉTRICAS -->
+          <div class="equip-overlay-metrics">
+            <div class="overlay-stats-grid">
+              <div class="stat stat-emphasis">
+                <span class="stat-label"><i class="fa-solid fa-gas-pump"></i> Litros</span>
+                <span class="stat-value">${nf(m.total_litros, 1)} <small class="stat-unit">L</small></span>
+              </div>
+              <div class="stat stat-emphasis">
+                <span class="stat-label"><i class="fa-solid fa-sack-dollar"></i> Costo</span>
+                <span class="stat-value">${Math.abs(m.total_costo) >= 1e6 ? `$${nf(m.total_costo / 1e6, 1)} M` : `$${nf(m.total_costo)}`}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}</span>
+                <span class="stat-value">${nf(factor, esHora ? 1 : 0)} <small class="stat-unit">${uf}</small></span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Consumo real</span>
+                <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? `${nf(m.consumo_real, 2)} <small class="stat-unit">${esc(m.tipo_calculo !== 'No Aplica' ? m.tipo_calculo : '')}</small>` : '—'}</span>
+              </div>
+            </div>
+            ${confirmed ? `
+            <div class="card-meta-hero overlay-meta-hero">
+              <span class="meta-label"><i class="fa-solid fa-bullseye"></i> Meta ${confirmed.source === 'Maestro' ? '(ajustada)' : '(estimada)'}</span>
+              <span class="meta-valor">${nf(confirmed.valor, 2)} <small>${esc(m.tipo_calculo !== 'No Aplica' ? m.tipo_calculo : '')}</small></span>
+              ${desvioHTML}
+            </div>
+            ${m.consumo_real > 0 ? `
+            <div class="meta-bar overlay-meta-bar">
+              <div class="meta-bar-track"><div class="meta-bar-fill" style="width:${Math.min((m.consumo_real / confirmed.valor) * 100, 100)}%; background:${m.desvio_pct > 15 ? 'var(--accent-red)' : (m.desvio_pct < -15 ? 'var(--accent-cyan)' : 'var(--accent-green)')}"></div></div>
+              <div class="meta-bar-legend">
+                <span>Real <strong>${nf(m.consumo_real, 2)}</strong></span>
+                <span>Meta <strong>${nf(confirmed.valor, 2)}</strong></span>
+              </div>
+            </div>` : ''}` : (m.consumo_real > 0 ? `<div class="card-meta-hero card-meta-falta overlay-meta-hero"><span class="meta-label"><i class="fa-solid fa-circle-question"></i> Sin meta cargada</span></div>` : '')}
+            ${m.cross_check ? `<div class="card-cross-check" style="margin-top:8px"><i class="fa-solid fa-arrows-left-right"></i> También medible como <strong>${nf(m.cross_check.consumo_alt, 2)} ${esc(m.cross_check.tipo_alt)}</strong> <small>(${nf(m.total_horas, 1)} hs · ${nf(m.total_km)} km)</small></div>` : ''}
+            ${combustibleLine}
+            ${ubi.centroCosto ? `<div class="overlay-line"><i class="fa-solid fa-building"></i> ${esc(ubi.centroCosto)}</div>` : ''}
+            ${ubi.provincia && ubi.provincia !== 'SIN DATO' ? `<div class="overlay-line"><i class="fa-solid fa-location-dot"></i> ${esc(ubi.provincia)}</div>` : ''}
+            ${ralentiLine}
+            <div class="overlay-line overlay-fuentes">
+              ${m.cantidad_cargas > 0 ? `<span class="fuente-tag fuente-cargas"><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} cargas</span>` : ''}
+              ${m.cantidad_gps > 0 ? `<span class="fuente-tag fuente-gps"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} GPS</span>` : ''}
+              ${confirmed ? `<span class="fuente-tag fuente-meta"><i class="fa-solid fa-bullseye"></i> Meta</span>` : ''}
+            </div>
+          </div>
+
+          <!-- EDICIÓN -->
+          <div class="equip-overlay-edit">
+            <h4 class="overlay-edit-title"><i class="fa-solid fa-pen"></i> Editar equipo</h4>
+            <div class="card-edit overlay-card-edit">
+              <label>Denominación
+                <input type="text" class="edit-denominacion" value="${esc(eq.denominacion || '')}" list="denominaciones-list">
+              </label>
+              <label>Dominio (patente)
+                <input type="text" class="edit-dominio" value="${esc(eq.dominio || '')}" placeholder="ej: AF809IC">
+              </label>
+              <div class="edit-row">
+                <label>Meta<input type="number" step="0.01" min="0" class="edit-meta" value="${confirmed ? confirmed.valor : ''}" placeholder="8"></label>
+                <label>Se mide por
+                  <select class="edit-unidad">
+                    <option value="">(sin definir)</option>
+                    <option value="L/Hora" ${m.tipo_calculo === 'L/Hora' ? 'selected' : ''}>L/Hora</option>
+                    <option value="L/100Km" ${m.tipo_calculo === 'L/100Km' ? 'selected' : ''}>L/100Km</option>
+                    <option value="No Aplica" ${m.tipo_calculo === 'No Aplica' ? 'selected' : ''}>No aplica</option>
+                  </select>
+                </label>
+              </div>
+              ${sug ? `<button class="btn-sugerir" data-valor="${sug.valor}" data-unidad="${sug.unidad}">
+                <span><i class="fa-solid fa-wand-magic-sparkles"></i> Usar sugerencia: <strong>${nf(sug.valor, 2)} ${sug.unidad}</strong></span>
+                <small>${esc(sug.base)} · rango real ${nf(sug.minimo, 1)}–${nf(sug.maximo, 1)}</small>
+              </button>` : ''}
+              <div class="edit-actions overlay-edit-actions">
+                <button class="btn-primary btn-card-save"><i class="fa-solid fa-check"></i> Guardar</button>
+                <button class="btn-secondary btn-overlay-close-cancel">Cancelar</button>
+              </div>
+            </div>
+
+            <div class="overlay-extra-actions">
+              <button class="btn-secondary btn-sm btn-overlay-compare ${enComparacion ? 'active' : ''}">
+                <i class="fa-solid ${enComparacion ? 'fa-square-check' : 'fa-code-compare'}"></i>
+                ${enComparacion ? 'Quitar de comparativa' : 'Agregar a comparativa'}
+              </button>
+              <button class="btn-secondary btn-sm btn-overlay-detail">
+                <i class="fa-solid fa-chart-simple"></i> Ver detalle de cálculo
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+    // Inyectar y conectar
+    document.getElementById('equip-overlay')?.remove();
+    const container = document.getElementById('modals-container');
+    container.insertAdjacentHTML('beforeend', html);
+    const overlay = document.getElementById('equip-overlay');
+
+    // Cerrar
+    const cerrar = () => overlay.remove();
+    overlay.querySelectorAll('.btn-overlay-close, .btn-overlay-close-cancel').forEach(b => b.addEventListener('click', cerrar));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) cerrar(); });
+    const keyClose = (e) => { if (e.key === 'Escape') { cerrar(); document.removeEventListener('keydown', keyClose); } };
+    document.addEventListener('keydown', keyClose);
+
+    // Guardar
+    overlay.querySelector('.btn-card-save')?.addEventListener('click', async () => {
+        await guardarEdicion(eq.interno, overlay);
+        cerrar();
+    });
+
+    // Sugerir meta
+    overlay.querySelector('.btn-sugerir')?.addEventListener('click', (e) => {
+        const b = e.currentTarget;
+        overlay.querySelector('.edit-meta').value = b.dataset.valor;
+        overlay.querySelector('.edit-unidad').value = b.dataset.unidad;
+        b.classList.add('aplicada');
+    });
+
+    // Comparar
+    overlay.querySelector('.btn-overlay-compare')?.addEventListener('click', () => {
+        if (comparSeleccion.has(eq.interno)) comparSeleccion.delete(eq.interno);
+        else comparSeleccion.add(eq.interno);
+        const c = document.getElementById('cards-container');
+        if (c && analisis) renderCards(c, analisis);
+        cerrar();
+    });
+
+    // Ver detalle de cálculo
+    overlay.querySelector('.btn-overlay-detail')?.addEventListener('click', () => {
+        openUnitModal(eq, m, confirmed, fila.cargas, fila.gps, fila.ubicacion, periodoDeAnalisis(analisis));
+    });
 }
 
 async function guardarEdicion(interno, cardEl) {

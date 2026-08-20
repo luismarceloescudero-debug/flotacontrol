@@ -1397,3 +1397,41 @@
 .correc-footer-hint {
     font-size: 0.78rem; color: var(--text-muted); font-style: italic;
 }
+
+/* ---- Botón filtro huérfanas (Sin asignar activo) ---- */
+.btn-filtro-huerfanas { vertical-align: middle; }
+.btn-filtro-huerfanas.btn-warn-active {
+    background: rgba(245,166,35,0.25);
+    border-color: #f5a623;
+    color: #f5a623;
+}
+
+/* ---- Panel corrección: campos extra ---- */
+.correc-manual-wrap { gap: 0.4rem; }
+.correc-manual-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: nowrap; }
+.correc-field-label {
+    font-size: 0.75rem; color: var(--text-muted); white-space: nowrap;
+    min-width: 100px; text-align: right;
+}
+.correc-dominio-input, .correc-cc-input, .correc-lugar-input,
+.correc-sector-input, .correc-obs-input {
+    flex: 1; padding: 0.3em 0.65em; border-radius: 6px;
+    background: var(--bg-input, #161a28);
+    border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+    color: var(--text-primary); font-size: 0.85rem; min-width: 0;
+}
+.correc-dominio-input:focus, .correc-cc-input:focus, .correc-lugar-input:focus,
+.correc-sector-input:focus, .correc-obs-input:focus {
+    outline: none; border-color: var(--accent-blue, #4a9eff);
+}
+
+/* ---- Lista diagnóstico: items nofl ---- */
+.diag-li-nofl { cursor: pointer; }
+.diag-li-nofl:hover { background: rgba(255,159,10,0.06); }
+.btn-ver-cargas {
+    font-size: 0.75rem; padding: 0.15em 0.55em;
+    background: rgba(76,158,255,0.12); color: var(--accent-blue, #4a9eff);
+    border: 1px solid rgba(76,158,255,0.2); border-radius: 6px; cursor: pointer;
+    margin-left: 0.25rem;
+}
+.btn-ver-cargas:hover { background: rgba(76,158,255,0.22); }

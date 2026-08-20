@@ -256,8 +256,13 @@ export async function insertRawRecords(arr) {
         if (corr.accion === 'eliminar') continue;               // descartado por el usuario
         if (corr.accion === 'asignar') {
             const key = corr.interno_correcto.toUpperCase().replace(/[\s\-\.]/g, '');
+            const overrides = {};
+            if (corr.centro_costo_correcto) overrides.centro_costo = corr.centro_costo_correcto;
+            if (corr.lugar_carga_correcto)  overrides.lugar_carga  = corr.lugar_carga_correcto;
+            if (corr.sector_correcto)       overrides.sector        = corr.sector_correcto;
             finales.push({
                 ...r,
+                ...overrides,
                 interno: corr.interno_correcto,
                 interno_key: key,
                 dominio: corr.dominio_correcto || r.dominio || '',

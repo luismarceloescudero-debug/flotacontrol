@@ -10,11 +10,13 @@
  */
 
 import { getPrefijo, clasificarIdentificador } from './normalizer.js';
+import { diasHabiles } from './feriados.js';
 
 const TOLERANCIA = 0.15;
 const META_ALTA = 2.5;
 const META_BAJA = 0.4;
 const MIN_CARGAS_CONFIABLE = 3;
+const COBERTURA_MINIMA_PCT = 40; // % de días hábiles del período con al menos una carga
 
 /**
  * Equipos que trabajan ESTACIONARIOS: el motor encendido sin desplazarse es exactamente
@@ -46,15 +48,37 @@ export function categoriaRalenti(interno) {
     return 'desperdicio';
 }
 
-/** ¿El consumo calculado se apoya en suficientes datos como para tomarlo en serio? */
-export function confiabilidad(fila) {
+/**
+ * ¿El consumo calculado se apoya en suficientes datos como para tomarlo en serio?
+ *
+ * `periodo` ({ desde, hasta }, fechas ISO) es opcional: cuando se pasa, además del umbral fijo
+ * de cantidad de cargas se calcula la COBERTURA real — cuántos de los días hábiles del período
+ * analizado tuvieron al menos una carga. Un umbral fijo ("3 cargas ya es confiable") no
+ * distingue "3 cargas en una semana" de "3 cargas en 6 meses" (130 días hábiles): la segunda
+ * es un dato mucho más débil aunque pase el mismo umbral. Se reutiliza diasHabiles() de
+ * feriados.js (la misma cuenta que ya se muestra en el KPI de período del panel) para no
+ * duplicar el calendario de feriados en dos lugares.
+ */
+export function confiabilidad(fila, periodo = null) {
     const m = fila.metrics;
     const avisos = [];
     if (m.cantidad_cargas > 0 && m.cantidad_cargas < MIN_CARGAS_CONFIABLE) avisos.push(`solo ${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'}`);
     if (m.cantidad_gps === 1) avisos.push('un solo período de GPS');
     if (m.total_horas > 0 && m.total_horas < 20) avisos.push(`solo ${fmt(m.total_horas, 1)} hs registradas`);
     if (m.total_km > 0 && m.total_km < 200 && m.tipo_calculo === 'L/100Km') avisos.push(`solo ${fmt(m.total_km)} km`);
-    return { confiable: avisos.length === 0, avisos };
+
+    let cobertura = null;
+    if (periodo && periodo.desde && periodo.hasta && Array.isArray(fila.cargas) && fila.cargas.length) {
+        const diasConCarga = new Set(fila.cargas.map(c => c.fecha).filter(Boolean)).size;
+        const dh = diasHabiles(periodo.desde, periodo.hasta);
+        if (dh.dias > 0) {
+            const pct = Math.round((diasConCarga / dh.dias) * 100);
+            cobertura = { diasConCarga, diasHabiles: dh.dias, pct };
+            if (pct < COBERTURA_MINIMA_PCT) avisos.push(`cargó ${diasConCarga} de ${dh.dias} días hábiles del período (${pct}%)`);
+        }
+    }
+
+    return { confiable: avisos.length === 0, avisos, cobertura };
 }
 
 export function calcularExceso(fila) {
@@ -236,7 +260,8 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
     // Un equipo sin cargas en el período no operó: no es un hallazgo. La empresa trabaja en
     // dos provincias y no todo el parque se usa en todos lados ni en todos los meses.
     const activos = filas.filter(f => f.metrics.cantidad_cargas > 0);
-    const conExceso = activos.map(f => ({ fila: f, exceso: calcularExceso(f), conf: confiabilidad(f) })).filter(x => x.exceso);
+    const periodo = { desde: totales.periodo_desde, hasta: totales.periodo_hasta };
+    const conExceso = activos.map(f => ({ fila: f, exceso: calcularExceso(f), conf: confiabilidad(f, periodo) })).filter(x => x.exceso);
 
     // ---------- 1. Sobreconsumo valorizado ----------
     const excedidos = conExceso
@@ -353,7 +378,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
     }
 
     const porGrupo = new Map();
-    activos.filter(f => f.metrics.consumo_real > 0 && confiabilidad(f).confiable).forEach(f => {
+    activos.filter(f => f.metrics.consumo_real > 0 && confiabilidad(f, periodo).confiable).forEach(f => {
         const k = claveParGrupo(f.equipo);
         if (!porGrupo.has(k)) porGrupo.set(k, []);
         porGrupo.get(k).push(f);

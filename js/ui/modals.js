@@ -8,7 +8,7 @@ const MESES_CORTOS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps = [], ubicacion = null) {
+export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps = [], ubicacion = null, periodo = null) {
     const container = document.getElementById('modals-container');
     if (!container) return;
 
@@ -41,11 +41,19 @@ export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps =
 
                 <div class="modal-body">
                     ${(() => {
-                        const c = confiabilidad({ metrics });
-                        return c.confiable ? '' : `<div class="insight-bar insight-warn">
+                        const c = confiabilidad({ metrics, cargas: eqCargas }, periodo);
+                        const avisoBanner = c.confiable ? '' : `<div class="insight-bar insight-warn">
                             <i class="fa-solid fa-circle-exclamation"></i>
                             <div>Este consumo se apoya en pocos datos (${esc(c.avisos.join(', '))}). Tomalo como indicativo hasta tener más período cargado.</div>
                         </div>`;
+                        // Cobertura de cargas contra los días hábiles del período, aunque no
+                        // dispare el aviso: responde directamente a "¿son suficientes cargas
+                        // para el período que estoy mirando?" con el número, no solo un semáforo.
+                        const coberturaLinea = c.cobertura ? `<p class="modal-note modal-cobertura">
+                            <i class="fa-solid fa-calendar-check"></i>
+                            Cargó combustible en <strong>${c.cobertura.diasConCarga} de ${c.cobertura.diasHabiles}</strong> días hábiles del período analizado (${c.cobertura.pct}%).
+                        </p>` : '';
+                        return avisoBanner + coberturaLinea;
                     })()}
                     ${metrics.motivo_sin_calculo ? `
                         <div class="insight-bar insight-warn">

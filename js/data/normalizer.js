@@ -222,9 +222,23 @@ export function normalizeString(val) {
  * @param {String} val 
  * @returns {Object} { interno, dominio }
  */
+/**
+ * Verificado contra archivos reales: el GPS ("Resumen de Flota") exporta el interno sin
+ * ceros a la izquierda ("CF1", "TR9"), mientras que el padrón de Equipos lo trae relleno
+ * ("CF01", "TR09") para el MISMO equipo físico. Como antes la clave se armaba solo quitando
+ * espacios/guiones, "CF1" y "CF01" quedaban como claves distintas y el cruce fallaba: las
+ * horas y los km de ese equipo cualquier mes se iban a "huérfanos" en silencio.
+ *
+ * Se le quita el cero a la izquierda al primer bloque de dígitos (después del prefijo de
+ * letras) para que ambas grafías crucen. Lo que venga después de ese bloque (letras extra,
+ * más dígitos) se conserva tal cual, así que no confunde equipos realmente distintos:
+ * "MX63" y "MX630" no colapsan (ninguno tiene cero a la izquierda) y un sufijo como
+ * "MX108VL" no se toca.
+ */
 export function normalizeEquipoKey(interno) {
     if (!interno) return '';
-    return normalizeString(interno).replace(/[\s\-_]/g, '').trim();
+    const base = normalizeString(interno).replace(/[\s\-_]/g, '').trim();
+    return base.replace(/^([A-Z]+)0+(\d)/, '$1$2');
 }
 
 /**
