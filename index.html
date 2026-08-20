@@ -127,6 +127,7 @@
                     <button id="btn-ajustar-metas-estimados" class="btn-primary btn-sm" style="display:none" title="Ajustar metas masivamente usando la misma interfaz del Panel"><i class="fa-solid fa-sliders"></i> Ajustar metas</button>
                     <button id="btn-add-col" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Columna</button>
                     <button id="btn-add-row" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Equipo</button>
+                    <button id="btn-historial-ediciones" class="btn-secondary btn-sm" title="Ver el historial de ediciones manuales"><i class="fa-solid fa-clock-rotate-left"></i> Historial</button>
                     <button class="btn-secondary btn-sm" onclick="window.exportTableToXLSX()"><i class="fa-solid fa-file-excel"></i> Exportar</button>
                 </div>
             </div>
@@ -150,8 +151,14 @@
                     <option value="con_estimado">Con estimado</option>
                     <option value="editado">Editado manual</option>
                 </select>
+                <select id="tabla-filtro-cc" style="display:none" title="Filtrar por centro de costo"><option value="ALL">Todos los centros de costo</option></select>
+                <select id="tabla-filtro-lugar" style="display:none" title="Filtrar por lugar de carga"><option value="ALL">Todos los lugares</option></select>
                 <select id="tabla-anio"><option value="">Todos los años</option></select>
                 <select id="tabla-mes"><option value="">Todos los meses</option></select>
+                <select id="tabla-orden" style="display:none" title="Orden de las filas">
+                    <option value="">Más reciente primero</option>
+                    <option value="corregir">Marcadas para corregir primero</option>
+                </select>
                 <span id="tabla-count" class="cards-count"></span>
             </div>
             <div id="tabla-bulk-bar" class="tabla-bulk-bar" style="display:none">

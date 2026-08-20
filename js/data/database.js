@@ -23,8 +23,9 @@
 import { normalizeEquipoKey } from './normalizer.js';
 
 const DB_NAME = 'FlotaControlDB';
-// v5: correcciones persistentes de cargas y disponibilidad diaria de equipos.
-const DB_VERSION = 5;
+// v6: historial de ediciones manuales, etiquetas de columna para tablas de movimientos,
+// estados de ralentí (aceptable/seguimiento) y reclamos internos de revisión de GPS.
+const DB_VERSION = 6;
 
 let dbInstance = null;
 
@@ -74,6 +75,20 @@ export function initDB() {
                 const s = db.createObjectStore('disponibilidad', { keyPath: 'id' }); // id = 'interno|fecha'
                 s.createIndex('interno', 'interno', { unique: false });
                 s.createIndex('fecha', 'fecha', { unique: false });
+            }
+            // v6 — auditoría de ediciones manuales, ralentí (aceptable/seguimiento) y reclamos GPS
+            if (!db.objectStoreNames.contains('edicionesLog')) {
+                const s = db.createObjectStore('edicionesLog', { keyPath: 'id', autoIncrement: true });
+                s.createIndex('tabla', 'tabla', { unique: false });
+                s.createIndex('fecha', 'fecha', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('ralentiEstados')) {
+                db.createObjectStore('ralentiEstados', { keyPath: 'interno' });
+            }
+            if (!db.objectStoreNames.contains('reclamosGPS')) {
+                const s = db.createObjectStore('reclamosGPS', { keyPath: 'id', autoIncrement: true });
+                s.createIndex('interno', 'interno', { unique: false });
+                s.createIndex('estado', 'estado', { unique: false });
             }
         };
     });
@@ -415,11 +430,88 @@ export function deleteDisponibilidad(interno, fecha) {
     return writeTx(['disponibilidad'], ([store]) => { store.delete(`${interno}|${fecha}`); });
 }
 
+// ============================ HISTORIAL DE EDICIONES ============================
+
+/**
+ * Registro de auditoría de cualquier edición manual sobre cualquier tabla: quién campo,
+ * en qué registro, de qué valor a qué valor y cuándo. No se pisa nunca — es un log que
+ * crece, no un estado. { id, tabla, registroId, etiqueta, campo, valorAnterior, valorNuevo, fecha }
+ */
+export function registrarEdicion({ tabla, registroId, etiqueta, campo, valorAnterior, valorNuevo }) {
+    return writeTx(['edicionesLog'], ([store]) => {
+        store.add({ tabla, registroId, etiqueta, campo, valorAnterior, valorNuevo, fecha: new Date().toISOString() });
+    });
+}
+
+export function getEdicionesLog() { return readAll('edicionesLog'); }
+
+// ============================ ETIQUETAS DE COLUMNA (tablas de movimientos) ============================
+
+/** Etiquetas de columna renombradas a mano por tipo de movimiento: { [tipo]: { [campoKey]: label } } */
+export async function getColLabelsMov() {
+    const r = await readOne('config', 'col_labels_mov');
+    return (r && r.v) || {};
+}
+export async function setColLabelMov(tipo, campoKey, label) {
+    const actual = await getColLabelsMov();
+    const siguiente = { ...actual, [tipo]: { ...(actual[tipo] || {}), [campoKey]: label } };
+    return writeTx(['config'], ([store]) => { store.put({ k: 'col_labels_mov', v: siguiente }); return siguiente; });
+}
+
+// ============================ RALENTÍ: ACEPTABLE / SEGUIMIENTO ============================
+
+/**
+ * Estado que el usuario le asigna al ralentí de un equipo puntual, para que el diagnóstico
+ * automático deje de repetirle la misma alerta: { interno, estado: 'aceptable'|'seguimiento',
+ * motivo, fecha }. No borra ni modifica ningún dato de origen, solo cómo se interpreta.
+ */
+export function getRalentiEstados() { return readAll('ralentiEstados'); }
+export function setRalentiEstado(interno, estado, motivo = '') {
+    return writeTx(['ralentiEstados'], ([store]) => {
+        store.put({ interno, estado, motivo, fecha: new Date().toISOString() });
+    });
+}
+export function quitarRalentiEstado(interno) {
+    return writeTx(['ralentiEstados'], ([store]) => { store.delete(interno); });
+}
+
+// ============================ RECLAMOS DE REVISIÓN DE GPS ============================
+
+/**
+ * Ticket interno para pedir revisión del equipo GPS de un equipo (ej. ralentí inverosímil
+ * que probablemente sea un reporte del GPS mal calibrado, no un desperdicio real).
+ * Alcance de esta versión: registro local exportable/imprimible. Todavía no hay integración
+ * con ningún proveedor — se deja el campo `proveedor` listo para cuando se sume esa info.
+ * { id, interno, motivo, proveedor, fecha, estado: 'abierto'|'cerrado', notas }
+ */
+export function getReclamosGPS() { return readAll('reclamosGPS'); }
+export function crearReclamoGPS(reclamo) {
+    return writeTx(['reclamosGPS'], ([store]) => {
+        const registro = { estado: 'abierto', proveedor: '', notas: '', ...reclamo, fecha: new Date().toISOString() };
+        store.add(registro);
+        return registro;
+    });
+}
+export function actualizarReclamoGPS(id, cambios) {
+    const tx = getDB().transaction(['reclamosGPS'], 'readwrite');
+    const store = tx.objectStore('reclamosGPS');
+    return new Promise((resolve, reject) => {
+        const req = store.get(id);
+        req.onsuccess = () => {
+            const rec = req.result;
+            if (!rec) { reject(new Error(`reclamo ${id} no encontrado`)); return; }
+            store.put({ ...rec, ...cambios });
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = (e) => reject(e.target.error);
+    });
+}
+
 /** Borra absolutamente todo, incluido el maestro y las columnas propias. */
 export function clearAllData() {
     return writeTx(
         ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
-         'correccionesCargas', 'disponibilidad'],
+         'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS'],
         (stores) => { stores.forEach(s => s.clear()); }
     );
 }

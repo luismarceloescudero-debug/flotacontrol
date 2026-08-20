@@ -254,8 +254,15 @@ export function evolucionMensual(fila) {
 
 // ============================================================ HALLAZGOS
 
-export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
+export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = []) {
     const hallazgos = [];
+
+    // Estado que el usuario le asignó al ralentí de un equipo puntual (aceptable/seguimiento):
+    // "aceptable" saca al equipo de los hallazgos de ralentí de ahora en más (sin borrar el
+    // dato, solo cómo se interpreta); "seguimiento" lo deja visible pero marcado.
+    const ralentiEstadoMap = new Map(ralentiEstados.map(r => [r.interno, r]));
+    const esRalentiAceptable = (interno) => ralentiEstadoMap.get(interno)?.estado === 'aceptable';
+    const subSeguimiento = (interno) => ralentiEstadoMap.get(interno)?.estado === 'seguimiento' ? ' · en seguimiento' : '';
 
     // Un equipo sin cargas en el período no operó: no es un hallazgo. La empresa trabaja en
     // dos provincias y no todo el parque se usa en todos lados ni en todos los meses.
@@ -433,12 +440,22 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
     const conRalenti = activos.filter(f => f.metrics.total_horas > 0 && f.metrics.horas_ralenti > 0)
         .map(f => ({ fila: f, pct: f.metrics.horas_ralenti / f.metrics.total_horas * 100, cat: categoriaRalenti(f.equipo.interno) }));
 
-    const desperdicio = conRalenti.filter(x => x.cat === 'desperdicio').sort((a, b) => b.fila.metrics.horas_ralenti - a.fila.metrics.horas_ralenti);
+    // Los equipos marcados "aceptable" salen de la lista de desperdicio (ya se revisaron y
+    // se decidió que ese ralentí es normal para ese equipo, ej. traslado de personal), pero
+    // no se pierden: siguen contando en `aceptados` para que el hallazgo avise cuántos quedaron
+    // afuera por esa razón, en vez de desaparecer en silencio.
+    const desperdicioTodos = conRalenti.filter(x => x.cat === 'desperdicio').sort((a, b) => b.fila.metrics.horas_ralenti - a.fila.metrics.horas_ralenti);
+    const desperdicio = desperdicioTodos.filter(x => !esRalentiAceptable(x.fila.equipo.interno));
+    const aceptadosRalenti = desperdicioTodos.filter(x => esRalentiAceptable(x.fila.equipo.interno));
     const espera = conRalenti.filter(x => x.cat === 'espera').sort((a, b) => b.pct - a.pct);
     const estacionarios = conRalenti.filter(x => x.cat === 'estacionario');
 
     const hsDesperdicio = desperdicio.reduce((s, x) => s + x.fila.metrics.horas_ralenti, 0);
     const hsEstacionario = estacionarios.reduce((s, x) => s + x.fila.metrics.horas_ralenti, 0);
+    // Promedio de horas de ralentí del grupo, usado por la acción "Promediar y marcar como
+    // aceptable" del panel: marca en bloque a los equipos que están en la media para abajo,
+    // dejando visibles (para revisión uno por uno) solo a los que se salen por arriba.
+    const promedioRalenti = desperdicio.length ? hsDesperdicio / desperdicio.length : 0;
 
     if (desperdicio.length) {
         hallazgos.push({
@@ -446,11 +463,18 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
             titulo: `${fmt(hsDesperdicio)} horas de ralentí evitable en equipos de desplazamiento`,
             detalle: `Solo se cuentan aquí los equipos cuyo trabajo es moverse (tractores, camionetas, cargadoras): en ellos el motor encendido sin desplazarse sí es combustible sin producción. ` +
                 (hsEstacionario > 0 ? `Quedan excluidas <strong>${fmt(hsEstacionario)} hs</strong> de grupos electrógenos y equipos estacionarios, donde trabajar quieto es justamente su función. ` : '') +
+                (aceptadosRalenti.length ? `<strong>${aceptadosRalenti.length}</strong> equipo${aceptadosRalenti.length === 1 ? '' : 's'} más quedaron afuera porque se marcaron como "ralentí aceptable". ` : '') +
                 (espera.length ? `Los mixers y bombas se listan aparte porque parte de su espera es operativa (aguardar descarga en obra).` : ''),
+            promedio_ralenti: promedioRalenti,
+            // Set completo (no solo los primeros 10 que se listan) para que "Promediar y marcar
+            // como aceptable" pueda marcar a TODOS los que están en la media para abajo, no
+            // solo a los que se llegan a ver en pantalla.
+            internos_bajo_promedio: desperdicio.filter(x => x.fila.metrics.horas_ralenti <= promedioRalenti).map(x => x.fila.equipo.interno),
             equipos: desperdicio.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.horas_ralenti)} hs en ralentí`,
-                sub: `${fmt(x.pct)}% de sus ${fmt(x.fila.metrics.total_horas)} hs · trabajo de desplazamiento`
+                sub: `${fmt(x.pct)}% de sus ${fmt(x.fila.metrics.total_horas)} hs · trabajo de desplazamiento${subSeguimiento(x.fila.equipo.interno)}`,
+                valor_ralenti: x.fila.metrics.horas_ralenti
             }))
         });
     }
@@ -574,7 +598,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
 
     // ---------- 11. Ralentí inverosímil: más de 20 hs diarias promedio de ralentí ----------
     if (totales.periodo_desde && totales.periodo_hasta) {
-        const ralentiExtremo = activos.filter(f => {
+        const ralentiExtremoTodos = activos.filter(f => {
             if (f.metrics.horas_ralenti <= 0) return false;
             const cat = categoriaRalenti(f.equipo.interno);
             // Solo alertar en equipos donde el ralentí NO es su trabajo
@@ -588,17 +612,27 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = []) {
             return (f.metrics.horas_ralenti / dias > 18 || pctRalenti > 90);
         }).sort((a, b) => b.metrics.horas_ralenti - a.metrics.horas_ralenti);
 
+        const ralentiExtremo = ralentiExtremoTodos.filter(f => !esRalentiAceptable(f.equipo.interno));
+        const aceptadosExtremo = ralentiExtremoTodos.filter(f => esRalentiAceptable(f.equipo.interno));
+
         if (ralentiExtremo.length) {
             hallazgos.push({
                 id: 'ralenti_inverosimil', severidad: 'media', icono: 'fa-circle-exclamation',
                 titulo: `${ralentiExtremo.length} equipos con ralentí inverosímil`,
-                detalle: `Promedian más de 18 hs diarias de ralentí o >90% del total de horas. Esto suele indicar un error en los datos del GPS, un equipo que quedó encendido por accidente, o un problema con el sensor.`,
+                detalle: `Promedian más de 18 hs diarias de ralentí o >90% del total de horas. Esto suele indicar un error en los datos del GPS, un equipo que quedó encendido por accidente, o un problema con el sensor — por eso la acción sugerida es pedir revisión del equipo GPS, no directamente cuestionar al chofer.` +
+                    (aceptadosExtremo.length ? ` <strong>${aceptadosExtremo.length}</strong> más quedaron afuera porque se marcaron como "ralentí aceptable".` : ''),
+                promedio_ralenti: ralentiExtremo.length ? ralentiExtremo.reduce((s, x) => s + x.metrics.horas_ralenti, 0) / ralentiExtremo.length : 0,
+                internos_bajo_promedio: (() => {
+                    const prom = ralentiExtremo.length ? ralentiExtremo.reduce((s, x) => s + x.metrics.horas_ralenti, 0) / ralentiExtremo.length : 0;
+                    return ralentiExtremo.filter(x => x.metrics.horas_ralenti <= prom).map(x => x.equipo.interno);
+                })(),
                 equipos: ralentiExtremo.slice(0, 10).map(x => {
                     const pct = x.metrics.total_horas > 0 ? (x.metrics.horas_ralenti / x.metrics.total_horas * 100) : 0;
                     return {
                         interno: x.equipo.interno, denominacion: x.equipo.denominacion,
                         texto: `${fmt(x.metrics.horas_ralenti)} hs ralentí (${fmt(pct)}%)`,
-                        sub: `de ${fmt(x.metrics.total_horas)} hs totales · verificar GPS`
+                        sub: `de ${fmt(x.metrics.total_horas)} hs totales · verificar GPS${subSeguimiento(x.equipo.interno)}`,
+                        valor_ralenti: x.metrics.horas_ralenti
                     };
                 })
             });

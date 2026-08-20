@@ -4,10 +4,10 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo } from '../data/database.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos } from '../data/analyzer.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita } from '../data/diagnostico.js';
-import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga } from '../data/normalizer.js';
+import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR } from '../data/normalizer.js';
 import { diasHabiles } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
@@ -30,6 +30,9 @@ const RALENTI_INFO = {
 
 let ultimoAnalisis = null;
 let datosCrudos = null;
+// Estados persistentes de ralentí (aceptable/seguimiento) por interno — se recargan al abrir
+// el panel y cada vez que se marca/desmarca uno, para que generarDiagnostico() los use.
+let ralentiEstadosCache = [];
 
 // Equipos marcados para comparar desde las tarjetas (checkbox en cada card + barra flotante),
 // para no depender de buscar manualmente cada equipo dentro del modal de comparativa.
@@ -126,10 +129,11 @@ export async function renderPanel() {
     kpiEl.innerHTML = '<p style="color:var(--text-muted)">Analizando datos...</p>';
 
     try {
-        const [equipos, rawRecords, estimados] = await Promise.all([
-            getAllEquipos(), getAllRawRecords(), getAllEstimados()
+        const [equipos, rawRecords, estimados, ralentiEstados] = await Promise.all([
+            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados()
         ]);
         datosCrudos = { equipos, rawRecords, estimados };
+        ralentiEstadosCache = ralentiEstados;
 
         const fuentes = {
             equipos: equipos.length,
@@ -373,6 +377,111 @@ function costoSubPorCombustible(t) {
     ).join(' · ');
 }
 
+/**
+ * Zoom multi-nivel de los KPIs agregados (litros, costo, km, horas): del total de la flota se
+ * baja a "cuánto aportó cada equipo" y de ahí a "qué movimientos concretos de ESE equipo forman
+ * ese número" — cargas de combustible o registros GPS, según qué campo se está mirando. Cada
+ * nivel usa `ultimoAnalisis.filas`, el mismo array ya calculado que alimenta las tarjetas.
+ */
+function nivelPorEquipo({ campo, tituloBase, etiquetaValor, formatear, fuenteTipo }) {
+    const filas = (ultimoAnalisis?.filas || [])
+        .filter(f => (f.metrics[campo] || 0) > 0)
+        .sort((a, b) => (b.metrics[campo] || 0) - (a.metrics[campo] || 0));
+    const total = filas.reduce((s, f) => s + (f.metrics[campo] || 0), 0);
+    return {
+        titulo: `${tituloBase} por equipo`,
+        valor: `${filas.length} equipo${filas.length === 1 ? '' : 's'}`,
+        nota: `Ordenados de mayor a menor aporte a ${etiquetaValor}. Hacé clic en un equipo para ver el detalle de sus ${fuenteTipo === 'carga' ? 'cargas de combustible' : 'registros GPS'} en este período.`,
+        pasos: filas.map(f => ({
+            texto: `${f.equipo.interno} — ${f.equipo.denominacion || 'sin denominación'}`,
+            resultado: `${formatear(f.metrics[campo])}${total > 0 ? ` · ${nf((f.metrics[campo] / total) * 100, 1)}%` : ''}`,
+            zoom: () => fuenteTipo === 'carga' ? nivelCargasEquipo(f.equipo.interno) : nivelGpsEquipo(f.equipo.interno)
+        }))
+    };
+}
+
+/** Nivel terminal: las cargas de combustible concretas de un equipo (fecha, litros, importe, lugar, CC). */
+function nivelCargasEquipo(interno) {
+    const fila = (ultimoAnalisis?.filas || []).find(f => f.equipo.interno === interno);
+    const cargas = (fila?.cargas || []).slice().sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+    const totalLitros = cargas.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0);
+    const totalImporte = cargas.reduce((s, c) => s + (parseFloat(c.importe) || 0), 0);
+    const MOSTRAR = 30;
+    return {
+        titulo: `Cargas de ${interno}`,
+        valor: `${nf(totalLitros, 2)} L · ${money(totalImporte)}`,
+        nota: cargas.length > MOSTRAR ? `Mostrando las ${MOSTRAR} más recientes de ${cargas.length} cargas del período.` : `${cargas.length} carga${cargas.length === 1 ? '' : 's'} en el período analizado.`,
+        pasos: cargas.slice(0, MOSTRAR).map(c => ({
+            texto: `${formatFechaAR(c.fecha)} · ${c.lugar_carga || 'sin lugar'} · ${c.centro_costo || 'sin CC'}`,
+            resultado: `${nf(parseFloat(c.litros) || 0, 2)} L · $${nf(parseFloat(c.importe) || 0)}`
+        })),
+        acciones: [
+            { texto: 'Ver todas las cargas de este equipo en la tabla', icono: 'fa-table-list', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('carga', interno) }
+        ]
+    };
+}
+
+/** Nivel terminal: los registros GPS concretos de un equipo (fecha, km, horas de movimiento/ralentí). */
+function nivelGpsEquipo(interno) {
+    const fila = (ultimoAnalisis?.filas || []).find(f => f.equipo.interno === interno);
+    const gps = (fila?.gps || []).slice().sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+    const totalKm = gps.reduce((s, g) => s + (parseFloat(g.distancia) || 0), 0);
+    const totalHoras = gps.reduce((s, g) => s + ((g.horas && typeof g.horas === 'object' ? g.horas.total : parseFloat(g.horas)) || 0), 0);
+    const MOSTRAR = 30;
+    return {
+        titulo: `Registros GPS de ${interno}`,
+        valor: `${nf(totalKm)} km · ${nf(totalHoras, 1)} hs`,
+        nota: gps.length > MOSTRAR ? `Mostrando los ${MOSTRAR} más recientes de ${gps.length} registros del período.` : `${gps.length} registro${gps.length === 1 ? '' : 's'} en el período analizado.`,
+        pasos: gps.slice(0, MOSTRAR).map(g => {
+            const h = (g.horas && typeof g.horas === 'object') ? g.horas : { ralenti: 0, movimiento: parseFloat(g.horas) || 0, total: parseFloat(g.horas) || 0 };
+            return {
+                texto: `${formatFechaAR(g.fecha)} → ${formatFechaAR(g.fecha_hasta)}`,
+                resultado: `${nf(parseFloat(g.distancia) || 0)} km · ${nf(h.total, 1)} hs (${nf(h.ralenti, 1)} ralentí)`
+            };
+        }),
+        acciones: [
+            { texto: 'Ver todos los registros GPS de este equipo en la tabla', icono: 'fa-table-list', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('gps', interno) }
+        ]
+    };
+}
+
+/** Zoom del KPI "Sobre la meta": lista de equipos excedidos → detalle de meta vs. consumo real de cada uno (terminal). */
+function nivelEquiposSobreMeta() {
+    const filas = (ultimoAnalisis?.filas || [])
+        .filter(f => f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15)
+        .sort((a, b) => (b.metrics.desvio_pct || 0) - (a.metrics.desvio_pct || 0));
+    return {
+        titulo: 'Equipos sobre la meta',
+        valor: `${filas.length} equipo${filas.length === 1 ? '' : 's'}`,
+        nota: 'Ordenados de mayor a menor desvío. Hacé clic en un equipo para ver meta vs. consumo real.',
+        pasos: filas.map(f => ({
+            texto: `${f.equipo.interno} — ${f.equipo.denominacion || 'sin denominación'}`,
+            resultado: f.metrics.desvio_pct !== null ? `+${nf(f.metrics.desvio_pct, 1)}%` : 'sin dato',
+            zoom: () => nivelDetalleMetaEquipo(f.equipo.interno)
+        }))
+    };
+}
+
+function nivelDetalleMetaEquipo(interno) {
+    const fila = (ultimoAnalisis?.filas || []).find(f => f.equipo.interno === interno);
+    if (!fila) return null;
+    const m = fila.metrics;
+    const unidad = unidadConsumoLabel(m.tipo_calculo);
+    return {
+        titulo: `Meta vs. consumo de ${interno}`,
+        valor: m.desvio_pct !== null ? `+${nf(m.desvio_pct, 1)}%` : 'sin desvío calculable',
+        pasos: [
+            { texto: 'Meta cargada para este equipo', resultado: `${nf(fila.equipo.meta_valor, 2)} ${fila.equipo.meta_unidad || unidad || ''}` },
+            { texto: 'Consumo real calculado en el período', resultado: `${nf(m.consumo_real, 2)} ${unidad}` },
+            { texto: 'Desvío contra la meta', resultado: m.desvio_pct !== null ? `+${nf(m.desvio_pct, 1)}%` : 'sin datos suficientes' }
+        ],
+        acciones: [
+            { texto: 'Ver la tarjeta de este equipo', icono: 'fa-id-card', primaria: true, onClick: () => buscarEquipo(interno) },
+            { texto: 'Ajustar su meta', icono: 'fa-sliders', onClick: () => abrirAjusteMetas(ultimoAnalisis, 'excedidos') }
+        ]
+    };
+}
+
 function renderKPIs(el, t, fuentes) {
     let rango;
     if (t.periodo_desde && t.periodo_hasta) rango = `${t.periodo_desde} → ${t.periodo_hasta}`;
@@ -410,17 +519,30 @@ function renderKPIs(el, t, fuentes) {
 
         <div class="kpi-grid">
             ${kpi({ id: 'kpi-litros', label: 'Combustible', valor: `${nf(t.total_litros)} <small>L</small>`, sub: `${nf(t.cantidad_cargas)} cargas registradas`, titulo: 'Combustible total del período', pasos: t.pasos.litros,
-                acciones: [{ texto: 'Ver cargas de combustible', icono: 'fa-gas-pump', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('carga', '') }] })}
+                acciones: [
+                    { texto: 'Ver cargas de combustible', icono: 'fa-gas-pump', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('carga', '') },
+                    { texto: 'Desglose por equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelPorEquipo({ campo: 'total_litros', tituloBase: 'Combustible', etiquetaValor: 'los litros totales', formatear: v => `${nf(v, 2)} L`, fuenteTipo: 'carga' }) }
+                ] })}
             ${kpi({ id: 'kpi-costo', label: 'Costo total', valor: money(t.total_costo), sub: costoSubPorCombustible(t), titulo: 'Costo total del combustible', pasos: t.pasos.costo,
-                acciones: [{ texto: 'Ver cargas de combustible', icono: 'fa-gas-pump', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('carga', '') }] })}
+                acciones: [
+                    { texto: 'Ver cargas de combustible', icono: 'fa-gas-pump', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('carga', '') },
+                    { texto: 'Desglose por equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelPorEquipo({ campo: 'total_costo', tituloBase: 'Costo', etiquetaValor: 'el costo total', formatear: v => money(v), fuenteTipo: 'carga' }) }
+                ] })}
             ${kpi({ id: 'kpi-km', label: 'Distancia', valor: `${nf(t.total_km)} <small>km</small>`, sub: 'Según Resumen de Flota', titulo: 'Kilómetros recorridos', pasos: t.pasos.km,
-                acciones: [{ texto: 'Ver reportes GPS', icono: 'fa-satellite-dish', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('gps', '') }] })}
+                acciones: [
+                    { texto: 'Ver reportes GPS', icono: 'fa-satellite-dish', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('gps', '') },
+                    { texto: 'Desglose por equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelPorEquipo({ campo: 'total_km', tituloBase: 'Distancia', etiquetaValor: 'los kilómetros totales', formatear: v => `${nf(v)} km`, fuenteTipo: 'gps' }) }
+                ] })}
             ${kpi({ id: 'kpi-horas', label: 'Horas de uso', valor: `${nf(t.total_horas)} <small>hs</small>`, sub: `${nf(t.horas_movimiento)} movimiento · ${nf(t.horas_ralenti)} ralentí`, titulo: 'Horas de uso', pasos: t.pasos.horas,
-                acciones: [{ texto: 'Ver reportes GPS', icono: 'fa-satellite-dish', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('gps', '') }] })}
+                acciones: [
+                    { texto: 'Ver reportes GPS', icono: 'fa-satellite-dish', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('gps', '') },
+                    { texto: 'Desglose por equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelPorEquipo({ campo: 'total_horas', tituloBase: 'Horas de uso', etiquetaValor: 'las horas totales', formatear: v => `${nf(v, 1)} hs`, fuenteTipo: 'gps' }) }
+                ] })}
             ${kpi({ id: 'kpi-sobre', label: 'Sobre la meta', valor: String(t.sobre_meta), sub: `de ${t.con_meta} equipos con meta`, clase: t.sobre_meta > 0 ? 'kpi-alert' : '', titulo: 'Equipos sobre la meta', pasos: t.pasos.sobre_meta,
                 acciones: t.sobre_meta > 0 ? [
                     { texto: 'Ver estos equipos', icono: 'fa-eye', primaria: true, onClick: () => filtrarPorEstado('SOBRE') },
-                    { texto: 'Ajustar sus metas', icono: 'fa-sliders', onClick: () => abrirAjusteMetas(ultimoAnalisis, 'excedidos') }
+                    { texto: 'Ajustar sus metas', icono: 'fa-sliders', onClick: () => abrirAjusteMetas(ultimoAnalisis, 'excedidos') },
+                    { texto: 'Ver el detalle de cada equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelEquiposSobreMeta() }
                 ] : [] })}
             ${kpi({ id: 'kpi-equipos', label: 'Equipos', valor: String(t.equipos), sub: `${t.equipos_con_datos} con actividad · ${t.huerfanos.length} códigos sin padrón`, clase: t.huerfanos.length ? 'kpi-warn' : '', titulo: 'Equipos del maestro', pasos: t.pasos.equipos,
                 acciones: [
@@ -435,7 +557,7 @@ function renderKPIs(el, t, fuentes) {
 function renderDiagnostico(analisis, rawRecords = []) {
     const el = document.getElementById('panel-diagnostico');
     if (!el) return;
-    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords);
+    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache);
 
     // Qué categorías de hallazgo había la vez anterior y ya no están: es la señal de que un
     // ajuste de metas o un archivo nuevo realmente cambió algo, no solo un texto que dice
@@ -473,10 +595,13 @@ function renderDiagnostico(analisis, rawRecords = []) {
     const sev = { alta: 'sev-alta', media: 'sev-media', baja: 'sev-baja', ok: 'sev-ok' };
     const txt = { alta: 'Prioridad alta', media: 'Revisar', baja: 'Menor', ok: 'Positivo' };
 
+    const esHallazgoRalenti = (id) => id === 'ralenti' || id === 'ralenti_inverosimil';
+
     const renderHallazgoCard = (h, i, esIgnorado) => {
         const abierto = diagAbiertos.has(h.id) ? diagAbiertos.get(h.id) : (esPrimerCalculo && i === 0 && !esIgnorado);
         const seguidos = diagSeguimiento.get(h.id) || new Set();
         const acciones = ACCIONES_PROPUESTAS[h.id] || [];
+        const esRalenti = esHallazgoRalenti(h.id);
         return `
         <details class="diag-card ${sev[h.severidad]} ${esIgnorado ? 'diag-ignorado' : ''}" data-id="${esc(h.id)}" ${abierto ? 'open' : ''}>
             <summary>
@@ -495,6 +620,9 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
                     ${acciones.map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
                     ${h.equipos && h.equipos.length >= 2 ? `<button class="btn-sm btn-diag-comparar-lista" data-hallazgo="${esc(h.id)}" title="Abrir comparativa con estos equipos"><i class="fa-solid fa-code-compare"></i> Comparar estos equipos</button>` : ''}
+                    ${esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.length ? `<button class="btn-sm btn-ralenti-promediar" data-hallazgo="${esc(h.id)}" title="Marca como aceptable a los ${h.internos_bajo_promedio.length} equipos en la media (${nf(h.promedio_ralenti)} hs) para abajo, dejando visibles solo a los que se salen por arriba"><i class="fa-solid fa-chart-simple"></i> Promediar y marcar como aceptable (${h.internos_bajo_promedio.length})</button>` : ''}
+                    ${esRalenti ? `<button class="btn-sm btn-ver-reclamos-gps" title="Ver los reclamos de revisión de GPS generados"><i class="fa-solid fa-list-check"></i> Reclamos GPS</button>` : ''}
+                    ${esRalenti && ralentiEstadosCache.some(r => r.estado === 'aceptable') ? `<button class="btn-sm btn-ver-ralenti-aceptados" title="Ver y desmarcar equipos con ralentí aceptable"><i class="fa-solid fa-list-check"></i> Ralentí aceptable (${ralentiEstadosCache.filter(r => r.estado === 'aceptable').length})</button>` : ''}
                     <span class="diag-acciones-sep"></span>
                     ${esIgnorado
                         ? `<button class="btn-sm btn-diag-restaurar" data-hallazgo="${esc(h.id)}" title="Volver a mostrar este hallazgo"><i class="fa-solid fa-eye"></i> Restaurar</button>`
@@ -527,6 +655,13 @@ function renderDiagnostico(analisis, rawRecords = []) {
                             <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
                             <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small></span>
                             ${esNofl ? `<button class="btn-xs btn-ver-cargas" data-interno="${esc(e.interno)}" title="Ver en tabla de cargas"><i class="fa-solid fa-table-list"></i> Ver cargas</button>` : ''}
+                            ${esRalenti ? `
+                            <button class="btn-xs btn-ralenti-aceptable" data-interno="${esc(e.interno)}" title="Marcar este ralentí como aceptable: sale de este hallazgo de ahora en más">
+                                <i class="fa-solid fa-check"></i> Aceptable
+                            </button>
+                            <button class="btn-xs btn-ralenti-reclamo" data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" title="Generar un reclamo interno para pedir revisión del equipo GPS de este equipo">
+                                <i class="fa-solid fa-satellite-dish"></i> Reclamo GPS
+                            </button>` : ''}
                             <button class="btn-xs btn-diag-seguir ${enSeg ? 'active' : ''}" data-hallazgo="${esc(h.id)}" data-interno="${esc(e.interno)}" title="${enSeg ? 'Quitar seguimiento' : 'Marcar para seguimiento'}">
                                 <i class="fa-solid ${enSeg ? 'fa-eye-slash' : 'fa-eye'}"></i>
                             </button>
@@ -560,7 +695,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
     // --- Event listeners ---
     el.querySelectorAll('.diag-lista li[data-interno]').forEach(li => {
         li.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas')) return;
+            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo')) return;
             const hallazgoId = li.dataset.hallazgo || '';
             if (hallazgoId.startsWith('nofl_')) {
                 // Para hallazgos nofl_*, navegar a tabla de cargas y buscar el valor
@@ -685,6 +820,62 @@ function renderDiagnostico(analisis, rawRecords = []) {
         });
     });
 
+    // Ralentí: marcar un equipo puntual como "aceptable" — sale del hallazgo de ahora en más
+    // (queda guardado en la base, no es un toggle de sesión como "seguimiento").
+    el.querySelectorAll('.btn-ralenti-aceptable').forEach(b => {
+        b.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const interno = b.dataset.interno;
+            await setRalentiEstado(interno, 'aceptable');
+            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'aceptable' }]);
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    // Ralentí: generar un reclamo interno para pedir revisión del equipo GPS de ese equipo.
+    // Alcance actual: registro local (se puede ver desde "Reclamos GPS abiertos" debajo del
+    // hallazgo); todavía no hay integración con ningún proveedor.
+    el.querySelectorAll('.btn-ralenti-reclamo').forEach(b => {
+        b.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const interno = b.dataset.interno;
+            const motivoSugerido = b.dataset.hallazgo === 'ralenti_inverosimil'
+                ? 'Ralentí inverosímil (posible error de datos o sensor del GPS)'
+                : 'Ralentí muy alto sostenido: pedir verificación de que el equipo GPS esté reportando bien';
+            const motivo = prompt(`Reclamo de revisión de GPS para ${interno}.\n\nMotivo:`, motivoSugerido);
+            if (motivo === null) return;
+            await crearReclamoGPS({ interno, motivo: motivo || motivoSugerido });
+            alert(`Reclamo generado para ${interno}.\n\nMotivo: ${motivo || motivoSugerido}\n\nQueda guardado en la app — todavía no se envía a ningún proveedor.`);
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    // Ralentí: "Promediar y marcar como aceptable" — marca en bloque a todos los equipos del
+    // hallazgo que están en la media del grupo para abajo, dejando visibles (para revisar uno
+    // por uno) solo a los que se salen claramente por arriba del promedio.
+    el.querySelectorAll('.btn-ralenti-promediar').forEach(b => {
+        b.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const hid = b.dataset.hallazgo;
+            const h = hallazgos.find(x => x.id === hid);
+            const internos = (h && h.internos_bajo_promedio) || [];
+            if (!internos.length) return;
+            if (!confirm(`¿Marcar como "ralentí aceptable" a los ${internos.length} equipos que están en la media (${nf(h.promedio_ralenti)} hs) para abajo?\n\nLos que superan el promedio siguen visibles para revisar uno por uno.`)) return;
+            for (const interno of internos) await setRalentiEstado(interno, 'aceptable');
+            ralentiEstadosCache = ralentiEstadosCache.filter(r => !internos.includes(r.interno))
+                .concat(internos.map(interno => ({ interno, estado: 'aceptable' })));
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    el.querySelectorAll('.btn-ver-reclamos-gps').forEach(b => {
+        b.addEventListener('click', (e) => { e.stopPropagation(); abrirReclamosGPS(); });
+    });
+
+    el.querySelectorAll('.btn-ver-ralenti-aceptados').forEach(b => {
+        b.addEventListener('click', (e) => { e.stopPropagation(); abrirRalentiAceptados(analisis, rawRecords); });
+    });
+
     // Acciones propuestas — cada una ejecuta algo concreto
     el.querySelectorAll('.btn-diag-propuesta').forEach(b => {
         b.addEventListener('click', (e) => {
@@ -694,9 +885,103 @@ function renderDiagnostico(analisis, rawRecords = []) {
     });
 }
 
+/**
+ * Lista de reclamos internos de revisión de GPS generados desde los hallazgos de ralentí.
+ * Alcance actual: registro local, sin integración con ningún proveedor todavía — el campo
+ * `proveedor` en la base ya está listo para cuando se sume esa info.
+ */
+async function abrirReclamosGPS() {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const reclamos = (await getReclamosGPS()).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+
+    const modalId = 'modal-reclamos-gps';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Reclamos de revisión de GPS</h2>
+                    <p class="modal-sub">${reclamos.length} reclamo${reclamos.length === 1 ? '' : 's'} · ${reclamos.filter(r => r.estado === 'abierto').length} abierto${reclamos.filter(r => r.estado === 'abierto').length === 1 ? '' : 's'}.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    ${reclamos.length ? `
+                    <table class="data-table">
+                        <thead><tr><th>Equipo</th><th>Motivo</th><th>Fecha</th><th>Estado</th><th></th></tr></thead>
+                        <tbody>
+                            ${reclamos.map(r => `<tr data-id="${r.id}">
+                                <td><strong>${esc(r.interno)}</strong></td>
+                                <td>${esc(r.motivo)}</td>
+                                <td>${esc(new Date(r.fecha).toLocaleDateString('es-AR'))}</td>
+                                <td>${r.estado === 'abierto' ? '<span class="badge-warn">Abierto</span>' : '<span class="badge-ok">Cerrado</span>'}</td>
+                                <td>${r.estado === 'abierto' ? `<button class="btn-xs btn-cerrar-reclamo" data-id="${r.id}">Marcar cerrado</button>` : ''}</td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    <p class="modal-note">Para pedir la revisión, copiá esta lista o imprimí la página (Ctrl/Cmd+P) y enviala al proveedor de GPS.</p>`
+                    : '<p class="modal-note">Todavía no se generó ningún reclamo. Se crean desde el botón "Reclamo GPS" en los hallazgos de ralentí.</p>'}
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    modal.querySelector('[data-close]').addEventListener('click', () => modal.remove());
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    modal.querySelectorAll('.btn-cerrar-reclamo').forEach(b => {
+        b.addEventListener('click', async () => {
+            await actualizarReclamoGPS(parseInt(b.dataset.id, 10), { estado: 'cerrado' });
+            abrirReclamosGPS();
+        });
+    });
+}
+
+/** Lista de equipos marcados "ralentí aceptable", con opción de desmarcar (vuelven a aparecer
+ * en el hallazgo la próxima vez que se recalcule el diagnóstico). */
+function abrirRalentiAceptados(analisis, rawRecords) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const aceptados = ralentiEstadosCache.filter(r => r.estado === 'aceptable');
+
+    const modalId = 'modal-ralenti-aceptados';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div><h2>Ralentí marcado como aceptable</h2>
+                    <p class="modal-sub">${aceptados.length} equipo${aceptados.length === 1 ? '' : 's'}. Desmarcalo para que vuelva a aparecer en el hallazgo.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    ${aceptados.length ? `
+                    <ul class="diag-lista">
+                        ${aceptados.map(r => `<li data-interno="${esc(r.interno)}">
+                            <span class="diag-eq">${esc(r.interno)}</span>
+                            <button class="btn-xs btn-quitar-ralenti-aceptable" data-interno="${esc(r.interno)}"><i class="fa-solid fa-rotate-left"></i> Desmarcar</button>
+                        </li>`).join('')}
+                    </ul>` : '<p class="modal-note">No hay equipos marcados.</p>'}
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    modal.querySelector('[data-close]').addEventListener('click', () => modal.remove());
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    modal.querySelectorAll('.btn-quitar-ralenti-aceptable').forEach(b => {
+        b.addEventListener('click', async () => {
+            const interno = b.dataset.interno;
+            await quitarRalentiEstado(interno);
+            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno);
+            modal.remove();
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+}
+
 /** Ejecuta la acción propuesta para un hallazgo: abrir comparativa, ajustar metas, etc. */
 function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
-    const h = generarDiagnostico(analisis.filas, analisis.totales, []).find(x => x.id === hallazgoId);
+    const h = generarDiagnostico(analisis.filas, analisis.totales, [], ralentiEstadosCache).find(x => x.id === hallazgoId);
     const internos = h && h.equipos ? h.equipos.map(e => e.interno) : [];
 
     switch (accion) {

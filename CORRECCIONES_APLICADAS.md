@@ -352,3 +352,95 @@ con Playwright contra los 9 archivos reales de `ARCHIVOS/` (no solo revisando el
   lista propia dentro del popover de cálculo hubiera requerido un tipo de contenido nuevo en
   `calcpopover.js` (no solo botones), que no estaba pedido explícitamente. La tabla de Cargas
   con ese código ya buscado permite ver y resolver el resto desde ahí.
+
+## 20/08/2026, cuarta tanda
+
+Ronda de correcciones a partir de un feedback largo con 4 capturas de la tabla de Cargas de
+Combustible y el hallazgo de ralentí en producción. Se definieron 3 decisiones de alcance con
+la persona antes de arrancar (reclamos de GPS como ticket interno, sin integración con
+proveedor todavía; zoom multi-nivel completo en los KPIs, con retroceso; y un marco genérico
+para que cualquier tipo de planilla nueva —cubiertas, filtros, insumos— tenga su pestaña con
+estadísticas básicas sin necesidad de conocer sus columnas de antemano). Todo lo siguiente se
+verificó en vivo con Playwright contra los 9 archivos reales de `ARCHIVOS/`, incluida una
+pasada final que ejercita las 8 áreas juntas en una sola sesión de navegador (no solo cada
+pieza por separado).
+
+1. **HTML crudo visible en el contador de "sin asignar" de Cargas de Combustible** (el bug de
+   las capturas): `actualizarContador()` armaba el texto con un `<span>` de color y un
+   `<button>` reales, pero los escribía con `textContent` en vez de `innerHTML` — por eso en
+   pantalla se veían las etiquetas HTML como texto literal en lugar de un botón funcional. Se
+   corrigió a `innerHTML`. Verificado en vivo: el contador ahora renderiza un `<button>` real
+   y clickeable, no la etiqueta como texto.
+
+2. **Tabla de Cargas de Combustible: sin filtros por centro de costo/lugar, sin edición
+   masiva, sin ordenar por lo que falta corregir**: se agregaron dos selects (centro de costo,
+   lugar de carga) poblados con los valores reales del período, un selector de orden que pone
+   primero las filas marcadas para corregir (huérfanas o con corrección pendiente), y una
+   barra de selección masiva propia para esta tabla (independiente de la del Maestro, porque
+   acá varias filas pueden compartir el mismo interno) con 4 acciones: asignar interno/dominio,
+   fijar centro de costo, fijar lugar de carga, y eliminar en bloque. Verificado en vivo: los
+   12 centros de costo del dataset aparecen en el filtro, "marcadas para corregir primero"
+   efectivamente ordena las huérfanas al tope, y las 4 acciones masivas escriben en la base y
+   quedan en el historial de ediciones (punto 4).
+
+3. **Acciones reales en los hallazgos de ralentí**: antes el hallazgo solo mostraba la lista de
+   equipos, sin ninguna acción sobre ellos. Se agregó un estado persistente por equipo
+   (`ralentiEstados`, guardado en IndexedDB) con dos botones por fila — "Aceptable" (el equipo
+   sale del hallazgo de ahora en más, por ejemplo un equipo estacionario donde el ralentí es
+   su trabajo) y "Reclamo GPS" (genera un ticket interno para pedir revisión del equipo GPS,
+   con un motivo sugerido según si es ralentí alto sostenido o inverosímil) — más un botón de
+   acción masiva "Promediar y marcar como aceptable" que acepta de una sola vez a todos los
+   equipos que están en la media del grupo para abajo, dejando visibles solo a los que se
+   salen claramente por arriba para revisar uno por uno. Los reclamos se ven y se cierran desde
+   un modal "Reclamos GPS" (con una nota de que por ahora hay que copiarlos o imprimirlos a
+   mano para mandárselos al proveedor — no hay integración todavía, por decisión explícita de
+   alcance). Los equipos aceptados se pueden ver y desmarcar desde otro modal. Verificado en
+   vivo: marcar un equipo como aceptable lo saca de la lista y lo menciona en el detalle del
+   hallazgo, "Promediar" marca en bloque, un reclamo generado aparece en el modal
+   correspondiente, y desmarcar un aceptado lo devuelve a la lista.
+
+4. **Edición completa de todas las tablas de Base de Datos, con historial**: se extendió la
+   edición directa de celda (que ya existía en el Maestro) a las tablas de Cargas, GPS y
+   cualquier tipo de movimiento genérico — incluidas las columnas de fecha, que ahora usan un
+   selector de fecha en vez de texto libre. Las 3 columnas calculadas de GPS (horas de
+   ralentí/movimiento/total, que salen de `horas`, no son un campo propio) se dejaron de solo
+   lectura a propósito. Cada edición, en cualquier tabla, ahora queda registrada en un log
+   persistente (`edicionesLog`) con tabla, registro, campo, valor anterior y valor nuevo, visible
+   desde un nuevo botón "Historial" en la barra de Base de Datos. También se agregó edición de
+   encabezados en las tablas de movimientos (renombrar una columna con un botón junto al
+   título). Verificado en vivo: editar litros de una carga guarda el cambio, lo marca como
+   editado en la celda, y aparece como fila nueva en el historial.
+
+5. **Zoom multi-nivel en los badges del dashboard (KPIs)**: hasta ahora el popover de "cómo se
+   calculó" era un solo nivel fijo. Se reescribió `calcpopover.js` para soportar una pila de
+   niveles: cualquier paso o acción puede traer una función `zoom` que abre un nivel nuevo
+   encima del actual, con una migaja de pan arriba (para saltar a cualquier nivel anterior de
+   un click) y un botón "Volver" (un nivel por vez); un nivel sin más `zoom` para ofrecer
+   muestra "No hay más detalle para este dato" en vez de dejar botones muertos. Sobre esa base
+   se armó el recorrido real: Combustible, Costo, Distancia y Horas de uso bajan de "total de
+   la flota" a "aporte de cada equipo, ordenado de mayor a menor" y de ahí al detalle de las
+   cargas o los registros GPS concretos de ese equipo (terminal, con botón a la tabla
+   completa); Sobre la meta baja de "cuántos equipos" a la lista de esos equipos y de ahí al
+   detalle de meta vs. consumo real de cada uno (terminal). Verificado en vivo con los 4
+   recorridos completos: cada nivel muestra las migas correctas, "Volver" y el click en una
+   miga anterior navegan bien, y el nivel terminal muestra el mensaje de "no hay más detalle"
+   junto con su acción a la tabla.
+
+6. **Marco genérico para nuevos tipos de datos de flota (cubiertas, filtros, insumos)**: al
+   revisar se confirmó que la base ya generaba automáticamente una pestaña por cada `type` de
+   planilla presente (`getTiposDeMovimiento()` + `renderTabs()`) y ya auto-detectaba columnas
+   cuando no había una definición fija (`COLS_MOV`) — ese armazón ya estaba resuelto de una
+   ronda anterior. Lo que faltaba era un resumen útil arriba de la tabla: se agregó
+   `resumenGenerico()`, que cuenta equipos involucrados, detecta columnas numéricas con nombre
+   de costo/importe/precio y las suma, y muestra los equipos con más registros. Verificado en
+   vivo insertando registros sintéticos de una planilla ficticia de "Cubiertas": se creó sola
+   la pestaña con su nombre y cantidad, se auto-detectaron sus columnas (marca, medida), y el
+   resumen mostró equipos, costo total y el desglose por equipo correctamente.
+
+### No implementado en esta tanda (evaluado y descartado por alcance/riesgo)
+
+- Integración real con un proveedor de GPS para los reclamos (carga de datos del proveedor,
+  envío automático de tickets): por decisión explícita, esta ronda deja el reclamo como un
+  registro interno completo (equipo, motivo, fecha, estado) con el campo `proveedor` ya
+  preparado en la base para cuando se sume esa integración, pero sin conectar nada externo
+  todavía.

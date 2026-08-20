@@ -769,6 +769,35 @@
 .calc-acciones { margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid var(--border-color); display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .calc-vacio { color: var(--text-muted); font-size: 0.85rem; }
 
+/* Zoom multi-nivel: migas de pan arriba (para saltar a cualquier nivel anterior de un click),
+   botón "volver" junto al título, y un indicador visual (chevron) en los pasos/acciones que
+   sí tienen más detalle para abrir — para que no parezca que todo el panel es clickeable. */
+.calc-migas {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem;
+    font-size: 0.72rem; color: var(--text-muted); margin-bottom: 0.6rem;
+}
+.calc-migas i { font-size: 0.6rem; color: var(--text-muted); }
+.calc-miga {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    padding: 0.1rem 0.2rem; text-decoration: underline; text-underline-offset: 2px;
+}
+.calc-miga:hover { color: var(--accent-cyan); }
+.calc-miga-actual { color: var(--text-secondary); text-decoration: none; font-weight: 600; }
+.calc-panel-head-titulo { display: flex; align-items: flex-start; gap: 0.6rem; }
+.calc-volver {
+    flex-shrink: 0; margin-top: 0.1rem; background: var(--bg-input); border: 1px solid var(--border-color);
+    width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    color: var(--text-secondary); cursor: pointer;
+}
+.calc-volver:hover { color: var(--accent-cyan); border-color: var(--accent-cyan); }
+.calc-paso-zoom { cursor: pointer; transition: background 0.15s; }
+.calc-paso-zoom:hover { background: var(--bg-card-hover); }
+.calc-paso-chevron { flex-shrink: 0; color: var(--text-muted); align-self: center; font-size: 0.8rem; }
+.calc-fin-nivel {
+    margin-top: 1rem; font-size: 0.78rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;
+}
+.calc-fin-nivel i { color: var(--accent-green); }
+
 /* ============================================================
    BASE DE DATOS (maestro editable + movimientos)
    ============================================================ */
@@ -817,7 +846,15 @@
 .th-del:hover { color: var(--accent-red); }
 .th-rename { background: none; border: none; color: var(--text-muted); cursor: pointer; margin-left: 0.3rem; font-size: 0.75rem; }
 .th-rename:hover { color: var(--accent-cyan); }
+.th-rename-mov { background: none; border: none; color: var(--text-muted); cursor: pointer; margin-left: 0.3rem; font-size: 0.7rem; opacity: 0.5; }
+.th-rename-mov:hover { color: var(--accent-cyan); opacity: 1; }
 .th-acciones { width: 44px; }
+.cell-edit-fecha input[type="date"] {
+    background: rgba(255,255,255,0.03); border: 1px solid transparent; color: var(--text-primary);
+    font-family: inherit; font-size: 0.82rem; width: 100%; padding: 0.15rem 0.2rem; border-radius: 3px; cursor: pointer;
+}
+.cell-edit-fecha input[type="date"]:focus { outline: 2px solid var(--accent-blue); background: var(--bg-input); border-color: var(--border-active); }
+.cell-edit-fecha input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
 .row-asociado { border-left: 3px solid var(--accent-purple) !important; }
 .row-asociado td:first-child::after { content: ' \2194'; color: var(--accent-purple); font-size: 0.7rem; }
 

@@ -21,18 +21,21 @@ import {
     getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, deleteEquipo, editarCampoEquipo,
     getColumnasExtra, setColumnasExtra, getTiposDeMovimiento, updateEstimado,
     huellaCarga, getCorreccionesCargas, saveCorreccionCarga, deleteCorreccionCarga,
-    updateRawRecord, deleteRawRecord
+    updateRawRecord, deleteRawRecord, registrarEdicion, getEdicionesLog,
+    getColLabelsMov, setColLabelMov
 } from '../data/database.js';
 import { periodosDisponibles, filtrarPorPeriodo } from '../data/analyzer.js';
 import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR } from '../data/normalizer.js';
 
 const PAGINA = 300;
 
-const estado = { tipo: 'maestro', buscar: '', buscarCol: 'id', filtroDeno: 'ALL', filtroEstado: 'ALL', anio: '', mes: '', pagina: 0, soloHuerfanas: false };
+const estado = { tipo: 'maestro', buscar: '', buscarCol: 'id', filtroDeno: 'ALL', filtroEstado: 'ALL', anio: '', mes: '', pagina: 0, soloHuerfanas: false, filtroCC: 'ALL', filtroLugar: 'ALL', orden: '' };
 let filasActuales = [];
 let columnasExtra = [];
 let columnasVisibles = [];
+let colLabelsMov = {};
 const seleccionMasiva = new Set();
+const seleccionMasivaMov = new Set(); // selección para edición masiva en tablas de movimientos (por r.id)
 
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -54,6 +57,7 @@ function matchBusqueda(fila, q) {
 }
 
 export async function renderDataTable(tipo) {
+    if (tipo && tipo !== estado.tipo) { seleccionMasiva.clear(); seleccionMasivaMov.clear(); }
     if (tipo) { estado.tipo = tipo; estado.pagina = 0; estado.soloHuerfanas = false; }
     const tbody = document.getElementById('table-body');
     const header = document.getElementById('table-header');
@@ -72,6 +76,7 @@ export async function renderDataTable(tipo) {
     try {
         await renderTabs();
         columnasExtra = await getColumnasExtra();
+        colLabelsMov = await getColLabelsMov();
 
         if (estado.tipo === 'maestro') await renderMaestro();
         else if (estado.tipo === 'estimados') await renderEstimados();
@@ -218,17 +223,22 @@ function conectarEdicionMaestro() {
     const tbody = document.getElementById('table-body');
 
     tbody.querySelectorAll('td[contenteditable]').forEach(td => {
+        td.addEventListener('focus', () => { td.dataset.prevValor = td.innerText.trim(); });
         td.addEventListener('blur', async () => {
             const tr = td.closest('tr');
             const interno = tr.dataset.interno;
             const texto = td.innerText.trim();
+            const anterior = td.dataset.prevValor ?? '';
+            if (anterior === texto) return;
             try {
                 if (td.dataset.extra) {
                     await editarCampoEquipo(interno, td.dataset.extra, texto, true);
+                    await registrarEdicion({ tabla: 'maestro', registroId: interno, etiqueta: interno, campo: td.dataset.extra, valorAnterior: anterior, valorNuevo: texto });
                 } else {
                     const campo = td.dataset.campo;
                     const valor = td.dataset.num === '1' ? (parseFloat(texto.replace(',', '.')) || 0) : texto.toUpperCase();
                     await editarCampoEquipo(interno, campo, valor);
+                    await registrarEdicion({ tabla: 'maestro', registroId: interno, etiqueta: interno, campo, valorAnterior: anterior, valorNuevo: valor });
                     if (campo === 'meta_valor') {
                         const eq = (await getAllEquipos()).find(x => x.interno === interno);
                         if (eq) { eq.meta_texto = `${valor} ${eq.meta_unidad === 'L/Hora' ? 'L/hora' : 'L/100km'}`; await updateEquipo(eq); }
@@ -246,9 +256,12 @@ function conectarEdicionMaestro() {
     });
 
     tbody.querySelectorAll('select[data-campo]').forEach(sel => {
+        sel.addEventListener('focus', () => { sel.dataset.prevValor = sel.value; });
         sel.addEventListener('change', async () => {
             const interno = sel.closest('tr').dataset.interno;
+            const anterior = sel.dataset.prevValor ?? '';
             await editarCampoEquipo(interno, sel.dataset.campo, sel.value);
+            await registrarEdicion({ tabla: 'maestro', registroId: interno, etiqueta: interno, campo: sel.dataset.campo, valorAnterior: anterior, valorNuevo: sel.value });
             if (sel.dataset.campo === 'meta_unidad') {
                 await editarCampoEquipo(interno, 'tipo_calculo_manual', sel.value || null);
             }
@@ -462,43 +475,61 @@ const COLS_MOV = {
 async function renderMovimientos(tipo) {
     const todos = (await getAllRawRecords()).filter(r => r.type === tipo);
     const etiqueta = todos[0]?.type_label || tipo;
+    const esCarga = tipo === 'carga';
 
     document.getElementById('table-title').textContent = etiqueta;
-    document.getElementById('table-desc').innerHTML = tipo === 'carga'
-        ? 'Registro histórico de cargas. Las filas marcadas en naranja tienen un interno desconocido — hacé clic en <strong>Corregir</strong> para asignarlas a un equipo o eliminarlas. La corrección se guarda y se re-aplica automáticamente al reimportar el mismo archivo.'
-        : 'Registro histórico, en solo lectura. Se muestra <strong>interno + dominio</strong> de cada fila: es la llave con la que se cruza contra el maestro.';
+    document.getElementById('table-desc').innerHTML = esCarga
+        ? 'Registro histórico de cargas. Las filas marcadas en naranja tienen un interno desconocido — hacé clic en <strong>Corregir</strong> para asignarlas a un equipo o eliminarlas. Cualquier otra celda (fecha, litros, importe, lugar, centro de costo, chofer…) se edita haciendo click directo encima. La corrección se guarda y se re-aplica automáticamente al reimportar el mismo archivo.'
+        : 'Registro histórico. Se muestra <strong>interno + dominio</strong> de cada fila: es la llave con la que se cruza contra el maestro. Cualquier celda se puede corregir haciendo click encima.';
     mostrarBotonesMaestro(false);
     mostrarBotonesEstimados(false);
     mostrarFiltrosFecha(true);
     mostrarFiltrosMaestro(false);
-    mostrarBulkBar(false);
+    mostrarFiltrosCarga(esCarga);
+    mostrarBulkBar(esCarga);
+    if (esCarga) prepararBulkBarCargas();
     poblarFiltrosFecha(todos);
 
     // Para cargas: armar el set de internos del maestro y el mapa de correcciones ya guardadas
     let equiposSet = new Set();
     let correccionesMap = new Map();
-    if (tipo === 'carga') {
+    if (esCarga) {
         const [eqs, corrs] = await Promise.all([getAllEquipos(), getCorreccionesCargas()]);
         eqs.forEach(e => equiposSet.add(e.interno_key || normalizeEquipoKey(e.interno)));
         corrs.forEach(c => correccionesMap.set(c.huella, c));
     }
+    const esHuerfanaDe = (r) => {
+        const ikey = r.interno_key || normalizeEquipoKey(r.interno || '');
+        return !ikey || !equiposSet.has(ikey);
+    };
+
+    if (esCarga) poblarFiltrosCarga(todos);
 
     let filas = filtrarPorPeriodo(todos, { anio: estado.anio || null, mes: estado.mes || null });
     if (estado.buscar) filas = filas.filter(r => matchBusqueda(r, estado.buscar));
+    if (esCarga && estado.filtroCC !== 'ALL') filas = filas.filter(r => (r.centro_costo || '—') === estado.filtroCC);
+    if (esCarga && estado.filtroLugar !== 'ALL') filas = filas.filter(r => (r.lugar_carga || '—') === estado.filtroLugar);
     // Filtro "Solo sin asignar" (huérfanas)
-    if (tipo === 'carga' && estado.soloHuerfanas) {
-        filas = filas.filter(r => {
-            const ikey = r.interno_key || normalizeEquipoKey(r.interno || '');
-            const esHuerfana = !ikey || !equiposSet.has(ikey);
-            const yaCorregida = correccionesMap.has(huellaCarga(r));
-            return esHuerfana && !yaCorregida;
-        });
+    if (esCarga && estado.soloHuerfanas) {
+        filas = filas.filter(r => esHuerfanaDe(r) && !correccionesMap.has(huellaCarga(r)));
     }
-    filas.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+    if (esCarga && estado.orden === 'corregir') {
+        // Las que todavía necesitan corrección primero; entre ellas y entre el resto, más reciente primero.
+        filas.sort((a, b) => {
+            const aPend = esHuerfanaDe(a) && !correccionesMap.has(huellaCarga(a)) ? 1 : 0;
+            const bPend = esHuerfanaDe(b) && !correccionesMap.has(huellaCarga(b)) ? 1 : 0;
+            if (aPend !== bPend) return bPend - aPend;
+            return (b.fecha || '').localeCompare(a.fecha || '');
+        });
+    } else {
+        filas.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+    }
     filasActuales = filas;
 
-    // Columnas: identidad siempre primero, después las propias del tipo.
-    let cols = COLS_MOV[tipo];
+    // Columnas: identidad siempre primero, después las propias del tipo. Las etiquetas
+    // respetan los renombres guardados en colLabelsMov (botón de lápiz en el encabezado).
+    const overrides = colLabelsMov[tipo] || {};
+    let cols = COLS_MOV[tipo] ? COLS_MOV[tipo].map(c => ({ ...c })) : null;
     if (!cols) {
         const muestra = filas[0]?.datos || {};
         cols = Object.keys(muestra)
@@ -506,12 +537,20 @@ async function renderMovimientos(tipo) {
             .slice(0, 12)
             .map(c => ({ k: `datos.${c}`, label: c }));
     }
+    cols.forEach(c => { if (overrides[c.k]) c.label = overrides[c.k]; });
     columnasVisibles = ['Interno', 'Dominio', ...cols.map(c => c.label)];
 
-    const colspan = cols.length + 2 + (tipo === 'carga' ? 1 : 0);
+    // Solo fecha/fecha_hasta y las columnas derivadas del GPS (_ralenti/_movimiento/_total,
+    // calculadas a partir de r.horas, no un campo propio) quedan afuera de la edición directa.
+    const noEditable = new Set(['_ralenti', '_movimiento', '_total']);
+
+    const colspan = cols.length + 2 + (esCarga ? 2 : 0);
     document.getElementById('table-header').innerHTML =
-        '<th>Interno</th><th>Dominio</th>' + cols.map(c => `<th>${esc(c.label)}</th>`).join('') +
-        (tipo === 'carga' ? '<th class="th-acciones"></th>' : '');
+        (esCarga ? '<th class="th-sel"><input type="checkbox" id="th-sel-mov-all" title="Seleccionar todos"></th>' : '') +
+        '<th>Interno</th><th>Dominio</th>' +
+        cols.map(c => `<th>${esc(c.label)}${noEditable.has(c.k) ? '' : `
+            <button class="th-rename-mov" data-tipo="${esc(tipo)}" data-col="${esc(c.k)}" data-label="${esc(c.label)}" title="Renombrar columna"><i class="fa-solid fa-pen"></i></button>`}</th>`).join('') +
+        (esCarga ? '<th class="th-acciones"></th>' : '');
 
     const pagina = filas.slice(estado.pagina * PAGINA, (estado.pagina + 1) * PAGINA);
     let nHuerfanas = 0;
@@ -521,16 +560,16 @@ async function renderMovimientos(tipo) {
 
         let esHuerfana = false;
         let yaCorregida = false;
-        if (tipo === 'carga') {
-            const ikey = r.interno_key || normalizeEquipoKey(r.interno || '');
-            esHuerfana = !ikey || !equiposSet.has(ikey);
+        if (esCarga) {
+            esHuerfana = esHuerfanaDe(r);
             yaCorregida = correccionesMap.has(huellaCarga(r));
             if (esHuerfana && !yaCorregida) nHuerfanas++;
         }
 
         const rowClass = esHuerfana && !yaCorregida ? 'carga-huerfana' : (yaCorregida ? 'carga-corregida' : '');
-        const dataAttrs = tipo === 'carga' ? ` data-recid="${r.id}"` : '';
-        const accionTd = tipo === 'carga' ? `<td class="td-correc">${
+        const dataAttrs = ` data-recid="${r.id}"`;
+        const selTd = esCarga ? `<td class="td-sel"><input type="checkbox" class="chk-fila-mov" data-recid="${r.id}" ${seleccionMasivaMov.has(r.id) ? 'checked' : ''}></td>` : '';
+        const accionTd = esCarga ? `<td class="td-correc">${
             esHuerfana && !yaCorregida
                 ? `<button class="btn-corregir-carga btn-warn btn-sm"><i class="fa-solid fa-wand-magic-sparkles"></i> Corregir</button>`
                 : (yaCorregida
@@ -539,6 +578,7 @@ async function renderMovimientos(tipo) {
         }</td>` : '';
 
         return `<tr${rowClass ? ` class="${rowClass}"` : ''}${dataAttrs}>
+            ${selTd}
             <td class="cell-key">${esc(r.interno || '—')}</td>
             <td class="cell-dom">${esc(r.dominio || '—')}</td>
             ${cols.map(c => {
@@ -551,7 +591,11 @@ async function renderMovimientos(tipo) {
                 else if (c.money) v = `$${nf(r[c.k], 2)}`;
                 else if (c.num !== undefined) v = nf(r[c.k], c.num);
                 else v = esc(r[c.k] ?? '');
-                return `<td>${v}</td>`;
+                if (noEditable.has(c.k)) return `<td>${v}</td>`;
+                if (c.k === 'fecha' || c.k === 'fecha_hasta') {
+                    return `<td class="cell-edit-fecha"><input type="date" class="mov-fecha-input" data-recid="${r.id}" data-campo="${c.k}" value="${esc(r[c.k] || '')}"></td>`;
+                }
+                return `<td class="cell-edit" contenteditable="true" data-recid="${r.id}" data-campo="${esc(c.k)}" data-num="${c.num !== undefined ? 1 : 0}" data-label="${esc(c.label)}">${v}</td>`;
             }).join('')}
             ${accionTd}
         </tr>`;
@@ -559,20 +603,22 @@ async function renderMovimientos(tipo) {
 
     // Botón "Sin asignar" en contador (solo cargas)
     let btnHuerfanasHtml = '';
-    if (tipo === 'carga') {
-        const nHuerfanasTotal = todos.filter(r => {
-            const ikey = r.interno_key || normalizeEquipoKey(r.interno || '');
-            return (!ikey || !equiposSet.has(ikey)) && !correccionesMap.has(huellaCarga(r));
-        }).length;
+    if (esCarga) {
+        const nHuerfanasTotal = todos.filter(r => esHuerfanaDe(r) && !correccionesMap.has(huellaCarga(r))).length;
         if (nHuerfanasTotal > 0) {
             const activo = estado.soloHuerfanas ? ' btn-warn-active' : '';
             btnHuerfanasHtml = ` <button class="btn-sm btn-warn btn-filtro-huerfanas${activo}" style="margin-left:8px">` +
                 `<i class="fa-solid fa-triangle-exclamation"></i> ${estado.soloHuerfanas ? 'Todos' : `Sin asignar (${nHuerfanasTotal})`}</button>`;
         }
     }
-    const resExtra = tipo === 'carga' && nHuerfanas > 0 && !estado.soloHuerfanas
+    const resExtra = esCarga && nHuerfanas > 0 && !estado.soloHuerfanas
         ? ` · <span style="color:#f5a623;font-weight:600">${nHuerfanas} sin asignar</span>` : '';
-    actualizarContador(filas.length, pagina.length, resumenNumerico(filas, tipo) + resExtra + btnHuerfanasHtml);
+    // Para tipos genéricos (cubiertas, filtros, insumos…) que todavía no tienen un análisis
+    // propio: un resumen básico igual — cantidad, costo si hay algo que parezca importe, y
+    // los equipos con más registros — para que la planilla no quede "muda" hasta que se le
+    // arme un análisis dedicado.
+    const resGenerico = !esCarga && tipo !== 'gps' ? resumenGenerico(filas) : '';
+    actualizarContador(filas.length, pagina.length, resumenNumerico(filas, tipo) + resGenerico + resExtra + btnHuerfanasHtml);
     renderPaginacion(filas.length);
 
     // Listener del botón filtro huérfanas
@@ -582,12 +628,16 @@ async function renderMovimientos(tipo) {
         renderDataTable();
     });
 
+    conectarEdicionMovimientos(tipo, todos);
+    conectarRenombreColumnasMov();
+    if (esCarga) conectarSeleccionMov();
+
     // Listener delegado para el panel de corrección (solo cargas). Sirve tanto para asignar
     // una carga huérfana por primera vez (.btn-corregir-carga) como para reabrir y EDITAR una
     // corrección ya aplicada (.btn-editar-correc) — antes esa segunda parte no existía: una vez
     // corregida, la fila quedaba con un cartel fijo sin forma de arreglar un dato mal tipeado
     // (ej. un interno cargado con guion) sin editar la base a mano.
-    if (tipo === 'carga') {
+    if (esCarga) {
         const tbody = document.getElementById('table-body');
         tbody.addEventListener('click', async (e) => {
             const btn = e.target.closest('.btn-corregir-carga, .btn-editar-correc');
@@ -613,6 +663,147 @@ async function renderMovimientos(tipo) {
             conectarPanelCorreccion(panelTr, record, todos);
         });
     }
+}
+
+/**
+ * Edición directa de cualquier celda de una tabla de movimientos (no solo la asignación de
+ * huérfanas): click, escribir, salir del campo y queda guardado, igual que en el Maestro.
+ * Cada cambio queda anotado en el historial de ediciones (quién campo, valor anterior/nuevo).
+ */
+function conectarEdicionMovimientos(tipo, todos) {
+    const tbody = document.getElementById('table-body');
+
+    tbody.querySelectorAll('td.cell-edit[contenteditable]').forEach(td => {
+        td.addEventListener('blur', async () => {
+            const recid = parseInt(td.dataset.recid, 10);
+            const campo = td.dataset.campo;
+            const record = todos.find(r => r.id === recid);
+            if (!record) return;
+            const texto = td.innerText.trim();
+
+            let valorAnterior, valorNuevo, cambios;
+            if (campo.startsWith('datos.')) {
+                const key = campo.slice(6);
+                valorAnterior = record.datos?.[key] ?? '';
+                valorNuevo = texto;
+                cambios = { datos: { ...(record.datos || {}), [key]: texto } };
+            } else {
+                valorAnterior = record[campo] ?? '';
+                valorNuevo = td.dataset.num === '1' ? (parseFloat(texto.replace(',', '.')) || 0) : texto;
+                cambios = { [campo]: valorNuevo };
+                if (campo === 'litros' || campo === 'importe') cambios[campo] = parseFloat(String(texto).replace(',', '.')) || 0;
+            }
+            if (String(valorAnterior) === String(valorNuevo)) return;
+
+            try {
+                await updateRawRecord(recid, cambios);
+                await registrarEdicion({
+                    tabla: tipo, registroId: recid,
+                    etiqueta: `${record.interno || record.dominio || 'registro'} · ${formatFechaAR(record.fecha) || ''}`.trim(),
+                    campo: td.dataset.label || campo, valorAnterior, valorNuevo
+                });
+                Object.assign(record, cambios);
+                td.classList.add('cell-editado');
+                flash(td);
+                if (typeof window.renderPanel === 'function') window.renderPanel();
+            } catch (e) { console.error(e); td.classList.add('cell-error'); }
+        });
+    });
+
+    tbody.querySelectorAll('.mov-fecha-input').forEach(inp => {
+        inp.addEventListener('change', async () => {
+            const recid = parseInt(inp.dataset.recid, 10);
+            const campo = inp.dataset.campo;
+            const record = todos.find(r => r.id === recid);
+            if (!record) return;
+            const valorAnterior = record[campo] || '';
+            const valorNuevo = inp.value;
+            if (!valorNuevo || valorAnterior === valorNuevo) return;
+            try {
+                await updateRawRecord(recid, { [campo]: valorNuevo });
+                await registrarEdicion({
+                    tabla: tipo, registroId: recid,
+                    etiqueta: `${record.interno || record.dominio || 'registro'}`.trim(),
+                    campo: campo === 'fecha' ? 'Fecha' : 'Fecha hasta',
+                    valorAnterior: formatFechaAR(valorAnterior), valorNuevo: formatFechaAR(valorNuevo)
+                });
+                record[campo] = valorNuevo;
+                flash(inp.closest('td'));
+                if (typeof window.renderPanel === 'function') window.renderPanel();
+            } catch (e) { console.error(e); }
+        });
+    });
+}
+
+function conectarRenombreColumnasMov() {
+    document.querySelectorAll('.th-rename-mov').forEach(b => {
+        b.addEventListener('click', async () => {
+            const nuevo = prompt('Nuevo nombre para la columna:', b.dataset.label);
+            if (!nuevo || !nuevo.trim() || nuevo.trim() === b.dataset.label) return;
+            await setColLabelMov(b.dataset.tipo, b.dataset.col, nuevo.trim().toUpperCase());
+            renderDataTable();
+        });
+    });
+}
+
+function conectarSeleccionMov() {
+    const tbody = document.getElementById('table-body');
+    const thSel = document.getElementById('th-sel-mov-all');
+
+    tbody.querySelectorAll('.chk-fila-mov').forEach(ch => {
+        ch.addEventListener('change', () => {
+            const id = parseInt(ch.dataset.recid, 10);
+            if (ch.checked) seleccionMasivaMov.add(id); else seleccionMasivaMov.delete(id);
+            ch.closest('tr').classList.toggle('row-sel', ch.checked);
+            actualizarSelCountMov();
+        });
+    });
+    if (thSel) {
+        thSel.addEventListener('change', () => {
+            const visibles = filasActuales.slice(estado.pagina * PAGINA, (estado.pagina + 1) * PAGINA);
+            if (thSel.checked) visibles.forEach(f => seleccionMasivaMov.add(f.id));
+            else visibles.forEach(f => seleccionMasivaMov.delete(f.id));
+            tbody.querySelectorAll('.chk-fila-mov').forEach(ch => {
+                const id = parseInt(ch.dataset.recid, 10);
+                ch.checked = seleccionMasivaMov.has(id);
+                ch.closest('tr').classList.toggle('row-sel', ch.checked);
+            });
+            actualizarSelCountMov();
+        });
+    }
+    actualizarSelCountMov();
+}
+
+function actualizarSelCountMov() {
+    const el = document.getElementById('tabla-sel-count');
+    if (el) el.textContent = seleccionMasivaMov.size ? `${seleccionMasivaMov.size} seleccionadas` : '';
+    const chkTodos = document.getElementById('tabla-sel-todos');
+    if (chkTodos) chkTodos.checked = seleccionMasivaMov.size > 0;
+}
+
+/** Resumen básico para tipos de movimiento genéricos (cubiertas, filtros, insumos…) que
+ * todavía no tienen un análisis dedicado: cantidad, costo si hay algo que parezca importe
+ * entre las columnas numéricas detectadas, y los equipos con más registros. */
+function resumenGenerico(filas) {
+    if (!filas.length) return '';
+    const camposCosto = new Set();
+    let costoTotal = 0;
+    let tieneCosto = false;
+    const porEquipo = new Map();
+    filas.forEach(r => {
+        const key = r.interno || r.dominio || '—';
+        porEquipo.set(key, (porEquipo.get(key) || 0) + 1);
+        Object.entries(r.numericos || {}).forEach(([k, v]) => {
+            if (/costo|importe|precio|monto|valor/.test(k)) {
+                tieneCosto = true;
+                camposCosto.add(k);
+                costoTotal += Number(v) || 0;
+            }
+        });
+    });
+    const top = [...porEquipo.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([eq, n]) => `${esc(eq)} (${n})`).join(', ');
+    return `${nf(porEquipo.size)} equipos` + (tieneCosto ? ` · $${nf(costoTotal)}` : '') + (top ? ` · más registros: ${top}` : '');
 }
 
 /**
@@ -1037,7 +1228,167 @@ function mostrarFiltrosMaestro(v) {
 function mostrarBulkBar(v) {
     const bar = document.getElementById('tabla-bulk-bar');
     if (bar) bar.style.display = v ? '' : 'none';
-    if (!v) seleccionMasiva.clear();
+    if (!v) { seleccionMasiva.clear(); seleccionMasivaMov.clear(); }
+}
+
+/** Bulk bar reutilizada para Cargas: mismo contenedor, otras acciones (asignar equipo,
+ * poner centro de costo/lugar, eliminar) porque acá se selecciona por registro, no por interno. */
+function prepararBulkBarCargas() {
+    const sel = document.getElementById('tabla-bulk-accion');
+    if (!sel) return;
+    sel.innerHTML = `
+        <option value="">Acción masiva…</option>
+        <option value="asignar_interno">Asignar interno a las seleccionadas</option>
+        <option value="set_cc">Poner centro de costo</option>
+        <option value="set_lugar">Poner lugar de carga</option>
+        <option value="eliminar_masivo">Eliminar seleccionadas</option>`;
+}
+
+function mostrarFiltrosCarga(v) {
+    ['tabla-filtro-cc', 'tabla-filtro-lugar', 'tabla-orden'].forEach(id => {
+        const s = document.getElementById(id);
+        if (s) s.style.display = v ? '' : 'none';
+    });
+}
+
+function poblarFiltrosCarga(records) {
+    const ccs = [...new Set(records.map(r => r.centro_costo || '—'))].sort();
+    const lugares = [...new Set(records.map(r => r.lugar_carga || '—'))].sort();
+    const selCC = document.getElementById('tabla-filtro-cc');
+    if (selCC) {
+        const actual = selCC.value || 'ALL';
+        selCC.innerHTML = '<option value="ALL">Todos los centros de costo</option>' + ccs.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+        selCC.value = ccs.includes(actual) ? actual : 'ALL';
+    }
+    const selLugar = document.getElementById('tabla-filtro-lugar');
+    if (selLugar) {
+        const actual = selLugar.value || 'ALL';
+        selLugar.innerHTML = '<option value="ALL">Todos los lugares</option>' + lugares.map(l => `<option value="${esc(l)}">${esc(l)}</option>`).join('');
+        selLugar.value = lugares.includes(actual) ? actual : 'ALL';
+    }
+}
+
+/** Acciones masivas sobre cargas seleccionadas (por registro, no por interno): asignar
+ * equipo, corregir centro de costo/lugar en lote, o eliminar. Reutiliza el mismo mecanismo
+ * de corrección persistente (`saveCorreccionCarga`) que la corrección fila por fila, para
+ * que se siga re-aplicando sola si se reimporta el archivo. */
+async function ejecutarAccionMasivaCargas(accion) {
+    if (!seleccionMasivaMov.size) { alert('No hay cargas seleccionadas.'); return; }
+    const ids = [...seleccionMasivaMov];
+    const todos = await getAllRawRecords();
+    const registros = ids.map(id => todos.find(r => r.id === id)).filter(Boolean);
+    if (!registros.length) { alert('No se encontraron las cargas seleccionadas.'); return; }
+
+    switch (accion) {
+        case 'asignar_interno': {
+            const interno = (prompt(`Asignar interno a las ${registros.length} cargas seleccionadas:`) || '').toUpperCase().trim();
+            if (!interno) return;
+            const dominio = (prompt('Dominio (opcional, dejar vacío si no aplica):') || '').toUpperCase().trim();
+            const ikey = normalizeEquipoKey(interno);
+            let n = 0;
+            for (const record of registros) {
+                const internoOriginalReal = (record._interno_original ?? record.interno) || '';
+                await saveCorreccionCarga({
+                    huella: huellaCarga(record), accion: 'asignar', interno_correcto: interno, dominio_correcto: dominio,
+                    interno_original: internoOriginalReal, fecha: record.fecha, litros: record.litros, importe: record.importe
+                });
+                await updateRawRecord(record.id, {
+                    interno, interno_key: ikey,
+                    dominio: dominio || record.dominio || '', dominio_key: normalizeEquipoKey(dominio || record.dominio || ''),
+                    _corregido: true, _interno_original: internoOriginalReal
+                });
+                await registrarEdicion({
+                    tabla: 'carga', registroId: record.id, etiqueta: `${formatFechaAR(record.fecha)} · edición masiva`,
+                    campo: 'Interno', valorAnterior: internoOriginalReal, valorNuevo: interno
+                });
+                n++;
+            }
+            alert(`Asignadas ${n} cargas a ${interno}.`);
+            break;
+        }
+        case 'set_cc':
+        case 'set_lugar': {
+            const campo = accion === 'set_cc' ? 'centro_costo' : 'lugar_carga';
+            const etiquetaCampo = accion === 'set_cc' ? 'Centro de costo' : 'Lugar de carga';
+            const valor = (prompt(`${etiquetaCampo} para las ${registros.length} cargas seleccionadas:`) || '').trim();
+            if (!valor) return;
+            let n = 0;
+            for (const record of registros) {
+                const anterior = record[campo] || '';
+                await updateRawRecord(record.id, { [campo]: valor });
+                await registrarEdicion({
+                    tabla: 'carga', registroId: record.id, etiqueta: `${formatFechaAR(record.fecha)} · edición masiva`,
+                    campo: etiquetaCampo, valorAnterior: anterior, valorNuevo: valor
+                });
+                n++;
+            }
+            alert(`${etiquetaCampo} actualizado en ${n} cargas.`);
+            break;
+        }
+        case 'eliminar_masivo': {
+            if (!confirm(`¿Eliminar ${registros.length} cargas seleccionadas?\n\nSi reimportás el archivo, se van a omitir automáticamente (queda guardado como corrección).`)) return;
+            let n = 0;
+            for (const record of registros) {
+                await saveCorreccionCarga({
+                    huella: huellaCarga(record), accion: 'eliminar',
+                    interno_original: (record._interno_original ?? record.interno) || '',
+                    fecha: record.fecha, litros: record.litros, importe: record.importe
+                });
+                await deleteRawRecord(record.id);
+                n++;
+            }
+            alert(`${n} cargas eliminadas.`);
+            break;
+        }
+        default:
+            alert('Acción no reconocida.');
+            return;
+    }
+    seleccionMasivaMov.clear();
+    renderDataTable();
+    if (typeof window.renderPanel === 'function') window.renderPanel();
+}
+
+/** Historial de ediciones manuales: qué campo, en qué registro, de qué valor a qué valor. */
+async function abrirHistorialEdiciones() {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const log = (await getEdicionesLog()).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+
+    const modalId = 'modal-historial-ediciones';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Historial de ediciones manuales</h2>
+                    <p class="modal-sub">${nf(log.length)} cambio${log.length === 1 ? '' : 's'} registrado${log.length === 1 ? '' : 's'} en total.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    ${log.length ? `
+                    <table class="data-table">
+                        <thead><tr><th>Fecha</th><th>Tabla</th><th>Registro</th><th>Campo</th><th>Valor anterior</th><th>Valor nuevo</th></tr></thead>
+                        <tbody>
+                            ${log.slice(0, 500).map(l => `<tr>
+                                <td>${esc(new Date(l.fecha).toLocaleString('es-AR'))}</td>
+                                <td>${esc(l.tabla)}</td>
+                                <td>${esc(l.etiqueta || l.registroId)}</td>
+                                <td>${esc(l.campo)}</td>
+                                <td class="cell-muted">${esc(l.valorAnterior)}</td>
+                                <td><strong>${esc(l.valorNuevo)}</strong></td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    ${log.length > 500 ? `<p class="modal-note">Mostrando los 500 cambios más recientes de ${nf(log.length)}.</p>` : ''}`
+                    : '<p class="modal-note">Todavía no hay ediciones manuales registradas. Cualquier corrección que hagas en las tablas de Base de Datos va a quedar anotada acá.</p>'}
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    modal.querySelector('[data-close]').addEventListener('click', () => modal.remove());
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 }
 
 function poblarFiltrosFecha(records) {
@@ -1050,7 +1401,9 @@ function poblarFiltrosFecha(records) {
 
 function actualizarContador(total, mostradas, extra = '') {
     const el = document.getElementById('tabla-count');
-    if (el) el.textContent = `${nf(mostradas)} de ${nf(total)} filas${extra ? ' · ' + extra : ''}`;
+    // `extra` puede traer HTML propio (badge + botón "sin asignar"), no solo texto —
+    // con textContent esas etiquetas se veían literalmente en pantalla en vez de renderizarse.
+    if (el) el.innerHTML = `${nf(mostradas)} de ${nf(total)} filas${extra ? ' · ' + extra : ''}`;
 }
 
 function renderPaginacion(total) {
@@ -1082,11 +1435,19 @@ export function initDataTableControls() {
     document.getElementById('tabla-filtro-estado')?.addEventListener('change', e => { estado.filtroEstado = e.target.value; estado.pagina = 0; renderDataTable(); });
     document.getElementById('tabla-anio')?.addEventListener('change', e => { estado.anio = e.target.value; estado.pagina = 0; renderDataTable(); });
     document.getElementById('tabla-mes')?.addEventListener('change', e => { estado.mes = e.target.value; estado.pagina = 0; renderDataTable(); });
+    document.getElementById('tabla-filtro-cc')?.addEventListener('change', e => { estado.filtroCC = e.target.value; estado.pagina = 0; renderDataTable(); });
+    document.getElementById('tabla-filtro-lugar')?.addEventListener('change', e => { estado.filtroLugar = e.target.value; estado.pagina = 0; renderDataTable(); });
+    document.getElementById('tabla-orden')?.addEventListener('change', e => { estado.orden = e.target.value; estado.pagina = 0; renderDataTable(); });
 
-    // Selección masiva global
+    // Selección masiva global (por interno en Maestro/Estimados, por registro en Cargas)
     document.getElementById('tabla-sel-todos')?.addEventListener('change', e => {
-        if (e.target.checked) filasActuales.forEach(f => seleccionMasiva.add(f.interno));
-        else seleccionMasiva.clear();
+        if (estado.tipo === 'carga') {
+            if (e.target.checked) filasActuales.forEach(f => seleccionMasivaMov.add(f.id));
+            else seleccionMasivaMov.clear();
+        } else {
+            if (e.target.checked) filasActuales.forEach(f => seleccionMasiva.add(f.interno));
+            else seleccionMasiva.clear();
+        }
         renderDataTable();
     });
 
@@ -1094,8 +1455,11 @@ export function initDataTableControls() {
     document.getElementById('tabla-bulk-aplicar')?.addEventListener('click', () => {
         const accion = document.getElementById('tabla-bulk-accion')?.value;
         if (!accion) { alert('Elegí una acción masiva del desplegable.'); return; }
-        ejecutarAccionMasiva(accion);
+        if (estado.tipo === 'carga') ejecutarAccionMasivaCargas(accion);
+        else ejecutarAccionMasiva(accion);
     });
+
+    document.getElementById('btn-historial-ediciones')?.addEventListener('click', () => abrirHistorialEdiciones());
 
     document.getElementById('btn-ajustar-metas-estimados')?.addEventListener('click', () => {
         if (typeof window.abrirAjusteMetasDesdeTabla === 'function') {
