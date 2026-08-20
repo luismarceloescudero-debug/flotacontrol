@@ -256,3 +256,99 @@ con `openpyxl` para los casos de identificación de equipos.
   (sobreconsumo, metas raras, pares), con riesgo de modificar datos del maestro sin que la
   persona lo confirme puntualmente. Se prefirió el punto intermedio (avisar + ofrecer
   aplicar) hasta tener una regla de negocio explícita de qué se puede auto-corregir.
+
+## 20/08/2026, tercera tanda
+
+Ronda de correcciones a partir de la revisión de la comparativa de equipos, la tarjeta de
+cada equipo, el ajuste masivo de metas y el dashboard. Todo lo siguiente se verificó en vivo
+con Playwright contra los 9 archivos reales de `ARCHIVOS/` (no solo revisando el código).
+
+1. **"Períodos desalineados" se mostraba en la tarjeta chica pero no había forma de verlo ni
+   actuar desde el overlay del equipo**: se agregó la misma información (qué meses tiene
+   Cargas que no tiene GPS y viceversa) dentro del overlay, con un botón que lleva
+   directamente a Base de Datos → Cargas de Combustible con ese interno ya buscado. De paso
+   se encontró que el botón, al navegar, no cerraba el overlay antes de hacerlo: la tabla
+   quedaba renderizada debajo del panel del equipo, que seguía interceptando todos los clicks
+   (confirmado con Playwright: después de navegar, ningún botón de la vista de datos
+   respondía). Se corrigió para cerrar el overlay antes de navegar. Verificado en vivo con
+   TR26 (un equipo con desalineación real entre Cargas y GPS).
+
+2. **Los botones "Últimos 3 meses" / "Últimos 6 meses" no tomaban meses completos**: contaban
+   sobre la lista cruda de meses con datos, sin filtrar los meses que solo tienen Cargas o
+   solo GPS (no ambos) ni excluir el mes en curso (que por definición está incompleto). Ahora
+   `renderMesesGrid()` calcula primero los meses "cruzados" (con Cargas Y GPS a la vez,
+   excluyendo el mes actual) y los botones usan esa lista tanto para el conteo mostrado
+   ("N meses cruzados") como para la selección real al hacer click.
+
+3. **"Normalizar todos con el real" no se reflejaba en la tabla de Consumos Estimados, y en
+   general el ajuste masivo podía saltear equipos sin avisar**: eran dos bugs distintos.
+   Primero, la causa raíz que explica la pregunta directa sobre MX102: el botón usaba la
+   lista de equipos ya filtrada por el checkbox "Solo con datos confiables" (tildado por
+   defecto), así que un equipo con poca cobertura de cargas (MX102: 30 cargas sobre 120 días
+   hábiles, 25%) quedaba afuera de "normalizar TODOS" sin ningún aviso — su meta seguía
+   mostrando el valor viejo de la planilla (12,00) en vez del consumo real (5,81). Se corrigió
+   para que el botón siempre tome todos los equipos visibles, sin importar el estado del
+   checkbox, y el diálogo de confirmación ahora informa cuántos de esos equipos tienen poca
+   cobertura de datos (para que la persona decida con esa información, no que se filtren
+   solos). Segundo, aparte del bug de la meta: la tabla de Consumos Estimados solo recorría
+   los registros originales de la planilla de Estimados, así que un equipo con meta puesta a
+   mano pero sin fila propia en esa planilla (como pasa después de normalizar) directamente no
+   aparecía ahí — la meta estaba guardada pero invisible en esa vista. Se corrigió para que la
+   tabla combine la planilla de Estimados con las metas del maestro y muestre una fila
+   sintética con la etiqueta "Ajustado a mano" para esos casos. Verificado en vivo:
+   MX102 pasó de 12,00 a 5,81 al normalizar, y ahora aparece en Consumos Estimados con esa
+   etiqueta.
+
+4. **Las tablas de Base de Datos no eran consistentes entre sí ni editables por completo**:
+   se unificó el criterio de fechas (formato es-AR, ver punto 6) en todas las tablas de
+   movimientos, y se agregó edición de encabezados: las columnas personalizadas del Maestro
+   ahora tienen un botón para renombrarlas además del de borrarlas. El pedido puntual de poder
+   corregir un interno que ya se había "Corregido" (el ejemplo dado: un interno con guion mal
+   asignado) reveló un bug de fondo más serio: `huellaCarga()` — la función que identifica de
+   forma estable cada carga para saber si ya tiene una corrección guardada — calculaba su
+   clave usando el interno **actual** del registro, que es justamente el campo que la
+   corrección modifica. Resultado: apenas se guardaba una corrección, la próxima vez que se
+   recalculaba la huella ya no coincidía con la guardada, y la carga volvía a verse "sin
+   corregir" — sin ningún error visible, perdiendo silenciosamente el vínculo con la
+   corrección ya hecha. Se corrigió para que la huella use siempre el interno **original**
+   del registro (`_interno_original`), no el corregido. De paso se encontró y corrigió el
+   mismo problema en el guardado de una segunda edición sobre una corrección existente (el
+   valor "original" que se guardaba ya era el corregido, no el real). Con esto arreglado, el
+   badge "Corregido" ahora es un botón: click para reabrir el panel con los valores ya
+   cargados y editarlos, con opción de "Deshacer corrección". Verificado en vivo: el badge
+   persiste después de recargar la tabla, el formulario de edición viene precargado con los
+   valores corregidos, y "Deshacer" restaura el registro original.
+
+5. **Formato de fecha e idioma**: `index.html` pasó a `lang="es-AR"`. Se agregó
+   `formatFechaAR()` (convierte el formato interno ISO `AAAA-MM-DD` a `DD/MM/AAAA` solo para
+   mostrar, nunca para guardar ni comparar) y se aplicó en las tablas de historial de cargas y
+   GPS de los modales, y en las columnas de fecha de las tablas de movimientos.
+
+6. **Rediseño de la línea de período/cobertura de la tarjeta**: por pedido explícito, se le
+   dio más peso a "cargas sobre días hábiles" (el dato que de verdad dice si el período tiene
+   suficiente información) y se bajó de jerarquía el conteo de reportes GPS. Ahora cada
+   tarjeta muestra un indicador "N de M días hábiles · P%" con color según cobertura (verde
+   ≥40%, ámbar ≥20%, rojo por debajo), el rango de período se muestra una sola vez (antes
+   aparecía duplicado entre cargas y GPS), y el conteo de GPS pasó a una línea secundaria más
+   chica. Verificado en vivo con un equipo de cobertura media (30 cargas / 117 días hábiles,
+   26%, ámbar).
+
+7. **Badges del dashboard (KPIs) eran de solo lectura**: al revisar se confirmó que el
+   mecanismo de "ver cómo se calculó" (`registrarCalculo()` / `calcpopover.js`) ya estaba
+   conectado en los 6 KPIs — ese pedido ya estaba resuelto. Lo que faltaba era la parte de
+   "llevarme al dato": se agregó a `calcpopover.js` la posibilidad de que un cálculo traiga
+   botones de acción reales (no solo texto), y se conectaron acciones concretas en cada KPI:
+   Combustible y Costo total → ver las cargas de combustible; Distancia y Horas de uso → ver
+   los reportes GPS; Sobre la meta → ver esos equipos filtrados en el panel, o ajustar sus
+   metas directamente; Equipos → ver el maestro completo, y si hay códigos sin padrón, ver esas
+   cargas huérfanas ya buscadas; Período analizado → saltar al selector de período, o ver las
+   cargas de ese período. Verificado en vivo: cada botón de acción navega o filtra
+   correctamente y no quedan errores de consola.
+
+### No implementado en esta tanda (evaluado y descartado por alcance/riesgo)
+
+- Acción individual para cada código huérfano dentro del KPI "Equipos" (solo se ofrece ir al
+  primero de la lista, buscado en Cargas de Combustible): mostrar los N códigos como una
+  lista propia dentro del popover de cálculo hubiera requerido un tipo de contenido nuevo en
+  `calcpopover.js` (no solo botones), que no estaba pedido explícitamente. La tabla de Cargas
+  con ese código ya buscado permite ver y resolver el resto desde ahí.

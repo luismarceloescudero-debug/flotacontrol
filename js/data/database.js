@@ -85,12 +85,21 @@ export function initDB() {
  * Si el mismo registro (misma fecha, litros, importe, interno_original) se vuelve a importar,
  * la corrección guardada se re-aplica automáticamente.
  */
+/**
+ * Identifica una carga de forma estable para guardar/reaplicar correcciones, SIN depender
+ * del interno que se le termine asignando (si dependiera de `interno`, la huella cambiaría
+ * apenas se corrige la carga, y la corrección guardada quedaría con una clave vieja que ya
+ * no matchea contra la fila corregida — la fila perdía el badge "Corregido" y el botón para
+ * volver a editarla, aunque la corrección siguiera guardada en la base). Por eso usa
+ * `_interno_original` (el valor tal cual venía del Excel, preservado por `asignarA()`) si
+ * existe, y solo cae a `interno` para una fila que todavía nunca se corrigió.
+ */
 export function huellaCarga(r) {
     return [
         r.fecha || '',
         String(r.litros || ''),
         String(r.importe || ''),
-        String(r.interno || '').toUpperCase().trim()
+        String((r._interno_original ?? r.interno) || '').toUpperCase().trim()
     ].join('|');
 }
 

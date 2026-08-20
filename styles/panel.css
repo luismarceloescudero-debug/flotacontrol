@@ -442,6 +442,33 @@
 
 .card-meta-line { display: flex; gap: 0.9rem; flex-wrap: wrap; font-size: 0.74rem; color: var(--text-muted); }
 .card-meta-line i { opacity: 0.7; margin-right: 0.2rem; }
+/* Línea secundaria (período combinado + GPS + desalineado + ralentí): un escalón más chica y
+   apagada que la cobertura, que es la que se quiere que salte a la vista primero. */
+.card-meta-line-sub { font-size: 0.7rem; opacity: 0.85; margin-top: 0.3rem; }
+.card-periodo-rango { color: var(--text-muted); }
+
+/* Cobertura de cargas vs. días hábiles: reemplaza a las dos líneas separadas de "cargas ·
+   período" y "GPS · período" con una sola franja destacada — es la métrica que dice si el
+   número de la tarjeta se puede tomar en serio o está armado con pocos datos. Mismo criterio
+   de color que el aviso de confiabilidad (round 1): 40%+ ok, 20-40% dudoso, <20% bajo. */
+.card-cobertura {
+    display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+    margin: 0.35rem 0; padding: 0.35rem 0.6rem; border-radius: 7px;
+    font-size: 0.8rem; font-weight: 600;
+    background: var(--bg-input); border: 1px solid var(--border-color);
+}
+.card-cobertura .cobertura-num { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--text-primary); }
+.card-cobertura .cobertura-num i { opacity: 0.75; font-size: 0.78rem; }
+.card-cobertura .cobertura-sep { color: var(--text-muted); font-weight: 400; font-size: 0.72rem; }
+.card-cobertura .cobertura-pct {
+    margin-left: auto; font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 999px;
+}
+.card-cobertura.cobertura-ok { border-color: rgba(52, 199, 89, 0.35); }
+.card-cobertura.cobertura-ok .cobertura-pct { background: rgba(52, 199, 89, 0.18); color: var(--accent-green, #34c759); }
+.card-cobertura.cobertura-media { border-color: rgba(255, 179, 0, 0.35); }
+.card-cobertura.cobertura-media .cobertura-pct { background: rgba(255, 179, 0, 0.18); color: var(--accent-amber, #ffb300); }
+.card-cobertura.cobertura-baja { border-color: rgba(255, 69, 58, 0.35); }
+.card-cobertura.cobertura-baja .cobertura-pct { background: rgba(255, 69, 58, 0.18); color: var(--accent-red, #ff453a); }
 
 .litros-bar { height: 3px; background: var(--bg-input); border-radius: 999px; overflow: hidden; }
 .litros-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); border-radius: 999px; }
@@ -735,6 +762,11 @@
 .calc-panel-nota i { color: var(--accent-cyan); margin-right: 0.3rem; }
 .calc-fuentes { margin-top: 0.9rem; font-size: 0.74rem; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
 .calc-fuentes code { background: var(--bg-input); border-radius: 4px; padding: 0.15rem 0.4rem; color: var(--text-secondary); }
+
+/* Acciones reales dentro del popover de cálculo: antes era de solo lectura (mostraba los
+   pasos y listo); ahora cada número puede llevar a la tabla que lo alimenta o a una vista
+   ya filtrada con los equipos involucrados. */
+.calc-acciones { margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid var(--border-color); display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .calc-vacio { color: var(--text-muted); font-size: 0.85rem; }
 
 /* ============================================================
@@ -783,6 +815,8 @@
 .th-extra { color: var(--accent-purple); }
 .th-del { background: none; border: none; color: var(--text-muted); cursor: pointer; margin-left: 0.3rem; font-size: 0.75rem; }
 .th-del:hover { color: var(--accent-red); }
+.th-rename { background: none; border: none; color: var(--text-muted); cursor: pointer; margin-left: 0.3rem; font-size: 0.75rem; }
+.th-rename:hover { color: var(--accent-cyan); }
 .th-acciones { width: 44px; }
 .row-asociado { border-left: 3px solid var(--accent-purple) !important; }
 .row-asociado td:first-child::after { content: ' \2194'; color: var(--accent-purple); font-size: 0.7rem; }
@@ -1076,6 +1110,14 @@
     display: inline-flex; align-items: center; gap: 0.25rem;
 }
 .meta-periodo-warn i { font-size: 0.65rem; }
+/* Es un <button> (antes era un <span> puramente informativo): resetear los estilos por
+   defecto del navegador y dejar el mismo look, pero con cursor y hover que avisen que se
+   puede hacer click para ir a revisar los movimientos del equipo. */
+button.meta-periodo-warn {
+    background: transparent; border: 1px dashed var(--accent-amber); border-radius: 5px;
+    padding: 0.12rem 0.4rem; cursor: pointer; font-family: inherit; transition: all var(--transition-fast);
+}
+button.meta-periodo-warn:hover { background: rgba(255, 179, 0, 0.12); border-style: solid; }
 
 /* -------- Card: hero de combustible (bandera + tipo + precio) -------- */
 .card-combustible-hero {
@@ -1291,6 +1333,17 @@
     display: inline-flex; align-items: center; gap: 0.3em;
     font-size: 0.75rem; color: var(--accent-green, #34c759);
 }
+/* Ahora es un <button> (antes texto fijo): resetear estilos de botón, dejar el mismo look
+   con un cursor que invite a hacer click, y un lápiz que solo se ve en hover para no
+   recargar la fila — click reabre el panel de corrección ya precargado, para poder editar
+   un dato que se cargó mal (ej. un interno con guion) sin tocar la base a mano. */
+button.badge-corregida {
+    background: transparent; border: 1px solid transparent; border-radius: 999px;
+    padding: 0.1em 0.5em; cursor: pointer; font-family: inherit; transition: all var(--transition-fast);
+}
+button.badge-corregida:hover { background: rgba(52, 199, 89, 0.12); border-color: rgba(52, 199, 89, 0.4); }
+.correc-edit-icon { font-size: 0.62rem; opacity: 0; margin-left: 0.1em; transition: opacity var(--transition-fast); }
+button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
 
 /* Botón "Corregir" (naranja) */
 .btn-warn {

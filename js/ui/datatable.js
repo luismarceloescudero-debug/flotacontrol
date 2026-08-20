@@ -24,7 +24,7 @@ import {
     updateRawRecord, deleteRawRecord
 } from '../data/database.js';
 import { periodosDisponibles, filtrarPorPeriodo } from '../data/analyzer.js';
-import { MESES, getDenominacion, normalizeEquipoKey, slugCampo } from '../data/normalizer.js';
+import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR } from '../data/normalizer.js';
 
 const PAGINA = 300;
 
@@ -180,6 +180,7 @@ async function renderMaestro() {
         '<th class="th-sel"><input type="checkbox" id="th-sel-all" title="Seleccionar todos"></th>' +
         CAMPOS_MAESTRO.map(c => `<th>${esc(c.label)}</th>`).join('') +
         columnasExtra.map(c => `<th class="th-extra">${esc(c.label)}
+            <button class="th-rename" data-col="${esc(c.id)}" title="Renombrar columna"><i class="fa-solid fa-pen"></i></button>
             <button class="th-del" data-col="${esc(c.id)}" title="Eliminar columna"><i class="fa-solid fa-xmark"></i></button></th>`).join('') +
         '<th class="th-acciones"></th>';
 
@@ -273,6 +274,19 @@ function conectarEdicionMaestro() {
             renderDataTable();
         });
     });
+
+    // Renombrar una columna propia: el valor de cada celda queda igual (se guarda por `id`,
+    // no por el texto del encabezado), solo cambia la etiqueta que se ve.
+    document.querySelectorAll('.th-rename').forEach(b => {
+        b.addEventListener('click', async () => {
+            const col = columnasExtra.find(c => c.id === b.dataset.col);
+            if (!col) return;
+            const nuevo = prompt('Nuevo nombre para la columna:', col.label);
+            if (!nuevo || !nuevo.trim() || nuevo.trim().toUpperCase() === col.label) return;
+            await setColumnasExtra(columnasExtra.map(c => c.id === col.id ? { ...c, label: nuevo.trim().toUpperCase() } : c));
+            renderDataTable();
+        });
+    });
 }
 
 function flash(el) {
@@ -294,7 +308,7 @@ async function renderEstimados() {
 
     document.getElementById('table-title').textContent = 'Consumos Estimados';
     document.getElementById('table-desc').innerHTML =
-        'Metas de consumo importadas de la planilla. La columna <strong>"vs Meta"</strong> muestra la diferencia con la meta actual del maestro. ' +
+        'Metas de consumo: las importadas de la planilla y las ajustadas a mano (ej. desde "Ajustar metas" en el Panel), aunque no hayan venido en la planilla original — esas quedan marcadas como <strong>"Ajustado a mano"</strong>. La columna <strong>"vs Meta"</strong> muestra la diferencia entre el estimado de la planilla y la meta actual del maestro. ' +
         'Usá <strong>"Adoptar estimado como meta"</strong> en la barra de acciones para trasladar el estimado al maestro de un grupo de equipos.';
     mostrarBotonesMaestro(false);
     mostrarBotonesEstimados(true);
@@ -311,7 +325,31 @@ async function renderEstimados() {
         if (r.type === 'gps') { gpsPorInterno.set(k, (gpsPorInterno.get(k) || 0) + 1); }
     });
 
-    let filas = estimados.map(e => {
+    // Esta tabla tiene que mostrar la meta vigente de CADA equipo, no solo los que vinieron
+    // en la planilla original de Consumos Estimados. Si se ajusta una meta a mano — por
+    // ejemplo con "Normalizar todos con el real" en el Panel — a un equipo que nunca tuvo
+    // una fila en esa planilla, antes quedaba con meta puesta pero invisible acá porque esta
+    // vista solo recorría `estimados`. Ahora se arma la unión: todos los estimados
+    // importados + todos los equipos del maestro que tengan una meta cargada (importada o
+    // ajustada a mano), sin duplicar cuando coinciden en el mismo interno.
+    const porInterno = new Map();
+    estimados.forEach(e => porInterno.set(normalizeEquipoKey(e.interno), { ...e }));
+    equipos.forEach(eq => {
+        if (!(eq.meta_valor > 0)) return;
+        const key = eq.interno_key || normalizeEquipoKey(eq.interno);
+        if (!porInterno.has(key)) {
+            // Equipo con meta ajustada a mano pero sin fila original en Consumos Estimados:
+            // se arma una fila "sintética" a partir del maestro para que no quede invisible.
+            porInterno.set(key, {
+                interno: eq.interno,
+                consumo_estimado_valor: null,
+                consumo_estimado_unidad: '',
+                _solo_en_maestro: true
+            });
+        }
+    });
+
+    let filas = [...porInterno.values()].map(e => {
         const key = normalizeEquipoKey(e.interno);
         const eq = equipos.find(x => (x.interno_key || normalizeEquipoKey(x.interno)) === key);
         const nCargas = cargasPorInterno.get(key) || 0;
@@ -322,6 +360,7 @@ async function renderEstimados() {
             dominio: eq?.dominio || '',
             meta_actual: eq?.meta_valor || 0,
             meta_unidad_actual: eq?.meta_unidad || '',
+            meta_origen: eq?.meta_origen || '',
             en_maestro: !!eq,
             cargas: nCargas,
             gps: nGps,
@@ -363,6 +402,7 @@ async function renderEstimados() {
     document.getElementById('table-body').innerHTML = pagina.map(e => {
         const sel = seleccionMasiva.has(e.interno);
         const estadoTxt = !e.en_maestro ? '<span class="badge-warn">Sin maestro</span>'
+            : e._solo_en_maestro ? `<span class="badge-ok" title="${esc(e.meta_origen || 'meta ajustada a mano, sin fila en la planilla de Consumos Estimados')}">Ajustado a mano</span>`
             : e.sin_actividad ? '<span class="badge-warn">Sin actividad</span>'
             : e.gps > 0 ? '<span class="badge-ok">Con GPS</span>'
             : '<span class="badge-neutral">—</span>';
@@ -386,7 +426,7 @@ async function renderEstimados() {
             <td>${esc(e.denominacion)}</td>
             <td class="cell-num"><strong>${e.consumo_estimado_valor ? nf(e.consumo_estimado_valor, 2) : '—'}</strong></td>
             <td>${esc(e.consumo_estimado_unidad || '')}</td>
-            <td class="cell-num">${e.meta_actual ? nf(e.meta_actual, 2) : '<span class="cell-muted">—</span>'}</td>
+            <td class="cell-num" ${e.meta_origen ? `title="${esc(e.meta_origen)}"` : ''}>${e.meta_actual ? nf(e.meta_actual, 2) : '<span class="cell-muted">—</span>'}</td>
             <td class="cell-num">${vsMeta}</td>
             <td class="cell-num">${nf(e.cargas)}</td>
             <td class="cell-num">${nf(e.gps)}</td>
@@ -493,7 +533,9 @@ async function renderMovimientos(tipo) {
         const accionTd = tipo === 'carga' ? `<td class="td-correc">${
             esHuerfana && !yaCorregida
                 ? `<button class="btn-corregir-carga btn-warn btn-sm"><i class="fa-solid fa-wand-magic-sparkles"></i> Corregir</button>`
-                : (yaCorregida ? `<span class="badge-corregida"><i class="fa-solid fa-check"></i> Corregido</span>` : '')
+                : (yaCorregida
+                    ? `<button class="btn-editar-correc badge-corregida" title="Click para editar esta corrección (interno, dominio, centro de costo, etc.)"><i class="fa-solid fa-check"></i> Corregido <i class="fa-solid fa-pen correc-edit-icon"></i></button>`
+                    : '')
         }</td>` : '';
 
         return `<tr${rowClass ? ` class="${rowClass}"` : ''}${dataAttrs}>
@@ -504,6 +546,7 @@ async function renderMovimientos(tipo) {
                 if (c.k === '_ralenti') v = nf(h.ralenti, 1);
                 else if (c.k === '_movimiento') v = nf(h.movimiento, 1);
                 else if (c.k === '_total') v = `<strong>${nf(h.total, 1)}</strong>`;
+                else if (c.k === 'fecha' || c.k === 'fecha_hasta') v = esc(formatFechaAR(r[c.k]));
                 else if (c.k.startsWith('datos.')) v = esc(r.datos?.[c.k.slice(6)] ?? '');
                 else if (c.money) v = `$${nf(r[c.k], 2)}`;
                 else if (c.num !== undefined) v = nf(r[c.k], c.num);
@@ -539,11 +582,15 @@ async function renderMovimientos(tipo) {
         renderDataTable();
     });
 
-    // Listener delegado para el panel de corrección (solo cargas)
+    // Listener delegado para el panel de corrección (solo cargas). Sirve tanto para asignar
+    // una carga huérfana por primera vez (.btn-corregir-carga) como para reabrir y EDITAR una
+    // corrección ya aplicada (.btn-editar-correc) — antes esa segunda parte no existía: una vez
+    // corregida, la fila quedaba con un cartel fijo sin forma de arreglar un dato mal tipeado
+    // (ej. un interno cargado con guion) sin editar la base a mano.
     if (tipo === 'carga') {
         const tbody = document.getElementById('table-body');
         tbody.addEventListener('click', async (e) => {
-            const btn = e.target.closest('.btn-corregir-carga');
+            const btn = e.target.closest('.btn-corregir-carga, .btn-editar-correc');
             if (!btn) return;
             const tr = btn.closest('tr');
             const recid = parseInt(tr.dataset.recid, 10);
@@ -559,15 +606,22 @@ async function renderMovimientos(tipo) {
             }
 
             const equipos = await getAllEquipos();
-            const panelTr = buildCorrecionRow(record, todos, equipos, colspan);
+            const correccionExistente = btn.classList.contains('btn-editar-correc')
+                ? correccionesMap.get(huellaCarga(record)) : null;
+            const panelTr = buildCorrecionRow(record, todos, equipos, colspan, correccionExistente);
             tr.insertAdjacentElement('afterend', panelTr);
             conectarPanelCorreccion(panelTr, record, todos);
         });
     }
 }
 
-/** Construye el <tr> con el panel de corrección inline para una carga huérfana. */
-function buildCorrecionRow(record, todasCargas, equipos, colspan) {
+/**
+ * Construye el <tr> con el panel de corrección inline. Sirve para dos casos: asignar una
+ * carga huérfana por primera vez (`correccionExistente` null) o reabrir una corrección ya
+ * aplicada para editarla (`correccionExistente` con lo que se guardó la vez anterior) — en
+ * ese caso los campos manuales quedan precargados con esos valores en vez de vacíos.
+ */
+function buildCorrecionRow(record, todasCargas, equipos, colspan, correccionExistente = null) {
     const fecha = record.fecha || '';
     const anioMes = fecha.slice(0, 7); // 'YYYY-MM'
 
@@ -629,19 +683,31 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan) {
         .map(e => `<option value="${esc(e.interno)}">${esc(e.interno)}${e.denominacion ? ' – ' + esc(e.denominacion) : ''}</option>`)
         .join('');
 
+    const editando = !!correccionExistente;
+    const interno_original = record._interno_original ?? record.interno ?? '';
+    const valInterno = editando ? (correccionExistente.interno_correcto || record.interno || '') : '';
+    const valDominio = editando ? (correccionExistente.dominio_correcto || record.dominio || '') : (record.dominio || '');
+    const valCC = editando ? (correccionExistente.centro_costo_correcto || record.centro_costo || '') : (record.centro_costo || '');
+    const valLugar = editando ? (correccionExistente.lugar_carga_correcto || record.lugar_carga || '') : (record.lugar_carga || '');
+    const valSector = editando ? (correccionExistente.sector_correcto || record.sector || '') : (record.sector || '');
+    const valObs = editando ? (correccionExistente.observacion || '') : '';
+
     const tr = document.createElement('tr');
     tr.className = 'carga-correccion-row';
     tr.dataset.recid = record.id;
     tr.innerHTML = `<td colspan="${colspan}"><div class="correc-panel">
         <div class="correc-header">
-            <span class="badge-huerfana"><i class="fa-solid fa-triangle-exclamation"></i> Sin asignar</span>
+            ${editando
+                ? '<span class="badge-corregida"><i class="fa-solid fa-pen"></i> Editando corrección</span>'
+                : '<span class="badge-huerfana"><i class="fa-solid fa-triangle-exclamation"></i> Sin asignar</span>'}
             <span class="correc-detalle">
-                ${esc(record.fecha || '—')} &nbsp;·&nbsp;
+                ${esc(formatFechaAR(record.fecha) || '—')} &nbsp;·&nbsp;
                 ${nf(record.litros, 1)} L &nbsp;·&nbsp;
                 $${nf(record.importe, 2)} &nbsp;·&nbsp;
                 Lugar: ${esc(record.lugar_carga || '—')} &nbsp;·&nbsp;
                 CC: ${esc(record.centro_costo || '—')} &nbsp;·&nbsp;
-                Chofer / interno original: <strong>${esc(record.interno || '—')}</strong>
+                Chofer / interno original: <strong>${esc(interno_original || '—')}</strong>
+                ${editando ? ` &nbsp;·&nbsp; Asignado actualmente: <strong>${esc(record.interno || '—')}</strong>` : ''}
             </span>
             <button class="btn-cerrar-correc btn-icon" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
         </div>
@@ -651,40 +717,41 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan) {
                 <div class="candidato-list">${candidatosHtml}</div>
             </div>
             <div class="correc-manual-wrap">
-                <p class="correc-titulo">Asignación manual y datos extra</p>
+                <p class="correc-titulo">${editando ? 'Editar asignación y datos extra' : 'Asignación manual y datos extra'}</p>
                 <div class="correc-manual-row">
                     <datalist id="correc-sugg-${record.id}">${listaSugg}</datalist>
                     <label class="correc-field-label">Interno</label>
                     <input type="text" class="correc-interno-input"
-                        placeholder="Ej: MX66" list="correc-sugg-${record.id}" autocomplete="off">
+                        placeholder="Ej: MX66" list="correc-sugg-${record.id}" autocomplete="off" value="${esc(valInterno)}">
                 </div>
                 <div class="correc-manual-row">
                     <label class="correc-field-label">Dominio</label>
                     <input type="text" class="correc-dominio-input"
-                        placeholder="Ej: JNU923" value="${esc(record.dominio || '')}">
+                        placeholder="Ej: JNU923" value="${esc(valDominio)}">
                 </div>
                 <div class="correc-manual-row">
                     <label class="correc-field-label">Centro de costo</label>
                     <input type="text" class="correc-cc-input"
-                        placeholder="Ej: HORMIGÓN" value="${esc(record.centro_costo || '')}">
+                        placeholder="Ej: HORMIGÓN" value="${esc(valCC)}">
                 </div>
                 <div class="correc-manual-row">
                     <label class="correc-field-label">Lugar de carga</label>
                     <input type="text" class="correc-lugar-input"
-                        placeholder="Ej: GRIS" value="${esc(record.lugar_carga || '')}">
+                        placeholder="Ej: GRIS" value="${esc(valLugar)}">
                 </div>
                 <div class="correc-manual-row">
                     <label class="correc-field-label">Sector</label>
                     <input type="text" class="correc-sector-input"
-                        placeholder="Ej: BOMBAS" value="${esc(record.sector || '')}">
+                        placeholder="Ej: BOMBAS" value="${esc(valSector)}">
                 </div>
                 <div class="correc-manual-row">
                     <label class="correc-field-label">Observación</label>
                     <input type="text" class="correc-obs-input"
-                        placeholder="Nota libre" value="">
+                        placeholder="Nota libre" value="${esc(valObs)}">
                 </div>
                 <div class="correc-manual-row" style="margin-top:10px">
-                    <button class="btn-asignar-manual btn-primary btn-sm"><i class="fa-solid fa-check"></i> Guardar corrección</button>
+                    <button class="btn-asignar-manual btn-primary btn-sm"><i class="fa-solid fa-check"></i> ${editando ? 'Guardar cambios' : 'Guardar corrección'}</button>
+                    ${editando ? '<button class="btn-deshacer-correc btn-secondary btn-sm" title="Sacarle la asignación de equipo y volver a dejarla como carga sin asignar"><i class="fa-solid fa-rotate-left"></i> Deshacer corrección</button>' : ''}
                 </div>
             </div>
         </div>
@@ -723,6 +790,13 @@ function conectarPanelCorreccion(panelTr, record, todasCargas) {
         const ikey = normalizeEquipoKey(interno);
         const extra = leerCamposExtra();
         const dominio = extra.dominio_correcto || dominioHint || '';
+        // Si esta carga YA estaba corregida antes (se está editando, no asignando por primera
+        // vez), `record.interno` ya es el valor corregido anterior, no el original del Excel.
+        // El original real vive en `record._interno_original` desde la primera corrección —
+        // hay que seguir arrastrando ESE valor, si no la huella de esta carga cambia en cada
+        // edición y la corrección guardada deja de encontrarse la próxima vez (se "pierde" el
+        // cartel de Corregido y la posibilidad de volver a editarla).
+        const internoOriginalReal = (record._interno_original ?? record.interno) || '';
         await saveCorreccionCarga({
             huella,
             accion: 'asignar',
@@ -732,7 +806,7 @@ function conectarPanelCorreccion(panelTr, record, todasCargas) {
             lugar_carga_correcto: extra.lugar_carga_correcto,
             sector_correcto: extra.sector_correcto,
             observacion: extra.observacion,
-            interno_original: record.interno || '',
+            interno_original: internoOriginalReal,
             fecha: record.fecha,
             litros: record.litros,
             importe: record.importe
@@ -743,7 +817,7 @@ function conectarPanelCorreccion(panelTr, record, todasCargas) {
             dominio: dominio || record.dominio || '',
             dominio_key: normalizeEquipoKey(dominio || record.dominio || ''),
             _corregido: true,
-            _interno_original: record.interno
+            _interno_original: internoOriginalReal
         };
         if (extra.centro_costo_correcto) cambiosRecord.centro_costo = extra.centro_costo_correcto;
         if (extra.lugar_carga_correcto) cambiosRecord.lugar_carga = extra.lugar_carga_correcto;
@@ -772,16 +846,37 @@ function conectarPanelCorreccion(panelTr, record, todasCargas) {
 
     panelTr.querySelector('.btn-eliminar-carga')?.addEventListener('click', async () => {
         const litros = nf(parseFloat(record.litros) || 0, 1);
-        if (!confirm(`¿Eliminar este registro (${litros} L del ${record.fecha})?\n\nSi reimportás el archivo, el registro se va a omitir automáticamente.`)) return;
+        if (!confirm(`¿Eliminar este registro (${litros} L del ${formatFechaAR(record.fecha)})?\n\nSi reimportás el archivo, el registro se va a omitir automáticamente.`)) return;
         await saveCorreccionCarga({
             huella,
             accion: 'eliminar',
-            interno_original: record.interno || '',
+            interno_original: (record._interno_original ?? record.interno) || '',
             fecha: record.fecha,
             litros: record.litros,
             importe: record.importe
         });
         await deleteRawRecord(record.id);
+        panelTr.remove();
+        renderDataTable();
+        if (typeof window.renderPanel === 'function') window.renderPanel();
+    });
+
+    // Deshacer corrección: borra la corrección guardada y devuelve la carga a "sin asignar"
+    // (interno/dominio vacíos). Los datos extra (centro de costo, lugar, sector) que se hayan
+    // pisado durante la corrección no se pueden reconstruir — no quedó guardado cuál era el
+    // valor original de esos campos — así que quedan como estén; se pueden volver a editar a
+    // mano si hace falta.
+    panelTr.querySelector('.btn-deshacer-correc')?.addEventListener('click', async () => {
+        if (!confirm(`¿Deshacer la corrección de esta carga?\n\nVuelve a quedar sin equipo asignado (interno "${record.interno || ''}" se borra). El centro de costo / lugar / sector que se hayan editado quedan como están; se pueden corregir a mano.`)) return;
+        await deleteCorreccionCarga(huella);
+        await updateRawRecord(record.id, {
+            interno: '',
+            interno_key: '',
+            dominio: '',
+            dominio_key: '',
+            _corregido: false,
+            _interno_original: null
+        });
         panelTr.remove();
         renderDataTable();
         if (typeof window.renderPanel === 'function') window.renderPanel();

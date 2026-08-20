@@ -100,12 +100,25 @@ export function abrirAjusteMetas(analisis, filtroInicial = 'todos') {
     }));
     document.getElementById('metas-aplicar').addEventListener('click', aplicar);
     document.getElementById('metas-normalizar-real')?.addEventListener('click', () => {
+        // "Normalizar TODOS con el real" tiene que decir todos y hacer todos: antes usaba
+        // filtrar() tal cual estaba (heredando el filtro de categoría Y el checkbox "Solo con
+        // datos confiables", tildado por defecto), así que un equipo con poca cobertura de
+        // cargas (ej. 30 de 120 días hábiles) quedaba afuera en silencio — se veía el cartel
+        // de "listo", pero esa tarjeta seguía con la meta vieja, sin ningún aviso de que se
+        // había salteado. Ahora fuerza el filtro de categoría a "todos" (por más que haya
+        // otro elegido) y aplica sobre TODOS los equipos medibles con cargas, sin importar el
+        // checkbox de confiables — total, "usar el consumo real medido" es exactamente lo que
+        // ese botón promete hacer con cada uno.
         document.getElementById('metas-origen').value = 'real';
         document.getElementById('metas-manual').style.display = 'none';
+        document.getElementById('metas-filtro').value = 'todos';
+        const soloConfCheckbox = document.getElementById('metas-solo-confiables');
+        const estabaTildado = soloConfCheckbox?.checked;
+        if (soloConfCheckbox) soloConfCheckbox.checked = false;
         const visibles = filtrar().map(f => f.equipo.interno);
         visibles.forEach(i => seleccion.add(i));
         pintar();
-        aplicar();
+        aplicar({ avisoConfiabilidad: estabaTildado });
     });
 
     pintar();
@@ -181,14 +194,24 @@ function pintar() {
     });
 }
 
-async function aplicar() {
+async function aplicar(opts = {}) {
     const filas = filtrar().filter(f => seleccion.has(f.equipo.interno));
     if (!filas.length) { alert('No hay equipos seleccionados.'); return; }
 
     const conValor = filas.map(f => ({ f, nm: nuevaMeta(f) })).filter(x => x.nm);
     if (!conValor.length) { alert('Ninguno de los seleccionados tiene una base para calcular la meta.'); return; }
 
-    if (!confirm(`¿Aplicar la nueva meta a ${conValor.length} equipos?\n\nQuedan marcadas como corrección manual: una reimportación de "Consumos Estimados" no las va a pisar.`)) return;
+    // Cuántos de los que se están por aplicar tienen poca cobertura de datos (se habrían
+    // excluido con "Solo con datos confiables" tildado) — para que quede a la vista, no
+    // silencioso, cuando la meta se termina fijando con datos parciales.
+    const pocaCobertura = conValor.filter(({ f }) => !confiabilidad(f, periodoRef).confiable).length;
+    const avisoCobertura = pocaCobertura
+        ? `\n\n⚠ ${pocaCobertura} de esos equipos tienen poca cobertura de cargas en el período (se habrían salteado con "Solo con datos confiables" tildado) — su meta va a quedar fijada con un consumo medido sobre pocos días.`
+        : '';
+    const notaCheckbox = opts.avisoConfiabilidad
+        ? '\n\nNota: se ignoró el filtro "Solo con datos confiables" para que "todos" sea realmente todos — quedó destildado.' : '';
+
+    if (!confirm(`¿Aplicar la nueva meta a ${conValor.length} equipos?${avisoCobertura}${notaCheckbox}\n\nQuedan marcadas como corrección manual: una reimportación de "Consumos Estimados" no las va a pisar.`)) return;
 
     const btn = document.getElementById('metas-aplicar');
     btn.disabled = true;
@@ -209,7 +232,7 @@ async function aplicar() {
         }
         cerrar();
         if (typeof window.renderPanel === 'function') await window.renderPanel();
-        alert(`Listo: ${conValor.length} metas actualizadas.`);
+        alert(`Listo: ${conValor.length} metas actualizadas.${pocaCobertura ? ` (${pocaCobertura} con poca cobertura de datos, revisar cuando haya más cargas cargadas)` : ''}`);
     } catch (e) {
         console.error('Error aplicando metas:', e);
         alert('No se pudieron aplicar todas las metas: ' + e.message);

@@ -5,6 +5,10 @@
  * pasos del cálculo: qué se sumó, con qué se dividió, cuántos registros entraron y de qué
  * archivos salieron. La idea es que ningún número de la app sea una caja negra: si el
  * dashboard dice "39,28 L/100Km", tiene que poder mostrar de dónde salió ese 39,28.
+ *
+ * Además de los pasos, cada cálculo puede traer `acciones`: botones reales para hacer algo
+ * con ese número en vez de solo mirarlo — ir a la tabla de datos que lo alimenta, filtrar el
+ * panel para ver justo los equipos involucrados, etc. Antes el panel era de solo lectura.
  */
 
 const registro = new Map(); // id -> { titulo, valor, pasos, fuentes, nota }
@@ -80,9 +84,21 @@ function abrir(d) {
                 <span>Datos tomados de:</span>
                 ${d.fuentes.map(f => `<code>${esc(f)}</code>`).join('')}
             </div>` : ''}
+
+            ${d.acciones && d.acciones.length ? `
+            <div class="calc-acciones">
+                ${d.acciones.map((a, i) => `<button class="btn-sm ${a.primaria ? 'btn-primary' : 'btn-secondary'}" data-calc-accion="${i}"><i class="fa-solid ${a.icono || 'fa-arrow-right'}"></i> ${esc(a.texto)}</button>`).join('')}
+            </div>` : ''}
         </div>`;
 
     overlay.addEventListener('click', (e) => { if (e.target === overlay || e.target.closest('[data-cerrar]')) cerrar(); });
+    overlay.querySelectorAll('[data-calc-accion]').forEach(b => {
+        b.addEventListener('click', () => {
+            const accion = (d.acciones || [])[parseInt(b.dataset.calcAccion, 10)];
+            cerrar();
+            if (accion && typeof accion.onClick === 'function') accion.onClick();
+        });
+    });
     document.body.appendChild(overlay);
 }
 

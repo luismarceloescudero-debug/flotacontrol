@@ -201,8 +201,23 @@ export function parseConsumoEstimado(raw) {
 }
 
 /**
+ * Todas las fechas se guardan internamente en formato ISO ("YYYY-MM-DD", para poder
+ * ordenar/comparar como texto sin parsear). Para MOSTRAR una fecha en la interfaz, siempre
+ * hay que pasarla por acá primero: la app es para una empresa argentina, así que el formato
+ * visible tiene que ser DD/MM/AAAA (es-AR), nunca el ISO crudo que se ve en varias tablas.
+ * @param {String} iso Fecha en formato "YYYY-MM-DD" (o "YYYY-MM-DDTHH:mm:ss")
+ * @returns {String} "DD/MM/AAAA", o el valor original si no matchea el formato esperado.
+ */
+export function formatFechaAR(iso) {
+    if (!iso) return '';
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return String(iso);
+    return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+/**
  * Normaliza un string para poder cruzar datos de manera segura
- * @param {String} val 
+ * @param {String} val
  * @returns {String} String en mayúsculas, sin espacios extra y sin acentos
  */
 export function normalizeString(val) {

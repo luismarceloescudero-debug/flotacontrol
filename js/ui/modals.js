@@ -3,6 +3,7 @@
  * el historial de cargas y la actividad GPS del período.
  */
 import { evolucionMensual, confiabilidad } from '../data/diagnostico.js';
+import { formatFechaAR } from '../data/normalizer.js';
 
 const MESES_CORTOS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -146,7 +147,7 @@ export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps =
                             <tbody>
                                 ${ultimasCargas.map(c => `
                                     <tr>
-                                        <td>${esc(c.fecha)}</td>
+                                        <td>${esc(formatFechaAR(c.fecha))}</td>
                                         <td>${nf(c.litros, 1)}</td>
                                         <td>$${nf(c.importe, 0)}</td>
                                         <td>${esc(c.lugar_carga)}</td>
@@ -166,8 +167,8 @@ export function openUnitModal(equipo, metrics, confirmed, eqCargas = [], eqGps =
                                 ${eqGps.map(g => {
                                     const h = (g.horas && typeof g.horas === 'object') ? g.horas : { ralenti: 0, movimiento: parseFloat(g.horas) || 0, total: parseFloat(g.horas) || 0 };
                                     return `<tr>
-                                        <td>${esc(g.fecha)}</td>
-                                        <td>${esc(g.fecha_hasta || '')}</td>
+                                        <td>${esc(formatFechaAR(g.fecha))}</td>
+                                        <td>${esc(formatFechaAR(g.fecha_hasta))}</td>
                                         <td>${nf(g.distancia, 0)}</td>
                                         <td>${nf(h.ralenti, 1)}</td>
                                         <td>${nf(h.movimiento, 1)}</td>

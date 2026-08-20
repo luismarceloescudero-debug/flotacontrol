@@ -259,14 +259,21 @@ function renderMesesGrid(todosLosPeriodos, mesesCargas, mesesGps) {
     });
     html += '</div>';
 
-    // Acciones rápidas. Los períodos reales disponibles (sin importar el filtro de año activo)
-    // son la base para "últimos N meses": alinear rápido varias planillas (Cargas + varios
-    // meses de GPS) al mismo tramo reciente, en vez de tildar mes por mes.
+    // Acciones rápidas. "Últimos N meses" tiene que dar meses REALMENTE completos y
+    // comparables: no alcanza con que el mes tenga algún dato (una sola carga del 1° de
+    // agosto ya lo metía en la lista), hacen falta las DOS fuentes (cargas Y GPS) — que es
+    // justamente la señal de que el mes ya se cerró y se terminó de cargar todo. Por eso la
+    // base ya no es "todos los períodos que aparecen en algún lado" sino los mismos
+    // "cruzados" que usa el botón de al lado, sin importar el filtro de año activo. Además se
+    // excluye el mes calendario en curso (hoy), que por definición todavía no puede estar
+    // completo aunque ya tenga alguna carga cargada.
     const periodosReales = [...new Set(todosLosPeriodos)].sort();
+    const hoyYM = new Date().toISOString().slice(0, 7);
+    const cruzadosReales = periodosReales.filter(ym => mesesCargas.has(ym) && mesesGps.has(ym) && ym !== hoyYM);
     html += `<div class="meses-grid-actions">`;
     html += `<button class="btn-meses-action" id="meses-solo-cruzados" title="Seleccionar solo los meses que tienen cargas Y GPS a la vez">${ambos.length} meses cruzados</button>`;
-    [3, 6, 12].filter(n => periodosReales.length > n).forEach(n => {
-        html += `<button class="btn-meses-action" data-ultimos="${n}" title="Seleccionar los últimos ${n} meses con datos">Últimos ${n} meses</button>`;
+    [3, 6, 12].filter(n => cruzadosReales.length > n).forEach(n => {
+        html += `<button class="btn-meses-action" data-ultimos="${n}" title="Seleccionar los últimos ${n} meses ya cerrados y con cargas Y GPS a la vez (meses completos y comparables entre sí)">Últimos ${n} meses</button>`;
     });
     if (haySeleccion) html += `<button class="btn-meses-action" id="meses-limpiar">Limpiar</button>`;
     html += `</div>`;
@@ -291,7 +298,7 @@ function renderMesesGrid(todosLosPeriodos, mesesCargas, mesesGps) {
         btn.addEventListener('click', () => {
             const n = parseInt(btn.dataset.ultimos, 10);
             view.meses.clear();
-            periodosReales.slice(-n).forEach(ym => view.meses.add(ym));
+            cruzadosReales.slice(-n).forEach(ym => view.meses.add(ym));
             renderPanel();
         });
     });
@@ -331,8 +338,8 @@ function fuentesHTML(f) {
 
 // ---------------------------------------------------------------- KPIs
 
-function kpi({ id, label, valor, sub, clase, titulo, pasos, fuentes, nota }) {
-    const attrs = registrarCalculo(id, { titulo: titulo || label, valor, pasos, fuentes, nota });
+function kpi({ id, label, valor, sub, clase, titulo, pasos, fuentes, nota, acciones }) {
+    const attrs = registrarCalculo(id, { titulo: titulo || label, valor, pasos, fuentes, nota, acciones });
     return `
         <div class="kpi-card ${clase || ''}" ${attrs} role="button" tabindex="0">
             <span class="kpi-label">${label}</span>
@@ -375,7 +382,11 @@ function renderKPIs(el, t, fuentes) {
 
     const periodoAttrs = registrarCalculo('kpi-periodo', {
         titulo: 'Período analizado', valor: rango, pasos: t.pasos.periodo,
-        nota: 'Cuando no hay filtro manual, la app usa solo el tramo donde existen Cargas y GPS a la vez.'
+        nota: 'Cuando no hay filtro manual, la app usa solo el tramo donde existen Cargas y GPS a la vez.',
+        acciones: [
+            { texto: 'Ajustar período', icono: 'fa-calendar-days', primaria: true, onClick: () => document.querySelector('.toolbar-periodo')?.scrollIntoView({ behavior: 'smooth', block: 'center' }) },
+            { texto: 'Ver cargas de este período', icono: 'fa-gas-pump', onClick: () => window.abrirTablaConBusqueda?.('carga', '') }
+        ]
     });
 
     const dh = (t.periodo_desde && t.periodo_hasta) ? diasHabiles(t.periodo_desde, t.periodo_hasta) : null;
@@ -398,12 +409,24 @@ function renderKPIs(el, t, fuentes) {
         </div>
 
         <div class="kpi-grid">
-            ${kpi({ id: 'kpi-litros', label: 'Combustible', valor: `${nf(t.total_litros)} <small>L</small>`, sub: `${nf(t.cantidad_cargas)} cargas registradas`, titulo: 'Combustible total del período', pasos: t.pasos.litros })}
-            ${kpi({ id: 'kpi-costo', label: 'Costo total', valor: money(t.total_costo), sub: costoSubPorCombustible(t), titulo: 'Costo total del combustible', pasos: t.pasos.costo })}
-            ${kpi({ id: 'kpi-km', label: 'Distancia', valor: `${nf(t.total_km)} <small>km</small>`, sub: 'Según Resumen de Flota', titulo: 'Kilómetros recorridos', pasos: t.pasos.km })}
-            ${kpi({ id: 'kpi-horas', label: 'Horas de uso', valor: `${nf(t.total_horas)} <small>hs</small>`, sub: `${nf(t.horas_movimiento)} movimiento · ${nf(t.horas_ralenti)} ralentí`, titulo: 'Horas de uso', pasos: t.pasos.horas })}
-            ${kpi({ id: 'kpi-sobre', label: 'Sobre la meta', valor: String(t.sobre_meta), sub: `de ${t.con_meta} equipos con meta`, clase: t.sobre_meta > 0 ? 'kpi-alert' : '', titulo: 'Equipos sobre la meta', pasos: t.pasos.sobre_meta })}
-            ${kpi({ id: 'kpi-equipos', label: 'Equipos', valor: String(t.equipos), sub: `${t.equipos_con_datos} con actividad · ${t.huerfanos.length} códigos sin padrón`, clase: t.huerfanos.length ? 'kpi-warn' : '', titulo: 'Equipos del maestro', pasos: t.pasos.equipos })}
+            ${kpi({ id: 'kpi-litros', label: 'Combustible', valor: `${nf(t.total_litros)} <small>L</small>`, sub: `${nf(t.cantidad_cargas)} cargas registradas`, titulo: 'Combustible total del período', pasos: t.pasos.litros,
+                acciones: [{ texto: 'Ver cargas de combustible', icono: 'fa-gas-pump', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('carga', '') }] })}
+            ${kpi({ id: 'kpi-costo', label: 'Costo total', valor: money(t.total_costo), sub: costoSubPorCombustible(t), titulo: 'Costo total del combustible', pasos: t.pasos.costo,
+                acciones: [{ texto: 'Ver cargas de combustible', icono: 'fa-gas-pump', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('carga', '') }] })}
+            ${kpi({ id: 'kpi-km', label: 'Distancia', valor: `${nf(t.total_km)} <small>km</small>`, sub: 'Según Resumen de Flota', titulo: 'Kilómetros recorridos', pasos: t.pasos.km,
+                acciones: [{ texto: 'Ver reportes GPS', icono: 'fa-satellite-dish', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('gps', '') }] })}
+            ${kpi({ id: 'kpi-horas', label: 'Horas de uso', valor: `${nf(t.total_horas)} <small>hs</small>`, sub: `${nf(t.horas_movimiento)} movimiento · ${nf(t.horas_ralenti)} ralentí`, titulo: 'Horas de uso', pasos: t.pasos.horas,
+                acciones: [{ texto: 'Ver reportes GPS', icono: 'fa-satellite-dish', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('gps', '') }] })}
+            ${kpi({ id: 'kpi-sobre', label: 'Sobre la meta', valor: String(t.sobre_meta), sub: `de ${t.con_meta} equipos con meta`, clase: t.sobre_meta > 0 ? 'kpi-alert' : '', titulo: 'Equipos sobre la meta', pasos: t.pasos.sobre_meta,
+                acciones: t.sobre_meta > 0 ? [
+                    { texto: 'Ver estos equipos', icono: 'fa-eye', primaria: true, onClick: () => filtrarPorEstado('SOBRE') },
+                    { texto: 'Ajustar sus metas', icono: 'fa-sliders', onClick: () => abrirAjusteMetas(ultimoAnalisis, 'excedidos') }
+                ] : [] })}
+            ${kpi({ id: 'kpi-equipos', label: 'Equipos', valor: String(t.equipos), sub: `${t.equipos_con_datos} con actividad · ${t.huerfanos.length} códigos sin padrón`, clase: t.huerfanos.length ? 'kpi-warn' : '', titulo: 'Equipos del maestro', pasos: t.pasos.equipos,
+                acciones: [
+                    { texto: 'Ver maestro de equipos', icono: 'fa-table-list', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('maestro', '') },
+                    ...(t.huerfanos.length ? [{ texto: `Ver ${t.huerfanos.length} código${t.huerfanos.length === 1 ? '' : 's'} sin padrón`, icono: 'fa-triangle-exclamation', onClick: () => window.abrirTablaConBusqueda?.('carga', (t.huerfanos[0]?.interno || t.huerfanos[0]?.dominio || '')) }] : [])
+                ] })}
         </div>`;
 }
 
@@ -726,6 +749,20 @@ function buscarEquipo(interno) {
     cont?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+/** Filtra las tarjetas del panel por estado (mismos valores que #filter-estado) y hace scroll hasta ellas. Usado por las acciones de los KPI. */
+function filtrarPorEstado(estado) {
+    view.busqueda = ''; view.denominacion = 'ALL'; view.estado = estado;
+    const input = document.getElementById('search-equip');
+    if (input) input.value = '';
+    const fd = document.getElementById('filter-denominacion');
+    const fe = document.getElementById('filter-estado');
+    if (fd) fd.value = 'ALL';
+    if (fe) fe.value = estado;
+    const cont = document.getElementById('cards-container');
+    if (cont && ultimoAnalisis) renderCards(cont, ultimoAnalisis);
+    cont?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 // ---------------------------------------------------------------- tarjetas
 
 function poblarFiltroDenominacion(filas) {
@@ -995,6 +1032,10 @@ function renderCards(container, analisis) {
             e.stopPropagation();
             if (fila) openUnitModal(fila.equipo, fila.metrics, fila.confirmed, fila.cargas, fila.gps, fila.ubicacion, periodoDeAnalisis(analisis));
         });
+        card.querySelector('.btn-desalineado')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', interno);
+        });
         card.querySelector('.btn-card-compare')?.addEventListener('click', (e) => {
             e.stopPropagation();
             if (comparSeleccion.has(interno)) comparSeleccion.delete(interno);
@@ -1064,46 +1105,75 @@ function rangoMeses(meses) {
         : fmt(meses[0]) + '–' + fmt(meses[meses.length - 1]);
 }
 
-/** Meta-line de la tarjeta: cargas, GPS, períodos, días hábiles, combustible. */
+/**
+ * Compara los meses con cargas contra los meses con GPS de un equipo y arma el tag de
+ * "períodos desalineados" — ahora como botón real (con `data-interno`), no solo texto: al
+ * hacer click navega a Base de Datos → Movimientos, ya filtrado por ese equipo, para ver
+ * exactamente qué mes falta de qué fuente y poder actuar (subir el archivo que falta,
+ * revisar una fecha mal cargada, etc.). Se usa tanto en la tarjeta como en el overlay de
+ * detalle, para que la información y la acción estén disponibles en los dos lugares.
+ */
+function desalineadoInfo(f) {
+    const fechasC = f.cargas.map(c => c.fecha).filter(Boolean).sort();
+    const fechasG = f.gps.map(g => g.fecha).filter(Boolean).sort();
+    const mesesC = [...new Set(fechasC.map(x => x.slice(0, 7)))].sort();
+    const mesesG = [...new Set(fechasG.map(x => x.slice(0, 7)))].sort();
+    const mesesSoloC = mesesC.filter(m => !mesesG.includes(m));
+    const mesesSoloG = mesesG.filter(m => !mesesC.includes(m));
+    if (!mesesC.length || !mesesG.length || (!mesesSoloC.length && !mesesSoloG.length)) return { html: '', mesesC, mesesG };
+    const partes = [];
+    if (mesesSoloC.length) partes.push(`cargas sin GPS: ${mesesSoloC.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1]).join(', ')}`);
+    if (mesesSoloG.length) partes.push(`GPS sin cargas: ${mesesSoloG.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1]).join(', ')}`);
+    const html = `<button type="button" class="meta-periodo-warn btn-desalineado" data-interno="${esc(f.equipo.interno)}" title="Los períodos de cargas y GPS no coinciden al 100%: ${esc(partes.join('; '))}. Click para revisar los movimientos de este equipo."><i class="fa-solid fa-triangle-exclamation"></i> períodos desalineados</button>`;
+    return { html, mesesC, mesesG };
+}
+
+/**
+ * Meta-line de la tarjeta: cargas, GPS, períodos, días hábiles, combustible.
+ *
+ * Rediseñada a pedido: lo que importa de un vistazo es la RELACIÓN entre cuánto cargó y
+ * cuánto pudo haber cargado (cargas vs. días hábiles del período) — es la señal de cuán
+ * confiable es el número que se está mirando, así que ahora es lo más destacado, con color
+ * según el % de cobertura (mismo cálculo que ya se usaba para el aviso de confiabilidad).
+ * El período (Ene–Jun 2026) se muestra UNA sola vez, no repetido para cargas y para GPS. La
+ * cantidad de reportes GPS pasa a ser un dato secundario y más chico: sigue estando, pero ya
+ * no compite en jerarquía visual con la cobertura de cargas.
+ */
 function cardPeriodoInfo(f, m, ubi, ralentiTag) {
     const fechasC = f.cargas.map(c => c.fecha).filter(Boolean).sort();
     const fechasG = f.gps.map(g => g.fecha).filter(Boolean).sort();
     const mesesC = [...new Set(fechasC.map(x => x.slice(0, 7)))].sort();
     const mesesG = [...new Set(fechasG.map(x => x.slice(0, 7)))].sort();
-    const rangoC = rangoMeses(mesesC);
-    const rangoG = rangoMeses(mesesG);
+    const mesesTodos = [...new Set([...mesesC, ...mesesG])].sort();
+    const rango = rangoMeses(mesesTodos);
 
-    // Días hábiles del período de este equipo (unión de cargas + GPS)
+    // Días hábiles del período de este equipo (unión de cargas + GPS) + % de cobertura
     const todasFechas = [...fechasC, ...fechasG].sort();
-    let dhTag = '';
+    let coberturaHtml = '';
     if (todasFechas.length >= 2) {
         const dh = diasHabiles(todasFechas[0], todasFechas[todasFechas.length - 1]);
-        if (dh && dh.totalCorridos > 0) {
-            dhTag = `<span title="${dh.dias} hábiles de ${dh.totalCorridos} corridos${dh.completo ? '' : ' (sin feriados móviles confirmados)'}"><i class="fa-solid fa-calendar-days"></i> ${dh.dias} días hábiles</span>`;
+        if (dh && dh.totalCorridos > 0 && dh.dias > 0) {
+            const pct = Math.min(Math.round((m.cantidad_cargas / dh.dias) * 100), 100);
+            const cls = pct >= 40 ? 'cobertura-ok' : (pct >= 20 ? 'cobertura-media' : 'cobertura-baja');
+            coberturaHtml = `<div class="card-cobertura ${cls}" title="${dh.dias} días hábiles de ${dh.totalCorridos} corridos${dh.completo ? '' : ' (sin feriados móviles confirmados)'} · ${m.cantidad_cargas} cargas registradas → ${pct}% de cobertura">
+                <span class="cobertura-num"><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas}</span>
+                <span class="cobertura-sep">de</span>
+                <span class="cobertura-num"><i class="fa-solid fa-calendar-days"></i> ${dh.dias} días hábiles</span>
+                <span class="cobertura-pct">${pct}%</span>
+            </div>`;
         }
     }
 
-    // Alerta si cargas y GPS cubren meses distintos
-    const mesesSoloC = mesesC.filter(m => !mesesG.includes(m));
-    const mesesSoloG = mesesG.filter(m => !mesesC.includes(m));
-    let desalineado = '';
-    if (mesesC.length && mesesG.length && (mesesSoloC.length || mesesSoloG.length)) {
-        const partes = [];
-        if (mesesSoloC.length) partes.push(`cargas sin GPS: ${mesesSoloC.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1]).join(', ')}`);
-        if (mesesSoloG.length) partes.push(`GPS sin cargas: ${mesesSoloG.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1]).join(', ')}`);
-        desalineado = `<span class="meta-periodo-warn" title="Los períodos de cargas y GPS no coinciden al 100%: ${esc(partes.join('; '))}"><i class="fa-solid fa-triangle-exclamation"></i> períodos desalineados</span>`;
-    }
+    const desalineado = desalineadoInfo(f).html;
 
-    // Tooltip detallado para cargas
-    const tooltipC = mesesC.length ? `${m.cantidad_cargas} cargas en ${mesesC.length} mes${mesesC.length > 1 ? 'es' : ''}: ${mesesC.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1] + ' ' + m.slice(0, 4)).join(', ')}` : '';
-    // Tooltip detallado para GPS
+    // Tooltip detallado para GPS (el dato en sí ahora se ve chico, abajo)
     const tooltipG = mesesG.length ? `${m.cantidad_gps} reportes de Resumen de Flota en ${mesesG.length} mes${mesesG.length > 1 ? 'es' : ''}: ${mesesG.map(m => MESES_CORTO[parseInt(m.slice(5), 10) - 1] + ' ' + m.slice(0, 4)).join(', ')}` : '';
 
     return `
-        <div class="card-meta-line">
-            <span title="${esc(tooltipC)}"><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'}${rangoC ? ` · ${esc(rangoC)}` : ''}</span>
-            <span title="${esc(tooltipG)}"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} reporte${m.cantidad_gps === 1 ? '' : 's'} GPS${rangoG ? ` · ${esc(rangoG)}` : ''}</span>
-            ${dhTag}
+        ${coberturaHtml}
+        <div class="card-meta-line card-meta-line-sub">
+            ${rango ? `<span class="card-periodo-rango"><i class="fa-solid fa-calendar"></i> ${esc(rango)}</span>` : ''}
+            ${m.cantidad_gps > 0 ? `<span title="${esc(tooltipG)}"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} GPS</span>` : ''}
             ${desalineado}
             ${ralentiTag}
         </div>`;
@@ -1387,6 +1457,11 @@ function abrirOverlayEquipo(fila, analisis) {
         ralentiLine = `<div class="overlay-line"><span class="ralenti-tag ${info.clase}"><i class="fa-solid ${info.icono}"></i> ${nf(m.horas_ralenti, 1)} hs ralentí (${nf(pct)}%) · ${info.texto}</span></div>`;
     }
 
+    // Períodos desalineados (cargas y GPS cubren meses distintos): antes esto solo se veía en
+    // la tarjeta chica, acá no había ni el dato ni forma de hacer algo al respecto.
+    const desalineadoOverlay = desalineadoInfo(fila).html;
+    const desalineadoLine = desalineadoOverlay ? `<div class="overlay-line">${desalineadoOverlay}</div>` : '';
+
     const html = `
     <div class="equip-overlay" id="equip-overlay">
       <div class="equip-overlay-panel">
@@ -1447,6 +1522,7 @@ function abrirOverlayEquipo(fila, analisis) {
             ${ubi.centroCosto ? `<div class="overlay-line"><i class="fa-solid fa-building"></i> ${esc(ubi.centroCosto)}</div>` : ''}
             ${ubi.provincia && ubi.provincia !== 'SIN DATO' ? `<div class="overlay-line"><i class="fa-solid fa-location-dot"></i> ${esc(ubi.provincia)}</div>` : ''}
             ${ralentiLine}
+            ${desalineadoLine}
             <div class="overlay-line overlay-fuentes">
               ${m.cantidad_cargas > 0 ? `<span class="fuente-tag fuente-cargas"><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} cargas</span>` : ''}
               ${m.cantidad_gps > 0 ? `<span class="fuente-tag fuente-gps"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} GPS</span>` : ''}
@@ -1525,6 +1601,14 @@ function abrirOverlayEquipo(fila, analisis) {
         overlay.querySelector('.edit-meta').value = b.dataset.valor;
         overlay.querySelector('.edit-unidad').value = b.dataset.unidad;
         b.classList.add('aplicada');
+    });
+
+    // Períodos desalineados: ir a revisar los movimientos de este equipo.
+    // Cierra el overlay ANTES de navegar: si no, la tabla queda debajo de este panel y
+    // ningún click en la vista de datos responde (el overlay sigue intercpetando eventos).
+    overlay.querySelector('.btn-desalineado')?.addEventListener('click', () => {
+        cerrar();
+        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', eq.interno);
     });
 
     // Comparar
