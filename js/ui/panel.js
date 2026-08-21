@@ -4,9 +4,9 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido } from '../data/database.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio } from '../data/analyzer.js';
-import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo } from '../data/diagnostico.js';
+import { generarDiagnostico, cruzarIgnicion, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR } from '../data/normalizer.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
@@ -147,16 +147,21 @@ const ACCIONES_PROPUESTAS = {
         { texto: 'Revisar y decidir equipo por equipo', icono: 'fa-list-check', accion: 'revisar_parciales' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
+    gps_vs_ignicion: [
+        { texto: 'Generar reclamo GPS (selección)', icono: 'fa-satellite-dish', accion: 'reclamo_ignicion' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
     meses_sin_gps: [
         { texto: 'Ir a subir los archivos que faltan', icono: 'fa-cloud-arrow-up', accion: 'ir_a_carga' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     cargas_sin_valorizar: [
+        { texto: 'Completar los precios que faltan', icono: 'fa-wand-magic-sparkles', accion: 'completar_precios' },
         { texto: 'Ver esas cargas en la tabla', icono: 'fa-table-list', accion: 'ver_cargas_sin_valor' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     calidad_planilla: [
-        { texto: 'Ver esas cargas en la tabla', icono: 'fa-table-list', accion: 'ver_cargas' },
+        { texto: 'Ver las cargas repetidas', icono: 'fa-table-list', accion: 'ver_cargas_repetidas' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     cargas_exceden_dias_habiles: [
@@ -1164,11 +1169,65 @@ function renderDiagnostico(analisis, rawRecords = []) {
  * que tenga configurado por defecto la persona (Outlook, Gmail de escritorio, etc.) — la app no
  * manda nada por sí sola, solo prepara el mensaje. Sin un mail de proveedor cargado todavía, se
  * deja el destinatario vacío para que lo complete quien lo envía. */
-function mailtoReclamo(reclamo) {
-    const asunto = `Reclamo de revisión GPS — equipo ${reclamo.interno}`;
-    const cuerpo = `Hola,\n\nSolicitamos revisión del equipo GPS del equipo ${reclamo.interno}.\n\nMotivo: ${reclamo.motivo}\n\nFecha del reclamo: ${new Date(reclamo.fecha).toLocaleDateString('es-AR')}\n\nSaludos.`;
-    const url = `mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+// Casilla de soporte del proveedor de GPS. El mail se abre YA dirigido acá, en vez de dejar el
+// campo "Para" vacío para que alguien recuerde a quién se le reclama.
+const SOPORTE_GPS = 'soportewara@waragps.com';
+
+/**
+ * Datos objetivos del equipo para meter en el reclamo. Un reclamo que dice "el ralentí parece
+ * alto" no se puede accionar del otro lado; uno que dice "el GPS reporta 1.379 hs contra 363 hs
+ * del informe de ignición en el mismo período" sí. Se arma con lo que la app ya calculó.
+ */
+function evidenciaReclamo(interno) {
+    if (!ultimoAnalisis) return '';
+    const f = ultimoAnalisis.filas.find(x => x.equipo.interno === interno);
+    if (!f) return '';
+    const m = f.metrics;
+    const lin = [];
+    const desde = ultimoAnalisis.totales.periodo_desde, hasta = ultimoAnalisis.totales.periodo_hasta;
+    if (desde && hasta) lin.push(`  Periodo analizado: ${desde} a ${hasta}`);
+    if (f.equipo.dominio) lin.push(`  Dominio: ${f.equipo.dominio}`);
+    if (f.equipo.denominacion) lin.push(`  Tipo: ${f.equipo.denominacion}`);
+    if (m.total_horas > 0) {
+        lin.push(`  Horas reportadas por el GPS: ${nf(m.total_horas, 1)} hs (${nf(m.horas_ralenti, 1)} hs en ralenti + ${nf(m.horas_movimiento, 1)} hs en movimiento)`);
+        if (m.horas_ralenti > 0) lin.push(`  Proporcion de ralenti: ${nf((m.horas_ralenti / m.total_horas) * 100)}% del tiempo reportado`);
+    }
+    if (m.total_km > 0) lin.push(`  Kilometros reportados: ${nf(m.total_km)} km`);
+    if (m.cantidad_gps > 0) lin.push(`  Reportes recibidos en el periodo: ${nf(m.cantidad_gps)}`);
+    // Si hay Informe de Ignicion, el contraste entre las dos fuentes es la evidencia mas fuerte.
+    const cruce = cruzarIgnicion(ultimoAnalisis.filas, datosCrudos?.rawRecords || []);
+    const c = cruce && cruce.comparados.find(x => x.interno === interno);
+    if (c) {
+        lin.push(`  Informe de Ignicion (motor encendido) para el mismo periodo: ${nf(c.ignicion, 1)} hs en ${c.dias} dias`);
+        lin.push(`  Diferencia entre ambas fuentes: ${nf(Math.abs(c.dif), 1)} hs (${nf(Math.abs(c.pct))}% ${c.dif < 0 ? 'de MAS reportadas por el GPS' : 'de menos reportadas por el GPS'})`);
+    }
+    return lin.length ? `\n\nDatos medidos por nuestro sistema:\n${lin.join('\n')}` : '';
+}
+
+function cuerpoReclamo(intro, detalle, evidencia) {
+    return `Estimados,\n\n${intro}\n\n${detalle}${evidencia}\n\n` +
+        `Solicitamos la revision del equipo y que nos informen el diagnostico y la fecha estimada de resolucion. ` +
+        `Mientras tanto no podemos usar los datos de estas unidades para el control de consumo de combustible.\n\n` +
+        `Fecha del reclamo: ${new Date().toLocaleDateString('es-AR')}\n\n` +
+        `Muchas gracias.\n`;
+}
+
+/** Abre el cliente de correo ya dirigido al soporte del proveedor. Guarda el último mensaje en
+ *  `window.__ultimoReclamoMail` para poder recuperarlo si el cliente de correo no llega a abrir. */
+function abrirMailto(asunto, cuerpo) {
+    const url = `mailto:${encodeURIComponent(SOPORTE_GPS)}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    window.__ultimoReclamoMail = { para: SOPORTE_GPS, asunto, cuerpo };
     window.location.href = url;
+}
+
+function mailtoReclamo(reclamo) {
+    const asunto = `Reclamo de revision GPS - equipo ${reclamo.interno}`;
+    const cuerpo = cuerpoReclamo(
+        `Solicitamos la revision del equipo GPS instalado en la unidad ${reclamo.interno}, porque los datos que esta reportando no son consistentes con la operacion real del equipo.`,
+        `Motivo: ${reclamo.motivo}`,
+        evidenciaReclamo(reclamo.interno)
+    );
+    abrirMailto(asunto, cuerpo);
 }
 
 /** Mismo mailto: que mailtoReclamo(), pero para varios reclamos a la vez (creados juntos desde
@@ -1177,11 +1236,13 @@ function mailtoReclamo(reclamo) {
 function mailtoReclamoLote(reclamos) {
     if (!reclamos.length) return;
     if (reclamos.length === 1) { mailtoReclamo(reclamos[0]); return; }
-    const asunto = `Reclamo de revisión GPS — ${reclamos.length} equipos`;
-    const listado = reclamos.map(r => `· ${r.interno}: ${r.motivo}`).join('\n');
-    const cuerpo = `Hola,\n\nSolicitamos revisión del equipo GPS de los siguientes equipos:\n\n${listado}\n\nFecha del reclamo: ${new Date().toLocaleDateString('es-AR')}\n\nSaludos.`;
-    const url = `mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
-    window.location.href = url;
+    const asunto = `Reclamo de revision GPS - ${reclamos.length} equipos`;
+    const listado = reclamos.map(r => `- Unidad ${r.interno}: ${r.motivo}${evidenciaReclamo(r.interno)}`).join('\n\n');
+    const cuerpo = cuerpoReclamo(
+        `Solicitamos la revision de los equipos GPS instalados en las siguientes ${reclamos.length} unidades, porque los datos que estan reportando no son consistentes con la operacion real de los equipos.`,
+        listado, ''
+    );
+    abrirMailto(asunto, cuerpo);
 }
 
 /** Modal de alta de reclamo GPS: reemplaza el prompt() del navegador (difícil de leer con un
@@ -1208,7 +1269,7 @@ function abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords, 
                 <div class="modal-body">
                     <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Motivo${esLote ? ' (se usa el mismo para los ' + lista.length + ' equipos)' : ''}</label>
                     <textarea class="reclamo-motivo-input" rows="4">${esc(motivoSugerido)}</textarea>
-                    <p class="modal-note">Se guarda como registro interno en la app${esLote ? ', uno por equipo' : ''}. Todavía no hay integración con ningún proveedor — "Enviar por mail" abre tu cliente de correo (Outlook, etc.) con el mensaje ya redactado para que lo mandes vos.</p>
+                    <p class="modal-note">Se guarda como registro interno en la app${esLote ? ', uno por equipo' : ''}. "Enviar por mail" abre tu cliente de correo con el mensaje ya redactado y dirigido a <strong>${SOPORTE_GPS}</strong>, incluyendo los datos medidos de cada equipo (horas reportadas, proporción de ralentí y, si está cargado el Informe de Ignición, la diferencia entre las dos fuentes).</p>
                     <div class="modal-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:0.75rem">
                         <button class="btn-secondary btn-sm" data-close>Cancelar</button>
                         <button class="btn-secondary btn-sm" id="btn-reclamo-guardar"><i class="fa-solid fa-floppy-disk"></i> Guardar reclamo${esLote ? 's' : ''}</button>
@@ -1527,12 +1588,25 @@ CONSEJOS.calidad_planilla = {
     intro: 'Errores de la planilla, no de los equipos. Son baratos de arreglar y ensucian totales que después se usan para decidir.',
     pasos: [
         ['Unificar la escritura del combustible', 'El mismo producto escrito de dos formas se cuenta como dos productos distintos. Buscar y reemplazar en la planilla de origen deja los totales por combustible correctos.'],
-        ['Revisar las filas repetidas', 'Mismo equipo, misma fecha, mismos litros. Casi siempre es la misma carga cargada dos veces — pero puede ser real (dos cargas iguales el mismo día). Confirmá contra el comprobante antes de borrar.', { texto: 'Ver esas cargas en la tabla', modo: 'sin_valor' }],
+        ['Revisar las filas repetidas', 'Mismo equipo, misma fecha, mismos litros. Casi siempre es la misma carga cargada dos veces — pero puede ser real (dos cargas iguales el mismo día). Confirmá contra el comprobante antes de borrar.', { texto: 'Ver las cargas repetidas', modo: 'repetidas_tabla' }],
         ['Corregir en el origen, no acá', 'Si se arregla solo en la app, el mes que viene la planilla vuelve con el mismo error.']
     ],
     prevenir: [
         'Usar una lista desplegable en la planilla para el tipo de combustible, en vez de texto libre: elimina las variantes de escritura de raíz.',
         'Antes de subir un archivo, verificar que ese período no se haya subido ya.'
+    ]
+};
+CONSEJOS.gps_vs_ignicion = {
+    titulo: 'El GPS reporta más horas que el sistema de ignición',
+    intro: 'Tenés dos mediciones independientes de lo mismo: el Informe de Ignición (motor encendido) y el Resumen de Flota (ralentí + movimiento). Cuando difieren mucho, una de las dos está mal — y hasta ahora, con una sola fuente, no había manera de saber cuál. Ahora sí.',
+    pasos: [
+        ['Reclamar el equipo GPS con el número en la mano', 'Diferencias de ±10% entre las dos fuentes son normales: miden cosas parecidas, no idénticas. Un 60% o 70% no lo es. El reclamo ya sale redactado con la comparación concreta de ese equipo.'],
+        ['No tomar decisiones sobre esos equipos hasta que se resuelva', 'Sus horas infladas arrastran el promedio de ralentí de todo el grupo y bajan su consumo por hora, así que además distorsionan la comparación de sus pares.', { texto: 'Ver los equipos de este hallazgo', modo: 'equipos' }],
+        ['Usar la ignición como referencia mientras tanto', 'Si hay que estimar la actividad real de esos equipos para el período, el dato de ignición es el más confiable de los dos.']
+    ],
+    prevenir: [
+        'Subir el Informe de Ignición todos los meses junto con el Resumen de Flota: es lo que convierte un ralentí sospechoso en un ralentí demostrado.',
+        'Los equipos con diferencias grandes que se repiten mes a mes son candidatos a cambio de equipo GPS, no a un ajuste de configuración.'
     ]
 };
 CONSEJOS.ralenti_camionetas = CONSEJOS.ralenti;
@@ -1758,8 +1832,11 @@ function abrirRegistrosConsejo(modo, hallazgoId) {
     if (modo === 'parciales') { abrirRevisionParciales(analisis, datosCrudos?.rawRecords || []); return; }
     if (modo === 'subir') { if (typeof window.irA === 'function') window.irA('upload'); else document.getElementById('nav-upload')?.click(); return; }
     if (modo === 'sin_valor') {
-        const e = equiposH[0];
-        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', (e && e.interno) || '');
+        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', '', 'id', null, 'sin_valorizar');
+        return;
+    }
+    if (modo === 'repetidas_tabla') {
+        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', '', 'id', null, 'repetidas');
         return;
     }
     if (modo === 'gps_equipos') {
@@ -2192,9 +2269,82 @@ function abrirResolucion(hallazgoId, analisis, rawRecords) {
     });
 }
 
+
+/**
+ * Completa los precios que quedaron en cero usando el precio del MISMO combustible en el MISMO
+ * mes, comparando el nombre normalizado (sin espacios ni signos). Es exactamente lo que hace
+ * falta cuando el cero viene de una diferencia de escritura: "YPF500" no matcheaba contra
+ * "YPF 500" en la tabla de precios del sistema de origen y volvía en cero, pero el precio existe
+ * y está en las otras cargas del mismo mes.
+ *
+ * No inventa nada: si para ese combustible y ese mes no hay ninguna carga con precio, la deja
+ * como está y lo informa.
+ */
+async function completarPreciosFaltantes(analisis, rawRecords) {
+    const soloLetras = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const cargas = (rawRecords || []).filter(r => r.type === 'carga');
+    const mesDe = (r) => r.periodo || (r.fecha ? String(r.fecha).slice(0, 7) : '');
+
+    // Precio de referencia por (combustible normalizado + mes): la mediana de las cargas que sí
+    // tienen precio. La mediana y no el promedio, para que una carga mal tipeada no lo mueva.
+    const ref = new Map();
+    cargas.forEach(c => {
+        const pu = parseFloat(c.precio_unitario) || 0;
+        if (pu <= 0) return;
+        const k = `${soloLetras(c.combustible)}|${mesDe(c)}`;
+        if (!ref.has(k)) ref.set(k, []);
+        ref.get(k).push(pu);
+    });
+    const mediana = (arr) => { const a = [...arr].sort((x, y) => x - y); return a[Math.floor(a.length / 2)]; };
+
+    const pendientes = cargas.filter(c => (parseFloat(c.litros) || 0) > 0 &&
+        ((parseFloat(c.importe) || 0) <= 0 || (parseFloat(c.precio_unitario) || 0) <= 0));
+    if (!pendientes.length) { alert('No quedan cargas sin valorizar.'); return; }
+
+    const plan = [];
+    const sinReferencia = [];
+    pendientes.forEach(c => {
+        const k = `${soloLetras(c.combustible)}|${mesDe(c)}`;
+        const vals = ref.get(k);
+        if (!vals || !vals.length) { sinReferencia.push(c); return; }
+        const precio = mediana(vals);
+        const litros = parseFloat(c.litros) || 0;
+        plan.push({ registro: c, precio, importe: Math.round(precio * litros * 100) / 100, litros });
+    });
+
+    if (!plan.length) {
+        alert(`No se pudo completar ninguna: para ese combustible y ese mes no hay ninguna otra carga con precio cargado.\n\n${sinReferencia.length} cargas quedan sin valorizar.`);
+        return;
+    }
+    const totalNuevo = plan.reduce((s, x) => s + x.importe, 0);
+    const detalle = [...new Set(plan.map(x => `${x.registro.combustible || 'sin tipo'} ${mesDe(x.registro)}: $${nf(x.precio, 2)}/L`))].slice(0, 6).join('\n');
+    const ok = confirm(
+        `Completar ${plan.length} carga${plan.length === 1 ? '' : 's'} sin valorizar (${nf(plan.reduce((s, x) => s + x.litros, 0), 1)} L).\n\n` +
+        `Precio tomado de las otras cargas del mismo combustible y el mismo mes:\n${detalle}\n\n` +
+        `Se van a sumar $${nf(totalNuevo)} al gasto del período.\n` +
+        (sinReferencia.length ? `\n${sinReferencia.length} quedan sin completar por falta de referencia.\n` : '') +
+        `\nLa corrección queda guardada y se vuelve a aplicar si reimportás el archivo.`
+    );
+    if (!ok) return;
+
+    for (const x of plan) {
+        await updateRawRecord(x.registro.id, { precio_unitario: x.precio, importe: x.importe, _precio_completado: true });
+        await registrarEdicion({
+            tabla: 'carga', registroId: x.registro.id,
+            etiqueta: `${x.registro.fecha || ''} · ${x.registro.interno || ''} · precio completado`,
+            campo: 'Precio unitario', valorAnterior: '0', valorNuevo: String(x.precio)
+        });
+    }
+    alert(`Listo: ${plan.length} cargas valorizadas por $${nf(totalNuevo)}.\n\nSe recalcula el panel.`);
+    await renderPanel();
+}
+
 /** Ejecuta la acción propuesta para un hallazgo: abrir comparativa, ajustar metas, etc. */
 function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
-    const h = generarDiagnostico(analisis.filas, analisis.totales, [], ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache).find(x => x.id === hallazgoId);
+    // Con los rawRecords de verdad, no con un array vacío: hay hallazgos que solo existen si se
+    // pueden leer los movimientos (los de calidad del dato, el cruce contra el Informe de
+    // Ignición). Con [] esos hallazgos no aparecían acá y sus acciones no hacían nada.
+    const h = generarDiagnostico(analisis.filas, analisis.totales, datosCrudos?.rawRecords || [], ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache).find(x => x.id === hallazgoId);
     const internos = h && h.equipos ? h.equipos.map(e => e.interno) : [];
 
     switch (accion) {
@@ -2242,16 +2392,29 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
         case 'resolver':
             abrirResolucion(hallazgoId, ultimoAnalisis, datosCrudos?.rawRecords || []);
             break;
+        case 'reclamo_ignicion': {
+            const lista = (h && h.equipos ? h.equipos.map(e => e.interno) : []);
+            if (!lista.length) break;
+            abrirNuevoReclamoModal(lista,
+                'El Informe de Ignicion y el Resumen de Flota no coinciden: el GPS reporta muchas mas horas de las que el motor estuvo encendido, y esas horas se imputan como ralenti. Solicitamos revision del equipo GPS.',
+                analisis, [], hallazgoId);
+            break;
+        }
         case 'ir_a_carga':
             // Los meses que faltan no se arreglan dentro del Panel: hay que subir el archivo.
             if (typeof window.irA === 'function') window.irA('upload');
             else document.getElementById('nav-upload')?.click();
             break;
+        case 'completar_precios':
+            completarPreciosFaltantes(ultimoAnalisis, datosCrudos?.rawRecords || []);
+            break;
         case 'ver_cargas_sin_valor':
-            // El primer mes donde se concentran, ya filtrado.
-            if (h && h.equipos && h.equipos[0] && typeof window.abrirTablaConBusqueda === 'function') {
-                window.abrirTablaConBusqueda('carga', h.equipos[0].interno || '');
-            }
+            // La tabla filtrada a las cargas sin valorizar, no a un equipo suelto: antes abría
+            // las 154 cargas de TR32 y las 38 que importaban había que encontrarlas a ojo.
+            if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', '', 'id', null, 'sin_valorizar');
+            break;
+        case 'ver_cargas_repetidas':
+            if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', '', 'id', null, 'repetidas');
             break;
         default:
             if (internos.length) buscarEquipo(internos[0]);

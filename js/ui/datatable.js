@@ -25,11 +25,12 @@ import {
     getColLabelsMov, setColLabelMov
 } from '../data/database.js';
 import { periodosDisponibles, filtrarPorPeriodo } from '../data/analyzer.js';
+import { esDiaHabil } from '../data/feriados.js';
 import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR } from '../data/normalizer.js';
 
 const PAGINA = 300;
 
-const estado = { tipo: 'maestro', buscar: '', buscarCol: 'id', filtroDeno: 'ALL', filtroEstado: 'ALL', anio: '', mes: '', pagina: 0, soloHuerfanas: false, filtroCC: 'ALL', filtroLugar: 'ALL', orden: '' };
+const estado = { tipo: 'maestro', buscar: '', buscarCol: 'id', filtroDeno: 'ALL', filtroEstado: 'ALL', anio: '', mes: '', pagina: 0, soloHuerfanas: false, filtroCC: 'ALL', filtroLugar: 'ALL', orden: '', filtroCorrec: 'ALL' };
 let filasActuales = [];
 let columnasExtra = [];
 let columnasVisibles = [];
@@ -58,7 +59,7 @@ function matchBusqueda(fila, q) {
 
 export async function renderDataTable(tipo) {
     if (tipo && tipo !== estado.tipo) { seleccionMasiva.clear(); seleccionMasivaMov.clear(); }
-    if (tipo) { estado.tipo = tipo; estado.pagina = 0; estado.soloHuerfanas = false; }
+    if (tipo) { estado.tipo = tipo; estado.pagina = 0; estado.soloHuerfanas = false; estado.filtroCorrec = 'ALL'; }
     const tbody = document.getElementById('table-body');
     const header = document.getElementById('table-header');
     if (!tbody || !header) return;
@@ -94,17 +95,31 @@ export async function renderDataTable(tipo) {
  * varias acciones de los hallazgos no hacían nada. Ahora todo pasa por acá, que sí queda
  * expuesta como `window.abrirTablaConBusqueda` desde app.js.
  */
-export function abrirTablaConBusqueda(tipo, query = '', buscarCol = 'id', periodo = null) {
+export function abrirTablaConBusqueda(tipo, query = '', buscarCol = 'id', periodo = null, filtroCorrec = null) {
     estado.tipo = tipo || estado.tipo;
     estado.buscar = query || '';
     estado.buscarCol = buscarCol;
     estado.pagina = 0;
+    estado.soloHuerfanas = false;
+
+    // Filtro por tipo de problema: permite que un hallazgo abra la tabla mostrando EXACTAMENTE
+    // las filas que lo provocan (las 38 sin valorizar, las repetidas…) en vez de buscar un
+    // equipo suelto y dejar al usuario encontrando las filas a ojo entre miles.
+    estado.filtroCorrec = filtroCorrec || 'ALL';
+    if (filtroCorrec) { estado.anio = ''; estado.mes = ''; estado.buscar = ''; }
+    const selC = document.getElementById('tabla-filtro-correc');
+    if (selC) selC.value = estado.filtroCorrec;
+
     // periodo opcional ({ anio, mes }): además de buscar el equipo, deja la tabla de
     // movimientos filtrada al mes puntual que originó el hallazgo (ej. "cargó más veces que
     // días hábiles hubo en Marzo 2026") en vez de mostrar todo el historial del equipo.
     if (periodo && periodo.anio) estado.anio = String(periodo.anio);
     if (periodo && periodo.mes) estado.mes = String(periodo.mes);
-    return renderDataTable(estado.tipo);
+
+    // Se llama SIN pasar el tipo a propósito: renderDataTable(tipo) resetea los filtros — que es
+    // lo correcto cuando el usuario cambia de pestaña a mano, pero pisaba el filtro que acabamos
+    // de poner acá y la tabla se abría sin filtrar.
+    return renderDataTable();
 }
 
 async function renderTabs() {
@@ -494,6 +509,7 @@ async function renderMovimientos(tipo) {
     mostrarBulkBar(esCarga);
     if (esCarga) prepararBulkBarCargas();
     poblarFiltrosFecha(todos);
+    sincronizarFiltroCorrec();
 
     // Para cargas: armar el set de internos del maestro y el mapa de correcciones ya guardadas
     let equiposSet = new Set();
@@ -514,6 +530,28 @@ async function renderMovimientos(tipo) {
     if (estado.buscar) filas = filas.filter(r => matchBusqueda(r, estado.buscar));
     if (esCarga && estado.filtroCC !== 'ALL') filas = filas.filter(r => (r.centro_costo || '—') === estado.filtroCC);
     if (esCarga && estado.filtroLugar !== 'ALL') filas = filas.filter(r => (r.lugar_carga || '—') === estado.filtroLugar);
+    // Filtro por tipo de problema: es lo que permite ir directo desde un hallazgo del panel a
+    // las filas que lo provocan, en vez de tener que buscarlas a mano una por una.
+    if (esCarga && estado.filtroCorrec !== 'ALL') {
+        const c = estado.filtroCorrec;
+        if (c === 'sin_valorizar') {
+            filas = filas.filter(r => (parseFloat(r.litros) || 0) > 0 &&
+                ((parseFloat(r.importe) || 0) <= 0 || (parseFloat(r.precio_unitario) || 0) <= 0));
+        } else if (c === 'repetidas') {
+            const cuenta = new Map();
+            todos.forEach(r => {
+                const k = `${r.interno_key || r.interno}|${r.fecha}|${Math.round((parseFloat(r.litros) || 0) * 10)}`;
+                cuenta.set(k, (cuenta.get(k) || 0) + 1);
+            });
+            filas = filas.filter(r => cuenta.get(`${r.interno_key || r.interno}|${r.fecha}|${Math.round((parseFloat(r.litros) || 0) * 10)}`) > 1);
+        } else if (c === 'no_habil') {
+            filas = filas.filter(r => r.fecha && !esDiaHabil(r.fecha));
+        } else if (c === 'corregidas') {
+            filas = filas.filter(r => r._corregido || correccionesMap.has(huellaCarga(r)));
+        } else if (c === 'sin_asignar') {
+            filas = filas.filter(r => esHuerfanaDe(r) && !correccionesMap.has(huellaCarga(r)));
+        }
+    }
     // Filtro "Solo sin asignar" (huérfanas)
     if (esCarga && estado.soloHuerfanas) {
         filas = filas.filter(r => esHuerfanaDe(r) && !correccionesMap.has(huellaCarga(r)));
@@ -1387,7 +1425,7 @@ function prepararBulkBarCargas() {
 }
 
 function mostrarFiltrosCarga(v) {
-    ['tabla-filtro-cc', 'tabla-filtro-lugar', 'tabla-orden'].forEach(id => {
+    ['tabla-filtro-cc', 'tabla-filtro-lugar', 'tabla-orden', 'tabla-filtro-correc'].forEach(id => {
         const s = document.getElementById(id);
         if (s) s.style.display = v ? '' : 'none';
     });
@@ -1533,6 +1571,11 @@ async function abrirHistorialEdiciones() {
     modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 }
 
+function sincronizarFiltroCorrec() {
+    const sel = document.getElementById('tabla-filtro-correc');
+    if (sel && sel.value !== estado.filtroCorrec) sel.value = estado.filtroCorrec;
+}
+
 function poblarFiltrosFecha(records) {
     const { anios, meses } = periodosDisponibles(records);
     // Si el año/mes que quedó seleccionado en OTRA pestaña no existe en esta, se limpia. Si no,
@@ -1584,6 +1627,7 @@ export function initDataTableControls() {
     document.getElementById('tabla-anio')?.addEventListener('change', e => { estado.anio = e.target.value; estado.pagina = 0; renderDataTable(); });
     document.getElementById('tabla-mes')?.addEventListener('change', e => { estado.mes = e.target.value; estado.pagina = 0; renderDataTable(); });
     document.getElementById('tabla-filtro-cc')?.addEventListener('change', e => { estado.filtroCC = e.target.value; estado.pagina = 0; renderDataTable(); });
+    document.getElementById('tabla-filtro-correc')?.addEventListener('change', e => { estado.filtroCorrec = e.target.value; estado.pagina = 0; renderDataTable(); });
     document.getElementById('tabla-filtro-lugar')?.addEventListener('change', e => { estado.filtroLugar = e.target.value; estado.pagina = 0; renderDataTable(); });
     document.getElementById('tabla-orden')?.addEventListener('change', e => { estado.orden = e.target.value; estado.pagina = 0; renderDataTable(); });
 

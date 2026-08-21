@@ -60,6 +60,7 @@ async function procesarLibro(data, filename) {
     else if (det.tipo === 'ESTIMADOS') n = await handleEstimados(filas, filename, mapeo);
     else if (det.tipo === 'CARGAS') { n = await handleCargas(filas, filename, mapeo); await handlePrecios(workbook, filename); }
     else if (det.tipo === 'GPS') n = await handleGPS(filas, filename, det.desde, det.hasta, mapeo);
+    else if (det.tipo === 'IGNICION') n = await handleIgnicion(rawRows, det.headerRowIdx, filename);
     else n = await handleGenerico(filas, filename, det, mapeo);
 
     return await registrar({
@@ -81,6 +82,19 @@ async function registrar(meta) {
 function detectarFormato(rawRows, filename) {
     const out = { tipo: 'UNKNOWN', etiqueta: '', headerRowIdx: -1, desde: null, hasta: null };
     const limite = Math.min(15, rawRows.length);
+
+    // Informe de ignición: formato ANCHO, no tabular. Una fila con las fechas y debajo bloques
+    // repetidos "Vehículo | Comienzo | Fin | Total", un bloque por día. No se puede leer con el
+    // lector genérico de filas-objeto, así que se detecta acá y se procesa aparte.
+    for (let i = 0; i < limite; i++) {
+        const t = normalizeString(rawRows[i].join('|'));
+        if (t.includes('VEHICULO') && t.includes('COMIENZO') && t.includes('TOTAL')) {
+            out.tipo = 'IGNICION';
+            out.etiqueta = 'Informe de Ignición';
+            out.headerRowIdx = i;
+            return out;
+        }
+    }
 
     for (let i = 0; i < limite; i++) {
         const t = normalizeString(rawRows[i].join('|'));
@@ -394,6 +408,45 @@ async function handleGenerico(filas, filename, det, mapeo) {
             numericos
         });
     });
+    if (recs.length) await insertRawRecords(recs);
+    return recs.length;
+}
+
+/**
+ * Informe de ignición: horas de motor encendido por vehículo y por día, en formato ancho.
+ * Fila de fechas arriba, y debajo bloques "Comienzo | Fin | Total" repetidos, uno por día.
+ *
+ * Es una SEGUNDA fuente independiente de la actividad del equipo, y ahí está su valor: el
+ * Resumen de Flota dice cuántas horas estuvo en ralentí y en movimiento, este dice cuántas horas
+ * estuvo el motor encendido. Cuando los dos no coinciden, uno de los dos está mal — y eso es
+ * exactamente lo que no se puede saber con una sola fuente.
+ */
+async function handleIgnicion(rawRows, headerRowIdx, filename) {
+    const filaFechas = rawRows[headerRowIdx - 1] || [];
+    const filaSub = rawRows[headerRowIdx] || [];
+    const recs = [];
+
+    for (let col = 0; col < filaSub.length; col++) {
+        if (normalizeString(filaSub[col]) !== 'TOTAL') continue;
+        // La fecha del bloque vive en la columna de "Comienzo", dos a la izquierda del "Total".
+        const fecha = parseDate(filaFechas[col - 2]) || parseDate(filaFechas[col - 1]) || parseDate(filaFechas[col]);
+        if (!fecha) continue;
+        for (let f = headerRowIdx + 1; f < rawRows.length; f++) {
+            const interno = normalizeString(rawRows[f][0]);
+            if (!interno) continue;
+            const horas = parseNumber(rawRows[f][col]);
+            if (!horas || horas <= 0) continue;
+            const id = { interno, interno_key: normalizeEquipoKey(interno), dominio: '', dominio_key: '' };
+            recs.push({
+                ...baseMovimiento({}, id, fecha, filename),
+                type: 'ignicion',
+                type_label: 'Informe de Ignición',
+                horas_ignicion: horas,
+                comienzo: String(rawRows[f][col - 2] ?? ''),
+                fin: String(rawRows[f][col - 1] ?? '')
+            });
+        }
+    }
     if (recs.length) await insertRawRecords(recs);
     return recs.length;
 }

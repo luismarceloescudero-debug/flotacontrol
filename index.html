@@ -171,6 +171,14 @@
                     <option value="con_estimado">Con estimado</option>
                     <option value="editado">Editado manual</option>
                 </select>
+                <select id="tabla-filtro-correc" style="display:none" title="Filtrar por tipo de problema o corrección">
+                    <option value="ALL">Todas las cargas</option>
+                    <option value="sin_asignar">Sin equipo asignado</option>
+                    <option value="sin_valorizar">Sin valorizar (precio o costo en 0)</option>
+                    <option value="repetidas">Repetidas (mismo equipo, fecha y litros)</option>
+                    <option value="no_habil">En sábado, domingo o feriado</option>
+                    <option value="corregidas">Ya corregidas a mano</option>
+                </select>
                 <select id="tabla-filtro-cc" style="display:none" title="Filtrar por centro de costo"><option value="ALL">Todos los centros de costo</option></select>
                 <select id="tabla-filtro-lugar" style="display:none" title="Filtrar por lugar de carga"><option value="ALL">Todos los lugares</option></select>
                 <select id="tabla-anio"><option value="">Todos los años</option></select>

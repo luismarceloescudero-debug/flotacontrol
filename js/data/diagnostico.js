@@ -616,6 +616,60 @@ export function auditarCalidadCargas(rawRecords = []) {
     return { mesesSinGps, sinValor, variantes, duplicados, totalCargas: cargas.length, mesesGps: [...mesesGps].sort() };
 }
 
+
+/**
+ * Cruce entre el Resumen de Flota y el Informe de Ignición: dos mediciones independientes de la
+ * misma actividad. El Resumen dice cuántas horas el equipo estuvo en ralentí y en movimiento;
+ * el Informe de Ignición dice cuántas horas estuvo el motor encendido. Deberían parecerse.
+ *
+ * Cuando el GPS reporta MUCHO más que la ignición, no es que el equipo trabajó de más: es que el
+ * GPS está contando horas que nunca existieron — el caso clásico del sensor que queda trabado y
+ * dispara un "ralentí inverosímil" que hasta ahora solo se podía sospechar. Con las dos fuentes
+ * se puede afirmar, que es lo que hace falta para reclamarle al proveedor con un número.
+ */
+export function cruzarIgnicion(filas = [], rawRecords = []) {
+    const ign = rawRecords.filter(r => r.type === 'ignicion');
+    if (!ign.length) return null;
+
+    const porEquipo = new Map();
+    ign.forEach(r => {
+        const k = r.interno_key || r.interno;
+        if (!k) return;
+        if (!porEquipo.has(k)) porEquipo.set(k, { horas: 0, dias: new Set(), meses: new Set() });
+        const e = porEquipo.get(k);
+        e.horas += parseFloat(r.horas_ignicion) || 0;
+        if (r.fecha) e.dias.add(r.fecha);
+        if (r.periodo) e.meses.add(r.periodo);
+    });
+
+    const comparados = [];
+    filas.forEach(f => {
+        const k = f.equipo.interno_key || f.equipo.interno;
+        const e = porEquipo.get(k);
+        if (!e) return;
+        const gpsHoras = f.metrics.total_horas || 0;
+        // Solo se comparan los meses que están en las dos fuentes: si la ignición cubre enero a
+        // junio y el GPS enero a agosto, comparar los totales completos daría una diferencia
+        // falsa que no tiene nada que ver con la medición.
+        const mesesGps = new Set((f.gps || []).map(g => g.periodo).filter(Boolean));
+        const mesesComunes = [...e.meses].filter(m => mesesGps.has(m));
+        if (!mesesComunes.length || gpsHoras <= 0) return;
+        const dif = e.horas - gpsHoras;
+        const pct = (dif / gpsHoras) * 100;
+        comparados.push({
+            fila: f, interno: f.equipo.interno, denominacion: f.equipo.denominacion,
+            ignicion: e.horas, gps: gpsHoras, ralenti: f.metrics.horas_ralenti || 0,
+            dias: e.dias.size, meses: mesesComunes.length, dif, pct
+        });
+    });
+
+    comparados.sort((a, b) => a.pct - b.pct);
+    // Umbral: el GPS reporta más del 30% por encima de la ignición. Diferencias de ±10% son
+    // normales (miden cosas parecidas pero no idénticas); un 60% o 70% no lo es.
+    const inflados = comparados.filter(c => c.pct <= -30);
+    return { comparados, inflados, totalIgnicion: comparados.reduce((s, c) => s + c.ignicion, 0), totalGps: comparados.reduce((s, c) => s + c.gps, 0) };
+}
+
 // ============================================================ HALLAZGOS
 
 export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = [], noFlotaAceptados = [], equiposExcluidos = []) {
@@ -1243,11 +1297,28 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     if (cal.sinValor.length) {
         const litros = cal.sinValor.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0);
         const meses = [...new Set(cal.sinValor.map(c => c.periodo || String(c.fecha || '').slice(0, 7)).filter(Boolean))].sort();
+        // ¿Todas las cargas sin precio comparten la misma forma de escribir el combustible, y
+        // esa forma es la minoritaria? Entonces la causa no es "se olvidaron el precio": es que
+        // el nombre no matchea contra la tabla de precios del sistema de origen y devuelve cero.
+        const formasSinValor = [...new Set(cal.sinValor.map(c => c.combustible).filter(Boolean))];
+        let causaRaiz = null;
+        if (formasSinValor.length === 1) {
+            const forma = formasSinValor[0];
+            const v = cal.variantes.find(x => x.formas.some(([f]) => f === forma));
+            if (v) {
+                const mayoritaria = v.formas[0][0];
+                if (mayoritaria !== forma) causaRaiz = { forma, mayoritaria };
+            }
+        }
         hallazgos.push({
             id: 'cargas_sin_valorizar', severidad: 'alta', icono: 'fa-dollar-sign',
             no_comparar: true,
             titulo: `${cal.sinValor.length} cargas sin valorizar: ${fmt(litros)} L cargados con precio o costo en cero`,
-            detalle: `El combustible salió del surtidor pero la planilla lo registra con <strong>precio unitario o costo total en cero</strong>. No es que hayan sido gratis: falta el dato. Todo lo que la app muestra en pesos — el gasto del período, el costo del sobreconsumo, el ahorro — está subestimado en esa cantidad hasta que se completen. ${meses.length ? `Se concentran en ${meses.join(', ')}.` : ''}`,
+            detalle: `El combustible salió del surtidor pero la planilla lo registra con <strong>precio unitario o costo total en cero</strong>. No es que hayan sido gratis: falta el dato. Todo lo que la app muestra en pesos — el gasto del período, el costo del sobreconsumo, el ahorro — está subestimado en esa cantidad hasta que se completen. ${meses.length ? `Se concentran en ${meses.join(', ')}.` : ''}` +
+                (causaRaiz
+                    ? ` <strong>Y ya sabemos por qué:</strong> las ${cal.sinValor.length} están escritas <strong>"${causaRaiz.forma}"</strong> mientras que el resto de la flota usa <strong>"${causaRaiz.mayoritaria}"</strong>. El nombre no coincide con la tabla de precios del sistema que emite la planilla, así que el precio vuelve en cero. No es un olvido: es una diferencia de escritura. Corregir el nombre en el origen completa los precios solo.`
+                    : ''),
+            causa_raiz: causaRaiz,
             equipos: cal.sinValor.slice(0, 12).map(c => ({
                 interno: c.interno || c.dominio || '—', denominacion: c.combustible || '',
                 texto: `${fmt(parseFloat(c.litros) || 0, 1)} L sin valorizar`,
@@ -1284,6 +1355,24 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                     sub: `aparece dos veces con los mismos litros${d.repetida.importe ? ` · $${fmt(parseFloat(d.repetida.importe) || 0)} cada una` : ''}`
                 }))
             ]
+        });
+    }
+
+
+    // ---------- 16. GPS contra Informe de Ignición ----------
+    const cruce = cruzarIgnicion(filas, rawRecords);
+    if (cruce && cruce.inflados.length) {
+        const hsFantasma = cruce.inflados.reduce((s, c) => s - c.dif, 0);
+        hallazgos.push({
+            id: 'gps_vs_ignicion', severidad: 'alta', icono: 'fa-scale-unbalanced',
+            no_comparar: true,
+            titulo: `${cruce.inflados.length} equipo${cruce.inflados.length === 1 ? '' : 's'} donde el GPS reporta muchas más horas que el sistema de ignición`,
+            detalle: `Dos fuentes independientes miden lo mismo y no coinciden: el <strong>Informe de Ignición</strong> dice cuántas horas estuvo el motor encendido, y el <strong>Resumen de Flota</strong> cuántas horas hubo entre ralentí y movimiento. Acá el GPS reporta <strong>${fmt(hsFantasma)} horas de más</strong> que la ignición nunca vio. No es que estos equipos trabajaran más: el GPS está contando horas que no existieron, y esas horas fantasma van casi todas a la cuenta del ralentí. Con las dos fuentes ya no es una sospecha — es un número para reclamarle al proveedor. Se comparan solo los meses presentes en ambas fuentes.`,
+            equipos: cruce.inflados.slice(0, 12).map(c => ({
+                interno: c.interno, denominacion: c.denominacion,
+                texto: `GPS ${fmt(c.gps)} hs vs ignición ${fmt(c.ignicion)} hs`,
+                sub: `el GPS reporta ${fmt(Math.abs(c.pct))}% de más (${fmt(-c.dif)} hs que no existieron) · de ellas ${fmt(c.ralenti)} hs figuran como ralentí · ${c.dias} días con ignición en ${c.meses} meses comparados`
+            }))
         });
     }
 
