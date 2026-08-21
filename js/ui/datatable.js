@@ -94,11 +94,16 @@ export async function renderDataTable(tipo) {
  * varias acciones de los hallazgos no hacían nada. Ahora todo pasa por acá, que sí queda
  * expuesta como `window.abrirTablaConBusqueda` desde app.js.
  */
-export function abrirTablaConBusqueda(tipo, query = '', buscarCol = 'id') {
+export function abrirTablaConBusqueda(tipo, query = '', buscarCol = 'id', periodo = null) {
     estado.tipo = tipo || estado.tipo;
     estado.buscar = query || '';
     estado.buscarCol = buscarCol;
     estado.pagina = 0;
+    // periodo opcional ({ anio, mes }): además de buscar el equipo, deja la tabla de
+    // movimientos filtrada al mes puntual que originó el hallazgo (ej. "cargó más veces que
+    // días hábiles hubo en Marzo 2026") en vez de mostrar todo el historial del equipo.
+    if (periodo && periodo.anio) estado.anio = String(periodo.anio);
+    if (periodo && periodo.mes) estado.mes = String(periodo.mes);
     return renderDataTable(estado.tipo);
 }
 

@@ -9,7 +9,7 @@
  *  - Un consumo calculado sobre pocas cargas o un solo período no es confiable y se avisa.
  */
 
-import { getPrefijo, clasificarIdentificador } from './normalizer.js';
+import { getPrefijo, clasificarIdentificador, MESES } from './normalizer.js';
 import { diasHabiles } from './feriados.js';
 
 const TOLERANCIA = 0.15;
@@ -49,6 +49,18 @@ export function categoriaRalenti(interno) {
 }
 
 /**
+ * Camionetas (CM): dentro de "desperdicio" son un caso aparte. Un tractor o una cargadora
+ * quietos con el motor encendido no tienen excusa operativa; una camioneta sí la tiene con
+ * frecuencia (esperar a una cuadrilla, esperar en portería/acceso, uso como apoyo de
+ * seguridad) — motivos que no aplican al resto del grupo. Agruparlas juntas evita que se
+ * traten como si fueran lo mismo que un tractor parado, y permite revisarlas/aceptarlas o
+ * reclamarlas en bloque sin mezclarlas con el resto de "equipos de desplazamiento".
+ */
+export function esCamioneta(interno) {
+    return getPrefijo(interno) === 'CM';
+}
+
+/**
  * ¿El consumo calculado se apoya en suficientes datos como para tomarlo en serio?
  *
  * `periodo` ({ desde, hasta }, fechas ISO) es opcional: cuando se pasa, además del umbral fijo
@@ -79,6 +91,25 @@ export function confiabilidad(fila, periodo = null) {
     }
 
     return { confiable: avisos.length === 0, avisos, cobertura };
+}
+
+/**
+ * Cobertura de cargas de un equipo contra los días hábiles de su propio período activo (unión
+ * de fechas de cargas + GPS). La usan tanto la franja "cobertura" de la tarjeta del panel como
+ * la vista de Seguimiento, para que las dos lean siempre el mismo número — antes cada una lo
+ * calculaba por su cuenta y corrían el riesgo de desalinearse. A propósito NO se recorta a 100:
+ * pasarse de 100% (más cargas que días hábiles) es justamente el caso que hay que poder detectar.
+ */
+export function coberturaEquipo(fila) {
+    const fechasC = (fila.cargas || []).map(c => c.fecha).filter(Boolean);
+    const fechasG = (fila.gps || []).map(g => g.fecha).filter(Boolean);
+    const todas = [...fechasC, ...fechasG].sort();
+    if (todas.length < 2) return null;
+    const dh = diasHabiles(todas[0], todas[todas.length - 1]);
+    if (!dh || dh.totalCorridos <= 0 || dh.dias <= 0) return null;
+    const cantidad = fila.metrics.cantidad_cargas;
+    const pct = Math.round((cantidad / dh.dias) * 100);
+    return { cargas: cantidad, diasHabiles: dh.dias, totalCorridos: dh.totalCorridos, completo: dh.completo, pct, exceso: pct > 100 };
 }
 
 export function calcularExceso(fila) {
@@ -261,6 +292,148 @@ export function evolucionMensual(fila) {
     });
 }
 
+/**
+ * Completitud de datos de un equipo: cuánto alcanza lo que hay para decidir sobre él.
+ * Sirve para ordenar y agrupar los hallazgos "primero los que tienen datos completos, último
+ * los que apenas registran una carga" — así se empieza a corregir por donde el dato alcanza,
+ * en vez de discutir la meta de un equipo del que se sabe una sola cosa.
+ */
+export function completitudDatos(fila) {
+    const m = fila.metrics || {};
+    const cargas = m.cantidad_cargas || 0;
+    const meses = new Set();
+    (fila.cargas || []).forEach(c => { if (c.periodo) meses.add(c.periodo); });
+    (fila.gps || []).forEach(g => { if (g.periodo) meses.add(g.periodo); });
+    const tieneGps = (fila.gps || []).length > 0 && ((m.total_km || 0) > 0 || (m.total_horas || 0) > 0);
+    const tieneMeta = !!(fila.confirmed && fila.confirmed.valor > 0);
+    // Escala pensada para ORDENAR, no para mostrarse como un porcentaje con pretensión de exactitud.
+    const score = Math.min(cargas, 20) * 3 + meses.size * 5 + (tieneGps ? 25 : 0) + (tieneMeta ? 5 : 0);
+    let nivel = 'bajo';
+    if (tieneGps && cargas >= 4 && meses.size >= 2) nivel = 'alto';
+    else if ((tieneGps && cargas >= 2) || cargas >= 4) nivel = 'medio';
+    return {
+        score, nivel, cargas, meses: meses.size, tieneGps, tieneMeta,
+        etiqueta: `${cargas} carga${cargas === 1 ? '' : 's'} · ${meses.size} mes${meses.size === 1 ? '' : 'es'} · ${tieneGps ? 'con GPS' : 'sin GPS'}`
+    };
+}
+
+export const NIVELES_COMPLETITUD = {
+    alto: { etiqueta: 'Datos completos', detalle: 'GPS, varias cargas y más de un mes: alcanza para decidir con confianza.' },
+    medio: { etiqueta: 'Datos parciales', detalle: 'Hay con qué trabajar, pero conviene mirar el detalle antes de tocar la meta.' },
+    bajo: { etiqueta: 'Apenas hay datos', detalle: 'Una o dos cargas, o ningún dato de actividad: cualquier promedio acá es frágil. Corregir estos al final.' }
+};
+
+/**
+ * Meses en los que el equipo registró actividad (km/hs) pero NO cargó combustible, o al revés.
+ * Un equipo parado, en taller o fuera de servicio parte del período arrastra el promedio hacia
+ * abajo y hace que su consumo real parezca imposible contra la meta — sin que la meta esté mal.
+ * `consumoSaneado` es el consumo recalculado dejando afuera esos meses raros: si con eso la meta
+ * cierra, el problema nunca fue la meta.
+ */
+export function mesesFueraDeServicio(fila) {
+    const meses = evolucionMensual(fila);
+    const conActividadSinCarga = meses.filter(m => m.factor > 0 && m.litros <= 0);
+    const conCargaSinActividad = meses.filter(m => m.litros > 0 && m.factor <= 0);
+    const normales = meses.filter(m => m.factor > 0 && m.litros > 0);
+    const litrosN = normales.reduce((s, m) => s + m.litros, 0);
+    const factorN = normales.reduce((s, m) => s + m.factor, 0);
+    const esHora = fila.metrics.tipo_calculo === 'L/Hora';
+    const consumoSaneado = factorN > 0 ? (esHora ? litrosN / factorN : (litrosN / factorN) * 100) : null;
+    return { meses, conActividadSinCarga, conCargaSinActividad, normales, consumoSaneado };
+}
+
+/**
+ * Por qué una meta "parece mal cargada". No siempre es la meta: puede ser un período fuera de
+ * servicio, una unidad distinta o simplemente que hay muy pocos datos. Cada causa tiene otro
+ * siguiente paso, y confundirlas lleva a "corregir" una meta que estaba bien — que es
+ * exactamente cómo se generan observaciones nuevas del mismo tipo el mes siguiente.
+ */
+export function causaMetaRara(fila, todas = []) {
+    const m = fila.metrics;
+    const meta = fila.confirmed && fila.confirmed.valor ? fila.confirmed.valor : 0;
+    if (!meta || !m.consumo_real) return null;
+    const ratio = m.consumo_real / meta;
+    const comp = completitudDatos(fila);
+    const fs = mesesFueraDeServicio(fila);
+    const sug = sugerirMeta(fila, todas);
+    const cercaDe = (v, obj, tol = 0.4) => v > 0 && Math.abs(Math.log(v / obj)) < tol;
+
+    // 1. Unidad equivocada: el salto típico es ×100 (L/km cargado donde la app mide L/100Km).
+    if (cercaDe(ratio, 100) || cercaDe(ratio, 0.01)) {
+        return {
+            causa: 'unidad', etiqueta: 'posible unidad distinta',
+            resumen: 'la diferencia es de casi exactamente 100×',
+            consejo: 'Casi seguro la meta está cargada en L/km y la app mide en L/100Km (o al revés). Corregí la unidad en "Consumos Estimados"; el número está bien, lo que está mal es en qué se expresa.'
+        };
+    }
+    // 2. Fuera de servicio: hay meses con actividad registrada y cero litros, y sacándolos cierra.
+    if (fs.conActividadSinCarga.length && fs.consumoSaneado) {
+        const rs = fs.consumoSaneado / meta;
+        if (rs > META_BAJA && rs < META_ALTA) {
+            const ms = fs.conActividadSinCarga.map(x => x.periodo).join(', ');
+            return {
+                causa: 'fuera_de_servicio', etiqueta: 'período fuera de servicio',
+                resumen: `${fs.conActividadSinCarga.length} mes${fs.conActividadSinCarga.length === 1 ? '' : 'es'} con actividad y sin cargas (${ms})`,
+                consejo: `Sacando ${fs.conActividadSinCarga.length === 1 ? 'ese mes' : 'esos meses'}, el consumo da ${fmt(fs.consumoSaneado, 2)} contra una meta de ${fmt(meta, 2)}: la meta está bien. Lo que hay que revisar es por qué el GPS registró actividad sin cargas — equipo en taller, motor encendido sin operar, o cargas del período que faltan cargar en la planilla.`
+            };
+        }
+    }
+    // 3. La rara es la meta, no el equipo: está lejos de lo que miden sus pares.
+    if (sug && sug.valor > 0) {
+        const r = meta / sug.valor;
+        if (r >= 3 || r <= 1 / 3) {
+            return {
+                causa: 'meta_vs_pares', etiqueta: 'meta lejos de sus pares',
+                resumen: `la meta es ${r >= 3 ? `${fmt(r, 1)}× ` : `la ${fmt(1 / r, 1)}ª parte de `}la mediana de sus pares (${fmt(sug.valor, 2)})`,
+                consejo: `Sus pares medidos dan ${fmt(sug.valor, 2)} ${sug.unidad}. Reemplazar la meta por el consumo real o por la mediana de pares es lo correcto acá: el equipo no está fallando, el valor de referencia nunca fue realista.`
+            };
+        }
+    }
+    // 4. Pocos datos: no alcanza para afirmar nada todavía.
+    if (comp.nivel === 'bajo') {
+        return {
+            causa: 'pocos_datos', etiqueta: 'pocos datos',
+            resumen: comp.etiqueta,
+            consejo: 'Con estos datos cualquier promedio es frágil. Antes de tocar la meta, esperá a que el equipo acumule cargas o confirmá que no falten cargas del período sin registrar.'
+        };
+    }
+    return {
+        causa: 'meta', etiqueta: 'meta a revisar',
+        resumen: `consume ${ratio >= META_ALTA ? `${fmt(ratio, 1)}× la meta` : `el ${fmt(ratio * 100)}% de la meta`}`,
+        consejo: 'Los datos son consistentes y aun así la meta no cierra: reemplazala por el consumo real medido desde "Ajustar metas".'
+    };
+}
+
+/**
+ * ¿Es creíble la actividad estimada por cálculo inverso? El cálculo divide litros ÷ meta: si la
+ * meta está mal, el resultado no es "aproximado", es inventado — y encima se muestra con cara de
+ * dato ("≈ 1,6 hs"). Este chequeo es el que evita que ese número se use como si fuera medido.
+ */
+export function estimacionCreible(fila, todas = []) {
+    const imp = actividadImplicita(fila);
+    if (!imp) return null;
+    const meta = fila.confirmed.valor;
+    const sug = sugerirMeta(fila, todas);
+    const comp = completitudDatos(fila);
+    const motivos = [];
+    let factorPares = null;
+
+    if (sug && sug.valor > 0) {
+        factorPares = meta / sug.valor;
+        if (factorPares >= 3) motivos.push(`la meta cargada (${fmt(meta, 2)}) es ${fmt(factorPares, 1)}× la mediana de sus pares medidos (${fmt(sug.valor, 2)})`);
+        else if (factorPares <= 1 / 3) motivos.push(`la meta cargada (${fmt(meta, 2)}) es la ${fmt(1 / factorPares, 1)}ª parte de la mediana de sus pares medidos (${fmt(sug.valor, 2)})`);
+    }
+    // Actividad implícita absurda para la cantidad de cargas: si hubiera trabajado tan poco,
+    // no habría hecho falta ir al surtidor tantas veces.
+    const cargas = fila.metrics.cantidad_cargas || 0;
+    if (cargas > 0) {
+        if (imp.unidad === 'horas' && imp.valor < cargas * 2) motivos.push(`daría ${fmt(imp.valor, 1)} horas para ${cargas} carga${cargas === 1 ? '' : 's'}: menos de 2 horas de trabajo por carga`);
+        if (imp.unidad === 'km' && imp.valor < cargas * 20) motivos.push(`daría ${fmt(imp.valor)} km para ${cargas} carga${cargas === 1 ? '' : 's'}: menos de 20 km por carga`);
+    }
+
+    return { implicita: imp, meta, creible: motivos.length === 0, motivos, sugerida: sug, factorPares, completitud: comp };
+}
+
 // ============================================================ HALLAZGOS
 
 export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = [], noFlotaAceptados = []) {
@@ -331,22 +504,38 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     }
 
     // ---------- 3. Metas mal cargadas ----------
+    // "La meta está mal" es solo UNA de las explicaciones posibles: también puede ser un mes
+    // fuera de servicio que diluye el promedio, una unidad distinta, o que apenas haya datos.
+    // Cada caso se etiqueta con su causa probable y su siguiente paso, porque tratar a todos
+    // como "meta mal cargada" es cómo se termina pisando una meta que estaba bien.
     const metasRaras = activos
         .filter(f => f.confirmed && f.confirmed.valor > 0 && f.metrics.consumo_real > 0)
-        .map(f => ({ fila: f, ratio: f.metrics.consumo_real / f.confirmed.valor, sug: metaDesdeConsumoReal(f) }))
+        .map(f => ({
+            fila: f, ratio: f.metrics.consumo_real / f.confirmed.valor, sug: metaDesdeConsumoReal(f),
+            comp: completitudDatos(f)
+        }))
         .filter(x => x.ratio >= META_ALTA || x.ratio <= META_BAJA)
-        .sort((a, b) => Math.abs(Math.log(b.ratio)) - Math.abs(Math.log(a.ratio)));
+        .map(x => ({ ...x, causa: causaMetaRara(x.fila, activos) }))
+        // Primero los que tienen datos completos (se pueden corregir con confianza hoy) y al
+        // final los que apenas registran una carga.
+        .sort((a, b) => (b.comp.score - a.comp.score) || (Math.abs(Math.log(b.ratio)) - Math.abs(Math.log(a.ratio))));
 
     if (metasRaras.length) {
+        const porCausa = new Map();
+        metasRaras.forEach(x => { const c = x.causa?.causa || 'meta'; porCausa.set(c, (porCausa.get(c) || 0) + 1); });
+        const fueraServicio = porCausa.get('fuera_de_servicio') || 0;
         hallazgos.push({
             id: 'metas', severidad: 'media', icono: 'fa-bullseye',
             titulo: `${metasRaras.length} metas parecen mal cargadas`,
-            detalle: `El consumo real difiere tanto de la meta que lo más probable es que el valor de "Consumos Estimados" esté equivocado o en otra unidad, no que el equipo funcione mal. Podés reemplazarlas por el consumo real medido desde <strong>Ajustar metas</strong>.`,
+            detalle: `El consumo real difiere tanto de la meta que lo más probable es que el valor de "Consumos Estimados" esté equivocado o en otra unidad, no que el equipo funcione mal. Podés reemplazarlas por el consumo real medido desde <strong>Ajustar metas</strong>.` +
+                (fueraServicio ? ` <em>Ojo: ${fueraServicio} de est${fueraServicio === 1 ? 'os casos parece' : 'os casos parecen'} tener meses con actividad y sin cargas — ahí la meta puede estar bien y lo que falta es el dato. Usá <strong>Chequear período fuera de servicio</strong> antes de pisarla.</em>` : ''),
             accion: { texto: 'Ajustar estas metas', filtro: 'metas_raras' },
             equipos: metasRaras.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `real ${fmt(x.fila.metrics.consumo_real, 2)} vs meta ${fmt(x.fila.confirmed.valor, 2)}`,
-                sub: `${x.ratio >= META_ALTA ? `consume ${fmt(x.ratio, 1)}× la meta` : `consume el ${fmt(x.ratio * 100)}% de la meta`} · sugerido: ${fmt(x.sug ? x.sug.valor : 0, 2)}`
+                sub: `${x.causa ? x.causa.etiqueta + ' · ' : ''}${x.ratio >= META_ALTA ? `consume ${fmt(x.ratio, 1)}× la meta` : `consume el ${fmt(x.ratio * 100)}% de la meta`} · sugerido: ${fmt(x.sug ? x.sug.valor : 0, 2)} · ${x.comp.etiqueta}`,
+                causa: x.causa ? x.causa.causa : null,
+                completitud: x.comp.nivel
             }))
         });
     }
@@ -453,24 +642,34 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // se decidió que ese ralentí es normal para ese equipo, ej. traslado de personal), pero
     // no se pierden: siguen contando en `aceptados` para que el hallazgo avise cuántos quedaron
     // afuera por esa razón, en vez de desaparecer en silencio.
-    const desperdicioTodos = conRalenti.filter(x => x.cat === 'desperdicio').sort((a, b) => b.fila.metrics.horas_ralenti - a.fila.metrics.horas_ralenti);
+    // Dentro de "desperdicio" las camionetas (CM) se separan del resto (tractores, cargadoras,
+    // volcadores...): tienen excusas operativas que esas otras máquinas no tienen (esperar
+    // cuadrilla, portería, apoyo de seguridad), así que mezclarlas en la misma lista hacía que
+    // se revisaran/aceptaran/reclamaran una por una sin distinción de criterio.
+    const desperdicioTodosCrudo = conRalenti.filter(x => x.cat === 'desperdicio').sort((a, b) => b.fila.metrics.horas_ralenti - a.fila.metrics.horas_ralenti);
+    const desperdicioTodos = desperdicioTodosCrudo.filter(x => !esCamioneta(x.fila.equipo.interno));
+    const camionetasTodos = desperdicioTodosCrudo.filter(x => esCamioneta(x.fila.equipo.interno));
     const desperdicio = desperdicioTodos.filter(x => !esRalentiAceptable(x.fila.equipo.interno));
     const aceptadosRalenti = desperdicioTodos.filter(x => esRalentiAceptable(x.fila.equipo.interno));
+    const camionetas = camionetasTodos.filter(x => !esRalentiAceptable(x.fila.equipo.interno));
+    const aceptadasCamionetas = camionetasTodos.filter(x => esRalentiAceptable(x.fila.equipo.interno));
     const espera = conRalenti.filter(x => x.cat === 'espera').sort((a, b) => b.pct - a.pct);
     const estacionarios = conRalenti.filter(x => x.cat === 'estacionario');
 
     const hsDesperdicio = desperdicio.reduce((s, x) => s + x.fila.metrics.horas_ralenti, 0);
+    const hsCamionetas = camionetas.reduce((s, x) => s + x.fila.metrics.horas_ralenti, 0);
     const hsEstacionario = estacionarios.reduce((s, x) => s + x.fila.metrics.horas_ralenti, 0);
     // Promedio de horas de ralentí del grupo, usado por la acción "Promediar y marcar como
     // aceptable" del panel: marca en bloque a los equipos que están en la media para abajo,
     // dejando visibles (para revisión uno por uno) solo a los que se salen por arriba.
     const promedioRalenti = desperdicio.length ? hsDesperdicio / desperdicio.length : 0;
+    const promedioCamionetas = camionetas.length ? hsCamionetas / camionetas.length : 0;
 
     if (desperdicio.length) {
         hallazgos.push({
             id: 'ralenti', severidad: hsDesperdicio > 2000 ? 'alta' : 'media', icono: 'fa-hourglass-half',
             titulo: `${fmt(hsDesperdicio)} horas de ralentí evitable en equipos de desplazamiento`,
-            detalle: `Solo se cuentan aquí los equipos cuyo trabajo es moverse (tractores, camionetas, cargadoras): en ellos el motor encendido sin desplazarse sí es combustible sin producción. ` +
+            detalle: `Solo se cuentan aquí los equipos cuyo trabajo es moverse (tractores, cargadoras, volcadores...): en ellos el motor encendido sin desplazarse sí es combustible sin producción. Las camionetas se listan aparte porque suelen tener una razón operativa (esperar cuadrilla, portería) que el resto no tiene. ` +
                 (hsEstacionario > 0 ? `Quedan excluidas <strong>${fmt(hsEstacionario)} hs</strong> de grupos electrógenos y equipos estacionarios, donde trabajar quieto es justamente su función. ` : '') +
                 (aceptadosRalenti.length ? `<strong>${aceptadosRalenti.length}</strong> equipo${aceptadosRalenti.length === 1 ? '' : 's'} más quedaron afuera porque se marcaron como "ralentí aceptable". ` : '') +
                 (espera.length ? `Los mixers y bombas se listan aparte porque parte de su espera es operativa (aguardar descarga en obra).` : ''),
@@ -490,6 +689,26 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.horas_ralenti)} hs en ralentí`,
                 sub: `${fmt(x.pct)}% de sus ${fmt(x.fila.metrics.total_horas)} hs · trabajo de desplazamiento${subSeguimiento(x.fila.equipo.interno)}`,
+                valor_ralenti: x.fila.metrics.horas_ralenti
+            }))
+        });
+    }
+
+    if (camionetas.length) {
+        hallazgos.push({
+            id: 'ralenti_camionetas', severidad: hsCamionetas > 800 ? 'alta' : 'media', icono: 'fa-truck-pickup',
+            titulo: `${fmt(hsCamionetas)} horas de ralentí en camionetas`,
+            detalle: `Separadas del resto de "equipos de desplazamiento" porque suelen tener una razón operativa que un tractor o una cargadora no tienen: esperar a una cuadrilla, portería/acceso, apoyo de seguridad. Eso no las exime de revisión — si el ralentí es alto y sostenido igual conviene confirmarlo — pero el criterio para aceptar en bloque o pedir revisión de GPS debería ser distinto al del resto.` +
+                (aceptadasCamionetas.length ? ` <strong>${aceptadasCamionetas.length}</strong> camioneta${aceptadasCamionetas.length === 1 ? '' : 's'} más quedaron afuera porque se marcaron como "ralentí aceptable".` : ''),
+            promedio_ralenti: promedioCamionetas,
+            internos_bajo_promedio: camionetas.filter(x => x.fila.metrics.horas_ralenti <= promedioCamionetas).map(x => x.fila.equipo.interno),
+            bajo_promedio_detalle: camionetas.filter(x => x.fila.metrics.horas_ralenti <= promedioCamionetas).map(x => ({
+                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion, horas: x.fila.metrics.horas_ralenti
+            })),
+            equipos: camionetas.slice(0, 10).map(x => ({
+                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
+                texto: `${fmt(x.fila.metrics.horas_ralenti)} hs en ralentí`,
+                sub: `${fmt(x.pct)}% de sus ${fmt(x.fila.metrics.total_horas)} hs · camioneta${subSeguimiento(x.fila.equipo.interno)}`,
                 valor_ralenti: x.fila.metrics.horas_ralenti
             }))
         });
@@ -534,16 +753,46 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     }
 
-    if (sinMedicionEstimada.length) {
-        const litros = sinMedicionEstimada.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
+    // La estimación por cálculo inverso sale de dividir litros ÷ meta. Si la meta no es creíble,
+    // el resultado tampoco lo es — y se mostraba igual, con cara de dato medido. Se separan los
+    // dos casos: los que sirven como control de razonabilidad, y los que directamente hay que
+    // corregir antes de usarlos para nada.
+    const estimadas = sinMedicionEstimada
+        .map(x => ({ ...x, chequeo: estimacionCreible(x.fila, activos), comp: completitudDatos(x.fila) }))
+        .sort((a, b) => b.comp.score - a.comp.score);
+    const estimadasDudosas = estimadas.filter(x => x.chequeo && !x.chequeo.creible);
+    const estimadasOk = estimadas.filter(x => !x.chequeo || x.chequeo.creible);
+
+    if (estimadasDudosas.length) {
+        const litros = estimadasDudosas.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
+        hallazgos.push({
+            id: 'estimacion_inverosimil', severidad: 'media', icono: 'fa-circle-question',
+            titulo: estimadasDudosas.length === 1
+                ? `1 estimación por cálculo inverso no es creíble`
+                : `${estimadasDudosas.length} estimaciones por cálculo inverso no son creíbles`,
+            detalle: `Suman <strong>${fmt(litros)} L</strong>. Estos equipos no tienen GPS, así que su actividad se estima dividiendo los litros cargados por la meta — pero <strong>la meta que se usa no resiste el control</strong>: está muy lejos de lo que miden sus pares, o el resultado que da es imposible para la cantidad de cargas. Mientras no se corrija, el "≈ X hs" de la tarjeta es un número inventado con apariencia de dato. Están ordenados de más a menos datos: los primeros se pueden corregir hoy con confianza.`,
+            equipos: estimadasDudosas.slice(0, 12).map(x => ({
+                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
+                texto: `${fmt(x.fila.metrics.total_litros)} L → ≈ ${fmt(x.chequeo.implicita.valor, 1)} ${x.chequeo.implicita.unidad}`,
+                sub: `${x.chequeo.motivos.join(' · ')} · ${x.comp.etiqueta}`,
+                completitud: x.comp.nivel,
+                meta_actual: x.chequeo.meta,
+                meta_sugerida: x.chequeo.sugerida ? x.chequeo.sugerida.valor : null
+            }))
+        });
+    }
+
+    if (estimadasOk.length) {
+        const litros = estimadasOk.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
         hallazgos.push({
             id: 'sin_gps_estimado', severidad: 'baja', icono: 'fa-calculator',
-            titulo: `${sinMedicionEstimada.length} equipos sin GPS, con actividad estimada por cálculo inverso`,
-            detalle: `Suman <strong>${fmt(litros)} L</strong>. No tienen km u hora del Resumen de Flota, pero con su meta y los litros cargados se pudo estimar cuánta actividad deberían haber tenido — no es una falla, es un control de razonabilidad hasta que tengan GPS. Si algún número no parece creíble, entrá al equipo y revisá la meta o los litros cargados: de ahí sale la estimación.`,
-            equipos: sinMedicionEstimada.slice(0, 10).map(x => ({
+            titulo: `${estimadasOk.length} equipos sin GPS, con actividad estimada por cálculo inverso`,
+            detalle: `Suman <strong>${fmt(litros)} L</strong>. No tienen km u hora del Resumen de Flota, pero con su meta y los litros cargados se pudo estimar cuánta actividad deberían haber tenido, y esa estimación <strong>pasa el control de razonabilidad</strong> (la meta es coherente con la de sus pares y el resultado es compatible con la cantidad de cargas). No es una falla: es lo mejor que se puede medir hasta que tengan GPS.`,
+            equipos: estimadasOk.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.total_litros)} L`,
-                sub: `≈ ${fmt(x.implicita.valor)} ${x.implicita.unidad} implícitas  (${x.implicita.formula})`
+                sub: `≈ ${fmt(x.implicita.valor)} ${x.implicita.unidad} implícitas  (${x.implicita.formula}) · ${x.comp.etiqueta}`,
+                completitud: x.comp.nivel
             }))
         });
     }
@@ -665,7 +914,54 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         }
     }
 
-    // ---------- 12. Sede inconsistente: lugar de carga ≠ provincia del padrón ----------
+    // ---------- 12. Cargas que superan los días hábiles disponibles ----------
+    // Nadie puede cargar combustible más veces que días hábiles hubo en el mes: si pasa, no es
+    // que el equipo cargue "mucho", es que algo en los datos está mal (cargas duplicadas al
+    // importar, un interno reciclado entre dos unidades, un período mal recortado). Por eso se
+    // marca automáticamente acá en vez de esperar a que alguien lo note tarjeta por tarjeta —
+    // antes esto solo se detectaba al revés (cobertura BAJA, ver confiabilidad() más arriba);
+    // la cobertura por encima del 100% quedaba invisible porque el % se recortaba a 100 en la
+    // tarjeta, mostrando "cobertura ok" en vez de la alerta que en realidad es.
+    const excesoCargas = [];
+    activos.forEach(f => {
+        const porMes = new Map();
+        f.cargas.forEach(c => {
+            const p = c.periodo || (c.fecha ? c.fecha.slice(0, 7) : null);
+            if (!p) return;
+            porMes.set(p, (porMes.get(p) || 0) + 1);
+        });
+        let peor = null;
+        porMes.forEach((cantidad, periodo) => {
+            const [anio, mes] = periodo.split('-').map(Number);
+            if (!anio || !mes) return;
+            const desde = `${periodo}-01`;
+            const ultimoDia = new Date(anio, mes, 0).getDate();
+            const hasta = `${periodo}-${String(ultimoDia).padStart(2, '0')}`;
+            const dh = diasHabiles(desde, hasta);
+            if (dh.dias > 0 && cantidad > dh.dias) {
+                const exceso = cantidad - dh.dias;
+                if (!peor || exceso > peor.exceso) peor = { periodo, anio, mes, cantidad, diasHabiles: dh.dias, exceso };
+            }
+        });
+        if (peor) excesoCargas.push({ fila: f, ...peor });
+    });
+    excesoCargas.sort((a, b) => b.exceso - a.exceso);
+
+    if (excesoCargas.length) {
+        hallazgos.push({
+            id: 'cargas_exceden_dias_habiles', severidad: 'alta', icono: 'fa-triangle-exclamation',
+            titulo: `${excesoCargas.length} equipo${excesoCargas.length === 1 ? '' : 's'} ${excesoCargas.length === 1 ? 'cargó' : 'cargaron'} combustible más veces que los días hábiles de algún mes`,
+            detalle: `Se marcan automáticamente para seguimiento: en el mes más comprometido de cada equipo, la cantidad de cargas registradas superó la cantidad de días hábiles disponibles ese mes. Casi siempre es un problema de datos, no de uso real — cargas duplicadas al importar, dos equipos compartiendo el mismo interno, o un período mal recortado — y conviene confirmarlo en la <strong>tabla de cargas</strong> del mes señalado antes de sacar cualquier conclusión sobre el consumo de ese equipo.`,
+            equipos: excesoCargas.slice(0, 12).map(x => ({
+                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
+                texto: `${x.cantidad} cargas en ${MESES[x.mes - 1]} ${x.anio}`,
+                sub: `solo hubo ${x.diasHabiles} días hábiles ese mes · ${x.exceso} carga${x.exceso === 1 ? '' : 's'} de más`,
+                anio: x.anio, mes: x.mes
+            }))
+        });
+    }
+
+    // ---------- 13. Sede inconsistente: lugar de carga ≠ provincia del padrón ----------
     const sedeInconsistente = activos.filter(f => {
         const prov = f.ubicacion?.provincia;
         if (!prov || prov === 'SIN DATO') return false;

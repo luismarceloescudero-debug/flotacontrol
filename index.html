@@ -23,6 +23,7 @@
         <nav class="app-nav">
             <button id="nav-upload"><i class="fa-solid fa-cloud-arrow-up"></i> <span>Carga de Datos</span></button>
             <button id="nav-panel" class="active"><i class="fa-solid fa-gauge-high"></i> <span>Panel</span></button>
+            <button id="nav-seguimiento"><i class="fa-solid fa-magnifying-glass-chart"></i> <span>Seguimiento</span></button>
             <button id="nav-datos"><i class="fa-solid fa-table-list"></i> <span>Base de Datos</span></button>
         </nav>
         <div class="header-actions">
@@ -114,6 +115,25 @@
             </div>
 
             <div id="cards-container" class="cards-grid"></div>
+        </section>
+
+        <!-- ============ Seguimiento ============ -->
+        <section id="view-seguimiento" class="view-section hidden">
+            <div class="table-head">
+                <div>
+                    <h2>Seguimiento</h2>
+                    <p class="table-desc">Todo lo que quedó marcado para revisar, junto y filtrable: ralentí sin resolver, cobertura floja y cargas que no cierran contra los días hábiles del período — separado de las tarjetas del Panel para poder analizarlo aparte.</p>
+                </div>
+            </div>
+            <div class="tabla-filtros">
+                <div class="search-wrap search-wrap-tabla">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input type="text" id="seg-buscar" placeholder="Interno o denominación…" autocomplete="off">
+                </div>
+                <select id="seg-filtro-tipo"><option value="ALL">Todas las alertas</option></select>
+                <span id="seg-count" class="cards-count"></span>
+            </div>
+            <div id="seg-lista"></div>
         </section>
 
         <!-- ============ Base de Datos ============ -->

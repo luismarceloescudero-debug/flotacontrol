@@ -187,19 +187,29 @@
 .diag-lista li:first-child { border-radius: 8px 8px 0 0; }
 .diag-lista li:last-child { border-radius: 0 0 8px 8px; }
 .diag-lista li:hover { background: var(--bg-card-hover); }
+.diag-lista .chk-ralenti-promedio { width: 15px; height: 15px; flex-shrink: 0; margin-right: 0.6rem; accent-color: var(--accent-cyan); cursor: pointer; }
 .diag-eq { display: flex; flex-direction: column; font-weight: 600; color: var(--accent-cyan); font-size: 0.88rem; }
 .diag-eq small { font-weight: 400; color: var(--text-muted); font-size: 0.72rem; }
 .diag-val { display: flex; flex-direction: column; text-align: right; font-weight: 600; color: var(--text-primary); font-size: 0.85rem; }
 .diag-val small { font-weight: 400; color: var(--text-muted); font-size: 0.72rem; }
 
-.diag-bajo-promedio { margin: 0 0 0.9rem; }
+.diag-bajo-promedio {
+    margin: 0 0 0.9rem; border: 1px solid var(--border-color); border-radius: 8px;
+    background: var(--bg-input); overflow: hidden;
+}
 .diag-bajo-promedio > summary {
     cursor: pointer; font-size: 0.82rem; color: var(--accent-cyan); font-weight: 600;
-    padding: 0.4rem 0; list-style: none;
+    padding: 0.55rem 0.7rem; list-style: none;
 }
 .diag-bajo-promedio > summary::-webkit-details-marker { display: none; }
 .diag-bajo-promedio > summary::before { content: '▸ '; }
 .diag-bajo-promedio[open] > summary::before { content: '▾ '; }
+.diag-bajo-promedio[open] > summary { border-bottom: 1px solid var(--border-color); }
+.diag-bajo-promedio-toggle {
+    display: flex; gap: 0.4rem; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border-color);
+    background: var(--bg-card);
+}
+.diag-lista-bajo-promedio { max-height: 320px; overflow-y: auto; }
 .diag-lista-bajo-promedio .chk-ralenti-promedio { width: 15px; height: 15px; flex-shrink: 0; margin-right: 0.6rem; }
 
 /* --- Barra de acciones en cada hallazgo --- */
@@ -479,6 +489,11 @@
 .card-cobertura.cobertura-media .cobertura-pct { background: rgba(255, 179, 0, 0.18); color: var(--accent-amber, #ffb300); }
 .card-cobertura.cobertura-baja { border-color: rgba(255, 69, 58, 0.35); }
 .card-cobertura.cobertura-baja .cobertura-pct { background: rgba(255, 69, 58, 0.18); color: var(--accent-red, #ff453a); }
+/* Más cargas que días hábiles disponibles: no es "cobertura completa", es una señal de datos
+   mal cruzados (duplicados, interno reciclado, período mal recortado) — se distingue a propósito
+   del verde "ok" para no esconder el caso más grave detrás del mejor color posible. */
+.card-cobertura.cobertura-exceso { border-color: rgba(191, 90, 242, 0.45); background: rgba(191, 90, 242, 0.08); }
+.card-cobertura.cobertura-exceso .cobertura-pct { background: rgba(191, 90, 242, 0.2); color: var(--accent-purple, #bf5af2); }
 
 .litros-bar { height: 3px; background: var(--bg-input); border-radius: 999px; overflow: hidden; }
 .litros-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); border-radius: 999px; }
@@ -1562,3 +1577,99 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
     margin-left: 0.25rem;
 }
 .btn-ver-cargas:hover { background: rgba(76,158,255,0.22); }
+
+/* ---------- Vista "Seguimiento" ---------- */
+.seg-badge {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    font-size: 0.72rem; font-weight: 700; padding: 0.2rem 0.55rem; border-radius: 999px;
+    white-space: nowrap;
+}
+.seg-badge.seg-alta { background: rgba(255, 69, 58, 0.15); color: var(--accent-red, #ff453a); }
+.seg-badge.seg-media { background: rgba(255, 179, 0, 0.15); color: var(--accent-amber, #ffb300); }
+.seg-badge.seg-baja { background: rgba(76, 158, 255, 0.15); color: var(--accent-blue, #4a9eff); }
+#seg-lista .data-table td { vertical-align: middle; }
+#seg-lista .empty-state { margin-top: 1.5rem; }
+.seg-badge.seg-ok { background: rgba(48, 209, 88, 0.15); color: var(--accent-green, #30d158); }
+
+/* ---------- Modal de consejos por hallazgo ---------- */
+.consejo-sub {
+    display: flex; align-items: center; gap: 0.5rem;
+    margin: 1.2rem 0 0.6rem; font-size: 0.9rem; letter-spacing: 0.02em;
+    text-transform: uppercase; color: var(--text-muted);
+}
+.consejo-sub:first-child { margin-top: 0; }
+.consejo-lista { list-style: none; counter-reset: paso; padding: 0; margin: 0; display: grid; gap: 0.6rem; }
+.consejo-lista li {
+    counter-increment: paso;
+    display: grid; grid-template-columns: 1.6rem 1fr; gap: 0.15rem 0.6rem;
+    padding: 0.65rem 0.8rem; border-radius: 10px;
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+}
+.consejo-lista li::before {
+    content: counter(paso); grid-row: span 2;
+    display: flex; align-items: center; justify-content: center;
+    width: 1.6rem; height: 1.6rem; border-radius: 50%;
+    background: rgba(76,158,255,0.15); color: var(--accent-blue, #4a9eff);
+    font-size: 0.78rem; font-weight: 700;
+}
+.consejo-lista li strong { color: var(--text-primary, #e8e8ea); font-size: 0.9rem; }
+.consejo-lista li span { color: var(--text-muted); font-size: 0.85rem; line-height: 1.45; }
+.consejo-prevenir { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.4rem; }
+.consejo-prevenir li { color: var(--text-muted); font-size: 0.85rem; line-height: 1.45; }
+.consejo-prevenir li::marker { color: var(--accent-green, #30d158); }
+
+/* ---------- Chequeo de período fuera de servicio ---------- */
+.fs-bloque {
+    padding: 0.9rem; border-radius: 12px; margin-bottom: 1rem;
+    background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.07);
+}
+.fs-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.6rem; }
+.fs-head strong { color: var(--accent-cyan, #64d2ff); font-size: 1rem; }
+.fs-head small { color: var(--text-muted); }
+.fs-chip {
+    font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 999px;
+    background: rgba(255,255,255,0.06); color: var(--text-muted); white-space: nowrap;
+}
+.fs-chip-causa { background: rgba(255,179,0,0.14); color: var(--accent-amber, #ffb300); }
+.fs-tabla td, .fs-tabla th { padding: 0.35rem 0.6rem; font-size: 0.84rem; }
+.fs-fila-rara { background: rgba(255, 159, 10, 0.09); }
+.fs-flag {
+    font-size: 0.7rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 6px;
+    background: rgba(255,159,10,0.18); color: var(--accent-amber, #ffb300); white-space: nowrap;
+}
+.fs-veredicto {
+    display: block; margin-top: 0.6rem; padding: 0.55rem 0.7rem; border-radius: 8px;
+    font-size: 0.85rem; line-height: 1.45;
+}
+.fs-veredicto i { margin-right: 0.4rem; }
+.fs-ok { background: rgba(48,209,88,0.1); color: var(--accent-green, #30d158); }
+.fs-warn { background: rgba(255,159,10,0.1); color: var(--accent-amber, #ffb300); }
+.fs-neutro { background: rgba(255,255,255,0.04); color: var(--text-muted); }
+.fs-consejo {
+    margin: 0.55rem 0 0; font-size: 0.84rem; line-height: 1.5; color: var(--text-muted);
+    border-left: 2px solid rgba(255,179,0,0.4); padding-left: 0.6rem;
+}
+.fs-consejo i { color: var(--accent-amber, #ffb300); margin-right: 0.35rem; }
+.fs-acciones { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.6rem; flex-wrap: wrap; }
+.fs-nota { font-size: 0.75rem; color: var(--text-muted); }
+
+/* ---------- Revisión de estimaciones por cálculo inverso ---------- */
+.est-grupo { margin-bottom: 1.4rem; }
+.est-grupo-head {
+    display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.2rem;
+    font-size: 0.95rem; color: var(--text-primary, #e8e8ea);
+}
+.est-grupo-head span {
+    font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 999px;
+    background: rgba(255,255,255,0.07); color: var(--text-muted);
+}
+.est-grupo-detalle { margin: 0 0 0.55rem; font-size: 0.82rem; color: var(--text-muted); }
+.est-alto .est-grupo-head { border-left: 3px solid var(--accent-green, #30d158); padding-left: 0.5rem; }
+.est-medio .est-grupo-head { border-left: 3px solid var(--accent-amber, #ffb300); padding-left: 0.5rem; }
+.est-bajo .est-grupo-head { border-left: 3px solid rgba(255,255,255,0.2); padding-left: 0.5rem; }
+.est-bajo .data-table { opacity: 0.75; }
+
+/* Items del diagnóstico con pocos datos: quedan últimos y visualmente atenuados, para que se
+   lea de un vistazo por dónde conviene empezar a corregir. */
+.diag-lista li.diag-comp-bajo { opacity: 0.72; }
+.diag-lista li.diag-comp-alto .diag-eq { border-left: 2px solid rgba(48,209,88,0.5); padding-left: 0.45rem; }

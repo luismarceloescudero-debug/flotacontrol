@@ -3,8 +3,9 @@
  */
 import { initDB, clearAllData, clearMovimientos, getDBStats } from './data/database.js';
 import { initUploadUI, renderDBStatus } from './ui/upload.js';
-import { renderPanel, initPanelControls } from './ui/panel.js';
+import { renderPanel, initPanelControls, buscarEquipo } from './ui/panel.js';
 import { renderDataTable, initDataTableControls, exportarTablaVisible, abrirTablaConBusqueda } from './ui/datatable.js';
+import { renderSeguimiento } from './ui/seguimiento.js';
 import { initCalcPopover } from './ui/calcpopover.js';
 import { openConfigModal } from './ui/config.js';
 import { initAIChat } from './ai/chat.js';
@@ -46,9 +47,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // usado desde los hallazgos del diagnóstico y desde las tarjetas del Panel. Antes esos
     // botones llamaban a `window.renderDataTable`, que nunca se publicó acá — por eso no hacían
     // nada ("Ver cargas" y las acciones de alta/asignación de los hallazgos, entre otras).
-    window.abrirTablaConBusqueda = (tipo, query = '', buscarCol = 'id') => {
+    window.abrirTablaConBusqueda = (tipo, query = '', buscarCol = 'id', periodo = null) => {
         irA('datos');
-        return abrirTablaConBusqueda(tipo, query, buscarCol);
+        return abrirTablaConBusqueda(tipo, query, buscarCol, periodo);
+    };
+    // Usado desde la vista de Seguimiento: volver al Panel ya con la tarjeta del equipo buscada
+    // y a la vista, en vez de solo cambiar de pestaña y dejar que el usuario la busque a mano.
+    window.irAPanelConBusqueda = (interno) => {
+        irA('panel');
+        buscarEquipo(interno);
     };
 
     await renderDBStatus();
@@ -116,6 +123,7 @@ export function irA(vista) {
     });
     if (vista === 'panel') renderPanel();
     if (vista === 'datos') renderDataTable();
+    if (vista === 'seguimiento') renderSeguimiento();
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 

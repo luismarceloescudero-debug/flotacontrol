@@ -6,7 +6,7 @@
  */
 import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos } from '../data/analyzer.js';
-import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita } from '../data/diagnostico.js';
+import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR } from '../data/normalizer.js';
 import { diasHabiles } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
@@ -61,6 +61,19 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&
 const periodoDeAnalisis = (analisis) => ({ desde: analisis?.totales?.periodo_desde, hasta: analisis?.totales?.periodo_hasta });
 
 /**
+ * Punto de entrada para la vista "Seguimiento" (js/ui/seguimiento.js): expone el último
+ * análisis + diagnóstico ya calculado para que esa vista arme su propia lista de "para
+ * revisar" sin volver a analizar la flota desde cero ni duplicar las reglas de negocio que
+ * ya viven en generarDiagnostico(). Devuelve null si todavía no se procesó ningún dato.
+ */
+export function datosParaSeguimiento() {
+    if (!ultimoAnalisis) return null;
+    const rawRecords = datosCrudos?.rawRecords || [];
+    const hallazgos = generarDiagnostico(ultimoAnalisis.filas, ultimoAnalisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache);
+    return { analisis: ultimoAnalisis, rawRecords, hallazgos };
+}
+
+/**
  * Importes de la flota en pesos llegan a diez cifras y no entran en una tarjeta sin
  * romperse en dos líneas a mitad del número. Se muestran abreviados en millones y el
  * valor exacto queda a la vista debajo y en el detalle del cálculo.
@@ -84,22 +97,43 @@ const ACCIONES_PROPUESTAS = {
         { texto: 'Verificar que no falten cargas', icono: 'fa-magnifying-glass', accion: 'verificar_cargas' }
     ],
     metas: [
-        { texto: 'Ajustar metas a consumo real', icono: 'fa-sliders', accion: 'ajustar_metas_raras' }
+        { texto: 'Ajustar metas a consumo real', icono: 'fa-sliders', accion: 'ajustar_metas_raras' },
+        { texto: 'Chequear período fuera de servicio', icono: 'fa-calendar-xmark', accion: 'chequear_fuera_servicio' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     sin_meta: [
-        { texto: 'Cargar metas faltantes', icono: 'fa-sliders', accion: 'ajustar_sin_meta' }
+        { texto: 'Cargar metas faltantes', icono: 'fa-sliders', accion: 'ajustar_sin_meta' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
+    estimacion_inverosimil: [
+        { texto: 'Investigar estas estimaciones', icono: 'fa-magnifying-glass-chart', accion: 'revisar_estimaciones' },
+        { texto: 'Chequear período fuera de servicio', icono: 'fa-calendar-xmark', accion: 'chequear_fuera_servicio' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
+    sin_gps_estimado: [
+        { texto: 'Revisar las estimaciones', icono: 'fa-magnifying-glass-chart', accion: 'revisar_estimaciones' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
+    cargas_exceden_dias_habiles: [
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     pares: [
         { texto: 'Comparar peores vs mejores', icono: 'fa-code-compare', accion: 'comparar_pares' }
     ],
     ralenti: [
-        { texto: 'Ver detalle de ralentí por equipo', icono: 'fa-chart-simple', accion: 'detalle_ralenti' }
+        { texto: 'Ver detalle de ralentí por equipo', icono: 'fa-chart-simple', accion: 'detalle_ralenti' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
+    ralenti_camionetas: [
+        { texto: 'Ver detalle de ralentí por equipo', icono: 'fa-chart-simple', accion: 'detalle_ralenti' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     ralenti_espera: [
         { texto: 'Comparar espera mes a mes', icono: 'fa-chart-line', accion: 'comparar_espera' }
     ],
     sin_medicion: [
-        { texto: 'Cargar metas para estimar actividad', icono: 'fa-bullseye', accion: 'ajustar_sin_medicion' }
+        { texto: 'Cargar metas para estimar actividad', icono: 'fa-bullseye', accion: 'ajustar_sin_medicion' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     nofl_vehiculo_sin_interno: [
         { texto: 'Dar de alta en maestro de equipos', icono: 'fa-plus', accion: 'alta_equipo' }
@@ -620,7 +654,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
     const sev = { alta: 'sev-alta', media: 'sev-media', baja: 'sev-baja', ok: 'sev-ok' };
     const txt = { alta: 'Prioridad alta', media: 'Revisar', baja: 'Menor', ok: 'Positivo' };
 
-    const esHallazgoRalenti = (id) => id === 'ralenti' || id === 'ralenti_inverosimil';
+    const esHallazgoRalenti = (id) => id === 'ralenti' || id === 'ralenti_inverosimil' || id === 'ralenti_camionetas';
 
     const renderHallazgoCard = (h, i, esIgnorado) => {
         const abierto = diagAbiertos.has(h.id) ? diagAbiertos.get(h.id) : (esPrimerCalculo && i === 0 && !esIgnorado);
@@ -646,7 +680,8 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
                     ${acciones.map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
                     ${h.equipos && h.equipos.length >= 2 ? `<button class="btn-sm btn-diag-comparar-lista" data-hallazgo="${esc(h.id)}" title="Abrir comparativa con estos equipos"><i class="fa-solid fa-code-compare"></i> Comparar estos equipos</button>` : ''}
-                    ${esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.length ? `<button class="btn-sm btn-ralenti-promediar" data-hallazgo="${esc(h.id)}" title="Marca como aceptable a los ${h.internos_bajo_promedio.length} equipos en la media (${nf(h.promedio_ralenti)} hs) para abajo, dejando visibles solo a los que se salen por arriba"><i class="fa-solid fa-chart-simple"></i> Promediar y marcar como aceptable (${h.internos_bajo_promedio.length})</button>` : ''}
+                    ${esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.length ? `<button class="btn-sm btn-ralenti-promediar" data-hallazgo="${esc(h.id)}" title="Marca como aceptable a los equipos tildados de la lista de abajo (por defecto, los ${h.internos_bajo_promedio.length} que están en la media de ${nf(h.promedio_ralenti)} hs para abajo)"><i class="fa-solid fa-check-double"></i> Marcar aceptable (selección)</button>` : ''}
+                    ${esRalenti && h.equipos && h.equipos.length ? `<button class="btn-sm btn-ralenti-reclamo-lote" data-hallazgo="${esc(h.id)}" title="Genera un reclamo de revisión de GPS para cada equipo tildado en la lista de abajo"><i class="fa-solid fa-satellite-dish"></i> Reclamo GPS (selección)</button>` : ''}
                     ${esRalenti ? `<button class="btn-sm btn-ver-reclamos-gps" title="Ver los reclamos de revisión de GPS generados"><i class="fa-solid fa-list-check"></i> Reclamos GPS</button>` : ''}
                     ${esRalenti && ralentiEstadosCache.some(r => r.estado === 'aceptable') ? `<button class="btn-sm btn-ver-ralenti-aceptados" title="Ver y desmarcar equipos con ralentí aceptable"><i class="fa-solid fa-list-check"></i> Ralentí aceptable (${ralentiEstadosCache.filter(r => r.estado === 'aceptable').length})</button>` : ''}
                     ${esNoflCard && noFlotaAceptadosCache.length ? `<button class="btn-sm btn-ver-nofl-aceptados" title="Ver y desmarcar códigos marcados como 'así está bien'"><i class="fa-solid fa-list-check"></i> Códigos válidos así (${noFlotaAceptadosCache.length})</button>` : ''}
@@ -676,18 +711,24 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     if (!esRalenti || !h.bajo_promedio_detalle || !h.bajo_promedio_detalle.length) return '';
                     // Los equipos "en la media para abajo" casi nunca coinciden con los que ya se
                     // ven en la lista de abajo (esa lista muestra los PEORES) — por eso se listan
-                    // acá aparte, con checkbox, para poder elegir cuáles incluye "Promediar y
-                    // marcar como aceptable" en vez de que sea todo-o-nada.
+                    // acá aparte, con checkbox, para poder elegir cuáles quedan incluidos en
+                    // "Marcar aceptable (selección)" / "Reclamo GPS (selección)" en vez de que sea
+                    // todo-o-nada. Vienen tildados por defecto (son los de menor ralentí del grupo,
+                    // la selección "segura"); destildar los que se prefiere revisar antes.
                     const yaMostrados = new Set((h.equipos || []).map(e => e.interno));
                     const extra = h.bajo_promedio_detalle.filter(x => !yaMostrados.has(x.interno));
                     if (!extra.length) return '';
                     return `
                     <details class="diag-bajo-promedio">
-                        <summary>Ver los ${extra.length} equipos en la media para abajo (elegir cuáles incluir)</summary>
+                        <summary>Elegir cuáles de los ${extra.length} equipos con ralentí en la media para abajo marcar</summary>
+                        <div class="diag-bajo-promedio-toggle">
+                            <button type="button" class="btn-xs btn-chk-marcar-todos" data-hallazgo="${esc(h.id)}">Marcar todos</button>
+                            <button type="button" class="btn-xs btn-chk-marcar-ninguno" data-hallazgo="${esc(h.id)}">Ninguno</button>
+                        </div>
                         <ul class="diag-lista diag-lista-bajo-promedio">
                             ${extra.map(x => `
                             <li data-interno="${esc(x.interno)}">
-                                <input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(x.interno)}" checked title="Incluir en 'Promediar y marcar como aceptable'">
+                                <input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(x.interno)}" checked title="Incluir en las acciones en bloque de este hallazgo">
                                 <span class="diag-eq">${esc(x.interno)}<small>${esc(x.denominacion || '')}</small></span>
                                 <span class="diag-val">${nf(x.horas)} hs en ralentí</span>
                             </li>`).join('')}
@@ -699,16 +740,21 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     ${h.equipos.map(e => {
                         const enSeg = seguidos.has(e.interno);
                         const esNofl = h.id.startsWith('nofl_');
+                        const esCargasExceso = h.id === 'cargas_exceden_dias_habiles';
                         const esBajoPromedio = esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.includes(e.interno);
                         return `
-                        <li data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" class="${enSeg ? 'diag-li-seguimiento' : ''}${esNofl ? ' diag-li-nofl' : ''}">
-                            ${esBajoPromedio ? `<input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(e.interno)}" checked title="Incluir en 'Promediar y marcar como aceptable'">` : ''}
+                        <li data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" class="${enSeg ? 'diag-li-seguimiento' : ''}${esNofl ? ' diag-li-nofl' : ''}${e.completitud ? ' diag-comp-' + esc(e.completitud) : ''}">
+                            ${esRalenti ? `<input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(e.interno)}" ${esBajoPromedio ? 'checked' : ''} title="Incluir en las acciones en bloque de este hallazgo (Marcar aceptable / Reclamo GPS)">` : ''}
                             <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
                             <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small></span>
                             ${esNofl ? `
                             <button class="btn-xs btn-ver-cargas" data-interno="${esc(e.interno)}" title="Ver en tabla de cargas"><i class="fa-solid fa-table-list"></i> Ver cargas</button>
                             <button class="btn-xs btn-nofl-valido" data-codigo="${esc(e.interno)}" title="Marcar que este código está bien así (ej. un vehículo de préstamo/demo sin interno propio): sale de este hallazgo de ahora en más">
                                 <i class="fa-solid fa-check"></i> Así está bien
+                            </button>` : ''}
+                            ${esCargasExceso ? `
+                            <button class="btn-xs btn-ver-mes-cargas" data-interno="${esc(e.interno)}" data-anio="${esc(e.anio)}" data-mes="${esc(e.mes)}" title="Ver las cargas de ${esc(e.interno)} en ese mes en la tabla de cargas de combustible">
+                                <i class="fa-solid fa-table-list"></i> Ver cargas de ese mes
                             </button>` : ''}
                             ${esRalenti ? `
                             <button class="btn-xs btn-ralenti-aceptable" data-interno="${esc(e.interno)}" title="Marcar este ralentí como aceptable: sale de este hallazgo de ahora en más">
@@ -750,7 +796,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
     // --- Event listeners ---
     el.querySelectorAll('.diag-lista li[data-interno]').forEach(li => {
         li.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo, .chk-ralenti-promedio, .btn-nofl-valido')) return;
+            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ver-mes-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo, .chk-ralenti-promedio, .btn-nofl-valido')) return;
             const hallazgoId = li.dataset.hallazgo || '';
             if (hallazgoId.startsWith('nofl_')) {
                 // Para hallazgos nofl_*, navegar a tabla de cargas y buscar el valor
@@ -766,6 +812,20 @@ function renderDiagnostico(analisis, rawRecords = []) {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', btn.dataset.interno);
+        });
+    });
+
+    // Botón "Ver cargas de ese mes" — hallazgo "cargas_exceden_dias_habiles": lleva directo a
+    // la tabla de cargas, ya filtrada por el equipo Y el mes puntual que disparó la alerta (no
+    // todo el historial del equipo), para poder confirmar de un vistazo si son cargas duplicadas,
+    // mal fechadas, o legítimas.
+    el.querySelectorAll('.btn-ver-mes-cargas').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const { interno, anio, mes } = btn.dataset;
+            if (typeof window.abrirTablaConBusqueda === 'function') {
+                window.abrirTablaConBusqueda('carga', interno, 'id', { anio, mes });
+            }
         });
     });
     el.querySelectorAll('.btn-diag-accion').forEach(b => {
@@ -914,7 +974,37 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const motivoSugerido = b.dataset.hallazgo === 'ralenti_inverosimil'
                 ? 'Ralentí inverosímil (posible error de datos o sensor del GPS)'
                 : 'Ralentí muy alto sostenido: pedir verificación de que el equipo GPS esté reportando bien';
-            abrirNuevoReclamoModal(b.dataset.interno, motivoSugerido, analisis, rawRecords);
+            abrirNuevoReclamoModal([b.dataset.interno], motivoSugerido, analisis, rawRecords);
+        });
+    });
+
+    // Ralentí: "Reclamo GPS (selección)" — mismo reclamo, pero para todos los equipos tildados
+    // de la tarjeta a la vez (los del checklist "en la media" y/o los que se hayan tildado a
+    // mano en la lista de peores), en vez de reclamar uno por uno.
+    el.querySelectorAll('.btn-ralenti-reclamo-lote').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const hid = b.dataset.hallazgo;
+            const card = b.closest('.diag-card');
+            const internos = card ? [...card.querySelectorAll('.chk-ralenti-promedio:checked')].map(c => c.dataset.interno) : [];
+            if (!internos.length) { alert('No hay equipos tildados. Tildá alguno en la lista de abajo para poder reclamarlos juntos.'); return; }
+            const motivoSugerido = hid === 'ralenti_inverosimil'
+                ? 'Ralentí inverosímil (posible error de datos o sensor del GPS)'
+                : 'Ralentí alto sostenido: pedir verificación de que el equipo GPS esté reportando bien';
+            abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords);
+        });
+    });
+
+    // "Marcar todos" / "Ninguno" — tilda o destilda de un saque todos los checkboxes de
+    // selección de ESTA tarjeta (tanto los de la lista "peores" como los de "en la media para
+    // abajo"), para no tener que hacer click uno por uno antes de una acción en bloque.
+    el.querySelectorAll('.btn-chk-marcar-todos, .btn-chk-marcar-ninguno').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const marcar = b.classList.contains('btn-chk-marcar-todos');
+            const card = b.closest('.diag-card');
+            card?.querySelectorAll('.chk-ralenti-promedio').forEach(chk => { chk.checked = marcar; });
         });
     });
 
@@ -974,29 +1064,47 @@ function mailtoReclamo(reclamo) {
     window.location.href = url;
 }
 
+/** Mismo mailto: que mailtoReclamo(), pero para varios reclamos a la vez (creados juntos desde
+ * "Reclamo GPS (selección)"): un solo mail con todos los equipos listados, en vez de uno por
+ * equipo — así no le llega al proveedor un mail distinto por cada unidad de un mismo reclamo. */
+function mailtoReclamoLote(reclamos) {
+    if (!reclamos.length) return;
+    if (reclamos.length === 1) { mailtoReclamo(reclamos[0]); return; }
+    const asunto = `Reclamo de revisión GPS — ${reclamos.length} equipos`;
+    const listado = reclamos.map(r => `· ${r.interno}: ${r.motivo}`).join('\n');
+    const cuerpo = `Hola,\n\nSolicitamos revisión del equipo GPS de los siguientes equipos:\n\n${listado}\n\nFecha del reclamo: ${new Date().toLocaleDateString('es-AR')}\n\nSaludos.`;
+    const url = `mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    window.location.href = url;
+}
+
 /** Modal de alta de reclamo GPS: reemplaza el prompt() del navegador (difícil de leer con un
  * motivo largo) por un formulario real donde el motivo sugerido se ve completo y se puede
- * editar antes de guardar, con la opción de abrir de una el cliente de mail para mandarlo. */
-function abrirNuevoReclamoModal(interno, motivoSugerido, analisis, rawRecords) {
+ * editar antes de guardar, con la opción de abrir de una el cliente de mail para mandarlo.
+ * `internos` es siempre un array: con uno solo es el caso de siempre (botón "Reclamo GPS" de
+ * una fila); con varios es "Reclamo GPS (selección)" — se guarda un reclamo por equipo, todos
+ * con el mismo motivo (editable acá antes de guardar), y un único mail agrupa a todos. */
+function abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords) {
     const container = document.getElementById('modals-container');
     if (!container) return;
+    const lista = Array.isArray(internos) ? internos : [internos];
     const modalId = 'modal-nuevo-reclamo';
     document.getElementById(modalId)?.remove();
+    const esLote = lista.length > 1;
     container.insertAdjacentHTML('beforeend', `
         <div class="modal-overlay active" id="${modalId}">
             <div class="modal-content">
                 <div class="modal-header">
                     <div><h2>Reclamo de revisión de GPS</h2>
-                    <p class="modal-sub">Equipo <strong>${esc(interno)}</strong></p></div>
+                    <p class="modal-sub">${esLote ? `${lista.length} equipos: <strong>${lista.map(esc).join(', ')}</strong>` : `Equipo <strong>${esc(lista[0])}</strong>`}</p></div>
                     <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <div class="modal-body">
-                    <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Motivo</label>
+                    <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Motivo${esLote ? ' (se usa el mismo para los ' + lista.length + ' equipos)' : ''}</label>
                     <textarea class="reclamo-motivo-input" rows="4">${esc(motivoSugerido)}</textarea>
-                    <p class="modal-note">Se guarda como registro interno en la app. Todavía no hay integración con ningún proveedor — "Enviar por mail" abre tu cliente de correo (Outlook, etc.) con el mensaje ya redactado para que lo mandes vos.</p>
+                    <p class="modal-note">Se guarda como registro interno en la app${esLote ? ', uno por equipo' : ''}. Todavía no hay integración con ningún proveedor — "Enviar por mail" abre tu cliente de correo (Outlook, etc.) con el mensaje ya redactado para que lo mandes vos.</p>
                     <div class="modal-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:0.75rem">
                         <button class="btn-secondary btn-sm" data-close>Cancelar</button>
-                        <button class="btn-secondary btn-sm" id="btn-reclamo-guardar"><i class="fa-solid fa-floppy-disk"></i> Guardar reclamo</button>
+                        <button class="btn-secondary btn-sm" id="btn-reclamo-guardar"><i class="fa-solid fa-floppy-disk"></i> Guardar reclamo${esLote ? 's' : ''}</button>
                         <button class="btn-primary btn-sm" id="btn-reclamo-guardar-mail"><i class="fa-solid fa-envelope"></i> Guardar y enviar por mail</button>
                     </div>
                 </div>
@@ -1010,10 +1118,11 @@ function abrirNuevoReclamoModal(interno, motivoSugerido, analisis, rawRecords) {
 
     const guardar = async (enviarMail) => {
         const motivo = modal.querySelector('.reclamo-motivo-input').value.trim() || motivoSugerido;
-        const reclamo = await crearReclamoGPS({ interno, motivo });
+        const reclamos = [];
+        for (const interno of lista) reclamos.push(await crearReclamoGPS({ interno, motivo }));
         cerrar();
         renderDiagnostico(analisis, rawRecords);
-        if (enviarMail) mailtoReclamo(reclamo);
+        if (enviarMail) mailtoReclamoLote(reclamos);
     };
     modal.querySelector('#btn-reclamo-guardar').addEventListener('click', () => guardar(false));
     modal.querySelector('#btn-reclamo-guardar-mail').addEventListener('click', () => guardar(true));
@@ -1160,6 +1269,299 @@ function abrirNoFlotaAceptados(analisis, rawRecords) {
     });
 }
 
+/**
+ * Ayuda concreta por tipo de hallazgo. No es documentación general de la app: cada entrada
+ * responde "qué hago con esto que me está mostrando ahora", y sobre todo "qué hago para que
+ * el mes que viene no vuelva a aparecer" — que es la parte que normalmente no se hace y por eso
+ * los mismos equipos reaparecen en el diagnóstico todos los meses.
+ */
+const CONSEJOS = {
+    metas: {
+        titulo: 'Metas que no cierran contra el consumo real',
+        intro: 'Que el real difiera mucho de la meta tiene cuatro explicaciones posibles, y cada una se arregla distinto. Antes de pisar la meta, mirá la etiqueta de causa probable que aparece al lado de cada equipo en la lista.',
+        pasos: [
+            ['Posible unidad distinta', 'La diferencia es de casi exactamente 100×. La meta está cargada en L/km y la app mide en L/100Km (o al revés). Se corrige la <em>unidad</em> en "Consumos Estimados", no el número.'],
+            ['Período fuera de servicio', 'Hay meses con actividad registrada por GPS y cero litros cargados: el promedio del período queda diluido y el consumo real da imposiblemente bajo. Usá <strong>Chequear período fuera de servicio</strong> para verlo mes a mes. Si sacando esos meses la meta cierra, la meta está bien — lo que falta es explicar esos meses (equipo en taller, motor encendido sin operar, o cargas que nunca se registraron).'],
+            ['Meta lejos de sus pares', 'La meta está a más de 3× (o menos de un tercio) de lo que miden equipos iguales. Ahí sí: reemplazala por la mediana de pares o por el consumo real desde <strong>Ajustar metas</strong>.'],
+            ['Pocos datos', 'Una o dos cargas no alcanzan para afirmar nada. Dejalos para el final y confirmá primero que no falten cargas del período sin cargar en la planilla.']
+        ],
+        prevenir: [
+            'Cargar la meta con la unidad explícita en la planilla de "Consumos Estimados" (poner "L/100Km", no "L/km") evita de una la causa más frecuente.',
+            'Cuando se da de alta un equipo nuevo, usar el botón <strong>Usar sugerencia</strong> de su tarjeta: toma la mediana de sus pares ya medidos, que es un valor realista por construcción.',
+            'Si un equipo estuvo fuera de servicio un mes, conviene que quede registrado: si no, todos los meses va a volver a aparecer acá.'
+        ]
+    },
+    sin_meta: {
+        titulo: 'Equipos sin meta cargada',
+        intro: 'Sin meta no hay contra qué comparar: el equipo no aparece ni como sobreconsumo ni como ahorro, simplemente queda afuera del control.',
+        pasos: [
+            ['Usar la sugerencia', 'La app propone la mediana de sus pares medidos, o su propio consumo real si no hay pares suficientes. Es un punto de partida realista, no un valor definitivo.'],
+            ['Aplicarlas en bloque', 'Desde <strong>Ajustar metas faltantes</strong> se aplican todas juntas y después se afinan las que haga falta.'],
+            ['Reemplazar cuando llegue el dato oficial', 'La meta sugerida queda marcada como "estimada": cuando el fabricante o el área técnica dé el valor real, se pisa y la tarjeta pasa a decir "ajustada".']
+        ],
+        prevenir: [
+            'Sumar el equipo a "Consumos Estimados" en el mismo momento en que se lo da de alta en el maestro.',
+            'Revisar una vez por trimestre los que quedaron con meta estimada: si ya acumularon varios meses de datos, su consumo real medido es mejor que la mediana de pares.'
+        ]
+    },
+    estimacion_inverosimil: {
+        titulo: 'Estimaciones por cálculo inverso que no son creíbles',
+        intro: 'Estos equipos no tienen GPS. Su actividad se estima dividiendo los litros cargados por la meta. Si la meta está mal, el resultado no es aproximado: es inventado — y se muestra con cara de dato medido ("≈ 1,6 hs"), que es lo peligroso.',
+        pasos: [
+            ['Mirar la meta, no la estimación', 'El número raro es la consecuencia, no la causa. Entrá al equipo desde <strong>Investigar estas estimaciones</strong> y comparalo contra la mediana de sus pares.'],
+            ['Usar la sugerencia de la tarjeta', 'En la ficha del equipo, el botón <strong>Usar sugerencia</strong> ya trae la mediana de sus pares medidos. Guardar con ese valor recalcula la estimación al instante.'],
+            ['Chequear los litros también', 'Si la meta ya es razonable y el número sigue sin cerrar, el problema está del otro lado: una carga con litros mal tipeados (un cero de más) infla todo. Se ve en la tabla de cargas.'],
+            ['Empezar por arriba', 'La lista viene ordenada de más a menos datos: los primeros se pueden corregir hoy con confianza, los últimos apenas registran una carga y conviene esperar.']
+        ],
+        prevenir: [
+            'Nunca cargar una meta "de memoria" para un equipo sin GPS: es el único caso donde nada la contrasta contra la realidad, así que un error ahí no se detecta solo.',
+            'Para equipos sin GPS, revisar la meta cada vez que aparece un par nuevo medido: la mediana de pares mejora con cada equipo que sí tiene GPS.',
+            'A mediano plazo, los equipos que más litros cargan sin GPS son los mejores candidatos a que se les instale uno: son los que más plata mueven sin control real.'
+        ]
+    },
+    sin_gps_estimado: {
+        titulo: 'Actividad estimada por cálculo inverso',
+        intro: 'No es un problema: es lo mejor que se puede medir sin GPS, y estas estimaciones pasaron el control de razonabilidad (la meta es coherente con la de sus pares y el resultado es compatible con la cantidad de cargas).',
+        pasos: [
+            ['Tomarlo como orden de magnitud', 'Sirve para saber si un equipo trabajó mucho o poco, no para calcular un desvío fino contra la meta.'],
+            ['Revisar si algún número no cierra', 'Si conocés el equipo y la estimación no se parece a lo que realmente hizo, el problema está en la meta o en los litros cargados: de ahí sale el número.']
+        ],
+        prevenir: [
+            'Mantener actualizada la meta de estos equipos es lo único que sostiene la estimación.',
+            'Priorizar la instalación de GPS en los que más litros cargan de esta lista.'
+        ]
+    },
+    sin_medicion: {
+        titulo: 'Cargan combustible sin ningún dato de actividad',
+        intro: 'No tienen km ni horas del Resumen de Flota y tampoco meta cargada: no hay forma de calcular ni de estimar nada. Son gasto sin control.',
+        pasos: [
+            ['Cargarles una meta', 'Es el primer paso: con meta, al menos se puede estimar la actividad por cálculo inverso.'],
+            ['Verificar si deberían tener GPS', 'Si el equipo tiene GPS instalado pero no aparece en el Resumen de Flota, es un problema del equipo GPS y corresponde un reclamo, no una meta.']
+        ],
+        prevenir: [
+            'Chequear que el Resumen de Flota que se sube incluya a todos los equipos del padrón, no solo a los que reportaron.',
+            'Dar de alta la meta junto con el equipo, siempre.'
+        ]
+    },
+    ralenti: {
+        titulo: 'Horas de ralentí',
+        intro: 'Ralentí es motor encendido sin trabajar: quema combustible, suma horas al motor y no produce nada. Pero no todo ralentí es desperdicio, y la app ya separa los casos.',
+        pasos: [
+            ['Aceptar lo que tiene explicación', 'Si un equipo tiene una razón operativa para estar encendido sin moverse, marcalo como aceptable: sale del hallazgo de ahora en más sin borrar el dato.'],
+            ['Marcar en bloque', 'Los que están en la media para abajo vienen tildados por defecto: se aceptan todos juntos con <strong>Marcar aceptable (selección)</strong>.'],
+            ['Reclamar el GPS cuando el número es imposible', 'Más horas de ralentí que horas del período, o ralentí sin ninguna hora de trabajo, es una falla de medición: usá <strong>Reclamo GPS</strong>.']
+        ],
+        prevenir: [
+            'Volver a mirar los aceptados cada tanto: una excepción que se vuelve permanente deja de ser excepción.',
+            'Los equipos con reclamo GPS abierto conviene sacarlos del análisis de consumo hasta que se resuelva: sus números arrastran el promedio del grupo.'
+        ]
+    },
+    cargas_exceden_dias_habiles: {
+        titulo: 'Más cargas que días hábiles',
+        intro: 'Un equipo no puede cargar combustible más veces que los días laborales que tuvo el mes. Cuando pasa, casi nunca es que trabajó fin de semana: suele ser otra cosa.',
+        pasos: [
+            ['Cargas duplicadas', 'La misma carga cargada dos veces en la planilla, o un archivo del mismo mes subido dos veces. Es la causa más común.'],
+            ['Interno mal asignado', 'Cargas de otro equipo imputadas a este por error de tipeo en el interno. Se ve mirando los importes y los sectores.'],
+            ['Trabajo real fuera de días hábiles', 'Guardias, obra con plazo, o un feriado que en esta empresa se trabajó. Es legítimo, pero conviene confirmarlo.'],
+            ['Ir a la tabla', 'El botón <strong>Ver cargas de ese mes</strong> te deja la tabla filtrada justo en el período del problema.']
+        ],
+        prevenir: [
+            'Antes de subir un archivo de cargas, verificar que no se haya subido ya ese período: la app limpia los movimientos al iniciar, pero no dentro de la misma sesión.',
+            'Normalizar los internos en la planilla de cargas (misma nomenclatura que el maestro) elimina la mayoría de las imputaciones cruzadas.'
+        ]
+    }
+};
+CONSEJOS.ralenti_camionetas = CONSEJOS.ralenti;
+CONSEJOS.ralenti_inverosimil = CONSEJOS.ralenti;
+
+/** Modal de ayuda contextual de un hallazgo: qué hacer ahora y cómo evitar que vuelva a aparecer. */
+function abrirConsejos(hallazgoId) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const c = CONSEJOS[hallazgoId];
+    const modalId = 'modal-consejos';
+    document.getElementById(modalId)?.remove();
+
+    const cuerpo = c ? `
+        <p class="modal-note" style="margin-bottom:1rem">${c.intro}</p>
+        <h4 class="consejo-sub"><i class="fa-solid fa-list-check"></i> Qué hacer con esto</h4>
+        <ol class="consejo-lista">
+            ${c.pasos.map(([t, d]) => `<li><strong>${esc(t)}</strong><span>${d}</span></li>`).join('')}
+        </ol>
+        <h4 class="consejo-sub"><i class="fa-solid fa-shield-halved"></i> Para que no vuelva a aparecer</h4>
+        <ul class="consejo-prevenir">
+            ${c.prevenir.map(p => `<li>${p}</li>`).join('')}
+        </ul>`
+        : '<p class="modal-note">Todavía no hay consejos escritos para este hallazgo.</p>';
+
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div><h2><i class="fa-solid fa-lightbulb" style="color:var(--accent-amber,#ffb020)"></i> ${esc(c ? c.titulo : 'Ayuda')}</h2>
+                    <p class="modal-sub">Guía práctica para este hallazgo.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">${cuerpo}</div>
+            </div>
+        </div>`);
+    const modal = document.getElementById(modalId);
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => modal.remove()));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+}
+
+/**
+ * Chequeo de período fuera de servicio: muestra, mes a mes, litros contra actividad, y marca
+ * los meses con actividad y sin cargas (o al revés). Es la respuesta a "¿la meta está mal, o
+ * este equipo estuvo parado?" — que hasta ahora había que deducir mirando la tarjeta a ojo.
+ */
+function abrirChequeoFueraServicio(analisis, internos) {
+    const container = document.getElementById('modals-container');
+    if (!container || !analisis) return;
+    const lista = (internos || []).slice(0, 10);
+    const modalId = 'modal-fuera-servicio';
+    document.getElementById(modalId)?.remove();
+
+    const bloques = lista.map(interno => {
+        const f = analisis.filas.find(x => x.equipo.interno === interno);
+        if (!f) return '';
+        const fs = mesesFueraDeServicio(f);
+        const meta = f.confirmed && f.confirmed.valor ? f.confirmed.valor : 0;
+        const esHora = f.metrics.tipo_calculo === 'L/Hora';
+        const unidadFactor = esHora ? 'hs' : 'km';
+        const causa = causaMetaRara(f, analisis.filas);
+        const sospechosos = fs.conActividadSinCarga.length + fs.conCargaSinActividad.length;
+
+        const veredicto = fs.conActividadSinCarga.length
+            ? (fs.consumoSaneado && meta && (fs.consumoSaneado / meta) > 0.4 && (fs.consumoSaneado / meta) < 2.5
+                ? `<span class="fs-veredicto fs-ok"><i class="fa-solid fa-circle-check"></i> Sacando ${fs.conActividadSinCarga.length === 1 ? 'ese mes' : 'esos meses'}, el consumo da <strong>${nf(fs.consumoSaneado, 2)}</strong> contra una meta de <strong>${nf(meta, 2)}</strong>: la meta está bien, lo que falta es explicar ${fs.conActividadSinCarga.length === 1 ? 'ese mes' : 'esos meses'}.</span>`
+                : `<span class="fs-veredicto fs-warn"><i class="fa-solid fa-triangle-exclamation"></i> Hay meses con actividad y sin cargas, pero aun sacándolos el consumo (${fs.consumoSaneado ? nf(fs.consumoSaneado, 2) : '—'}) sigue sin cerrar contra la meta (${nf(meta, 2)}): revisá también la meta.</span>`)
+            : `<span class="fs-veredicto fs-neutro"><i class="fa-solid fa-circle-info"></i> No hay meses con actividad registrada y cero cargas: este equipo no estuvo fuera de servicio dentro del período. La diferencia contra la meta viene de otro lado.</span>`;
+
+        return `
+        <div class="fs-bloque">
+            <div class="fs-head">
+                <strong>${esc(interno)}</strong> <small>${esc(f.equipo.denominacion || '')}</small>
+                <span class="fs-chip">${esc(completitudDatos(f).etiqueta)}</span>
+                ${causa ? `<span class="fs-chip fs-chip-causa">causa probable: ${esc(causa.etiqueta)}</span>` : ''}
+            </div>
+            <div class="table-responsive">
+                <table class="data-table fs-tabla">
+                    <thead><tr><th>Mes</th><th>Litros</th><th>${esc(unidadFactor)}</th><th>Consumo</th><th>Cargas</th><th></th></tr></thead>
+                    <tbody>
+                        ${fs.meses.map(m => {
+                            const raro = (m.factor > 0 && m.litros <= 0) ? 'actividad sin cargas'
+                                : (m.litros > 0 && m.factor <= 0) ? 'cargas sin actividad' : '';
+                            return `<tr class="${raro ? 'fs-fila-rara' : ''}">
+                                <td>${esc(m.periodo)}</td>
+                                <td>${nf(m.litros, 1)}</td>
+                                <td>${nf(m.factor, 1)}</td>
+                                <td>${m.consumo > 0 ? nf(m.consumo, 2) : '—'}</td>
+                                <td>${nf(m.cargas)}</td>
+                                <td>${raro ? `<span class="fs-flag">${esc(raro)}</span>` : ''}</td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+            ${veredicto}
+            ${causa ? `<p class="fs-consejo"><i class="fa-solid fa-lightbulb"></i> ${causa.consejo}</p>` : ''}
+            <div class="fs-acciones">
+                <button class="btn-xs btn-fs-ver-equipo" data-interno="${esc(interno)}"><i class="fa-solid fa-magnifying-glass"></i> Ver equipo</button>
+                <button class="btn-xs btn-fs-ver-cargas" data-interno="${esc(interno)}"><i class="fa-solid fa-table-list"></i> Ver sus cargas</button>
+                ${sospechosos ? `<span class="fs-nota">${sospechosos} mes${sospechosos === 1 ? '' : 'es'} marcado${sospechosos === 1 ? '' : 's'}</span>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Chequeo de período fuera de servicio</h2>
+                    <p class="modal-sub">Mes a mes: litros contra actividad. Un mes con actividad registrada y cero cargas diluye el promedio y hace parecer mal cargada una meta que está bien.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">${bloques || '<p class="modal-note">No hay equipos para chequear en este hallazgo.</p>'}</div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => modal.remove()));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    modal.querySelectorAll('.btn-fs-ver-equipo').forEach(b => b.addEventListener('click', () => { modal.remove(); buscarEquipo(b.dataset.interno); }));
+    modal.querySelectorAll('.btn-fs-ver-cargas').forEach(b => b.addEventListener('click', () => {
+        modal.remove();
+        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', b.dataset.interno);
+    }));
+}
+
+/**
+ * Investigación de las estimaciones por cálculo inverso, agrupadas por completitud de datos:
+ * primero los que tienen con qué decidir hoy, al final los que apenas registran una carga.
+ * Cada fila muestra de dónde sale el número y qué habría que tocar para que cierre.
+ */
+function abrirRevisionEstimaciones(analisis, soloDudosas) {
+    const container = document.getElementById('modals-container');
+    if (!container || !analisis) return;
+    const modalId = 'modal-estimaciones';
+    document.getElementById(modalId)?.remove();
+
+    const items = analisis.filas
+        .filter(f => f.metrics.cantidad_cargas > 0 && f.metrics.total_litros > 0 && f.metrics.consumo_real === 0 && f.metrics.tipo_calculo !== 'No Aplica')
+        .map(f => ({ fila: f, chequeo: estimacionCreible(f, analisis.filas) }))
+        .filter(x => x.chequeo && (!soloDudosas || !x.chequeo.creible))
+        .sort((a, b) => b.chequeo.completitud.score - a.chequeo.completitud.score);
+
+    const grupos = ['alto', 'medio', 'bajo'].map(nivel => ({
+        nivel, info: NIVELES_COMPLETITUD[nivel], items: items.filter(x => x.chequeo.completitud.nivel === nivel)
+    })).filter(g => g.items.length);
+
+    const cuerpo = grupos.length ? grupos.map(g => `
+        <div class="est-grupo est-${esc(g.nivel)}">
+            <h4 class="est-grupo-head">${esc(g.info.etiqueta)} <span>${g.items.length}</span></h4>
+            <p class="est-grupo-detalle">${esc(g.info.detalle)}</p>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead><tr><th>Equipo</th><th>Litros</th><th>Meta usada</th><th>Mediana de pares</th><th>Estimación</th><th>Chequeo</th><th></th></tr></thead>
+                    <tbody>
+                        ${g.items.map(x => {
+                            const c = x.chequeo;
+                            return `<tr>
+                                <td><strong style="color:var(--accent-cyan)">${esc(x.fila.equipo.interno)}</strong><br><small style="color:var(--text-muted)">${esc(x.fila.equipo.denominacion || '')}</small></td>
+                                <td>${nf(x.fila.metrics.total_litros, 1)} L</td>
+                                <td>${nf(c.meta, 2)} ${esc(x.fila.metrics.tipo_calculo)}</td>
+                                <td>${c.sugerida ? `${nf(c.sugerida.valor, 2)}<br><small style="color:var(--text-muted)">${esc(c.sugerida.base)}</small>` : '<small style="color:var(--text-muted)">sin pares medidos</small>'}</td>
+                                <td>≈ ${nf(c.implicita.valor, 1)} ${esc(c.implicita.unidad)}<br><small style="color:var(--text-muted)">${esc(c.implicita.formula)}</small></td>
+                                <td>${c.creible
+                                    ? '<span class="seg-badge seg-ok"><i class="fa-solid fa-circle-check"></i> razonable</span>'
+                                    : `<span class="seg-badge seg-alta"><i class="fa-solid fa-triangle-exclamation"></i> no cierra</span><br><small style="color:var(--text-muted)">${esc(c.motivos.join(' · '))}</small>`}</td>
+                                <td><button class="btn-xs btn-est-ver" data-interno="${esc(x.fila.equipo.interno)}"><i class="fa-solid fa-magnifying-glass"></i> Ver equipo</button></td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>`).join('') : '<p class="modal-note">No hay estimaciones por cálculo inverso para revisar con los datos actuales.</p>';
+
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Estimaciones por cálculo inverso</h2>
+                    <p class="modal-sub">Agrupadas por cuántos datos hay detrás: arriba los que se pueden corregir hoy con confianza, al final los que apenas registran una carga. La estimación sale de <strong>litros ÷ meta</strong>: si la meta no es creíble, el número tampoco.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">${cuerpo}</div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => modal.remove()));
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    modal.querySelectorAll('.btn-est-ver').forEach(b => b.addEventListener('click', () => { modal.remove(); buscarEquipo(b.dataset.interno); }));
+}
+
 /** Ejecuta la acción propuesta para un hallazgo: abrir comparativa, ajustar metas, etc. */
 function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
     const h = generarDiagnostico(analisis.filas, analisis.totales, [], ralentiEstadosCache, noFlotaAceptadosCache).find(x => x.id === hallazgoId);
@@ -1195,12 +1597,21 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
         case 'ver_gps':
             if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('gps', internos[0] || '');
             break;
+        case 'chequear_fuera_servicio':
+            abrirChequeoFueraServicio(ultimoAnalisis, internos);
+            break;
+        case 'revisar_estimaciones':
+            abrirRevisionEstimaciones(ultimoAnalisis, hallazgoId === 'estimacion_inverosimil');
+            break;
+        case 'consejos':
+            abrirConsejos(hallazgoId);
+            break;
         default:
             if (internos.length) buscarEquipo(internos[0]);
     }
 }
 
-function buscarEquipo(interno) {
+export function buscarEquipo(interno) {
     const input = document.getElementById('search-equip');
     if (!input) return;
     input.value = interno;
@@ -1613,21 +2024,28 @@ function cardPeriodoInfo(f, m, ubi, ralentiTag) {
     const mesesTodos = [...new Set([...mesesC, ...mesesG])].sort();
     const rango = rangoMeses(mesesTodos);
 
-    // Días hábiles del período de este equipo (unión de cargas + GPS) + % de cobertura
-    const todasFechas = [...fechasC, ...fechasG].sort();
+    // Días hábiles del período de este equipo (unión de cargas + GPS) + % de cobertura —
+    // coberturaEquipo() en diagnostico.js, compartida con la vista de Seguimiento para que las
+    // dos lean siempre el mismo número.
+    //
+    // OJO: a propósito NO se recorta a 100%. Antes se recortaba con Math.min(...,100), lo que
+    // escondía el caso más grave (más cargas que días hábiles hubo) mostrándolo como "100% -
+    // cobertura ok" en verde, igual que un equipo con cobertura perfecta. Cargar combustible más
+    // veces de las que hubo días hábiles no es "cobertura completa": es una señal de datos mal
+    // cruzados (cargas duplicadas, interno reciclado, período mal recortado) — ver también el
+    // hallazgo "cargas_exceden_dias_habiles" del diagnóstico automático.
     let coberturaHtml = '';
-    if (todasFechas.length >= 2) {
-        const dh = diasHabiles(todasFechas[0], todasFechas[todasFechas.length - 1]);
-        if (dh && dh.totalCorridos > 0 && dh.dias > 0) {
-            const pct = Math.min(Math.round((m.cantidad_cargas / dh.dias) * 100), 100);
-            const cls = pct >= 40 ? 'cobertura-ok' : (pct >= 20 ? 'cobertura-media' : 'cobertura-baja');
-            coberturaHtml = `<div class="card-cobertura ${cls}" title="${dh.dias} días hábiles de ${dh.totalCorridos} corridos${dh.completo ? '' : ' (sin feriados móviles confirmados)'} · ${m.cantidad_cargas} cargas registradas → ${pct}% de cobertura">
-                <span class="cobertura-num"><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas}</span>
-                <span class="cobertura-sep">de</span>
-                <span class="cobertura-num"><i class="fa-solid fa-calendar-days"></i> ${dh.dias} días hábiles</span>
-                <span class="cobertura-pct">${pct}%</span>
-            </div>`;
-        }
+    const cob = coberturaEquipo(f);
+    if (cob) {
+        const { pct, diasHabiles: dias, totalCorridos, completo, cargas } = cob;
+        const cls = pct > 100 ? 'cobertura-exceso' : (pct >= 40 ? 'cobertura-ok' : (pct >= 20 ? 'cobertura-media' : 'cobertura-baja'));
+        const tituloExceso = pct > 100 ? ` · ⚠ más cargas que días hábiles: revisar datos duplicados o el período` : '';
+        coberturaHtml = `<div class="card-cobertura ${cls}" title="${dias} días hábiles de ${totalCorridos} corridos${completo ? '' : ' (sin feriados móviles confirmados)'} · ${cargas} cargas registradas → ${pct}% de cobertura${tituloExceso}">
+            <span class="cobertura-num"><i class="fa-solid fa-gas-pump"></i> ${cargas}</span>
+            <span class="cobertura-sep">de</span>
+            <span class="cobertura-num"><i class="fa-solid fa-calendar-days"></i> ${dias} días hábiles</span>
+            <span class="cobertura-pct">${pct > 100 ? `<i class="fa-solid fa-triangle-exclamation"></i> ${pct}%` : `${pct}%`}</span>
+        </div>`;
     }
 
     const desalineado = desalineadoInfo(f).html;
