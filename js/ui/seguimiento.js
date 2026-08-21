@@ -20,6 +20,7 @@ const TIPOS = {
     cargas_exceso: { etiqueta: 'Cargas > días hábiles', icono: 'fa-triangle-exclamation', clase: 'seg-alta' },
     estimacion_inverosimil: { etiqueta: 'Estimación no creíble', icono: 'fa-circle-question', clase: 'seg-alta' },
     meta_rara: { etiqueta: 'Meta que no cierra', icono: 'fa-bullseye', clase: 'seg-media' },
+    datos_parciales: { etiqueta: 'Datos de parte del período', icono: 'fa-calendar-day', clase: 'seg-media' },
     cobertura_baja: { etiqueta: 'Cobertura baja (<40%)', icono: 'fa-chart-simple', clase: 'seg-media' },
     ralenti: { etiqueta: 'Ralentí a revisar', icono: 'fa-hourglass-half', clase: 'seg-media' },
     ralenti_camioneta: { etiqueta: 'Ralentí camionetas', icono: 'fa-truck-pickup', clase: 'seg-media' },
@@ -36,7 +37,7 @@ function armarItems() {
 
     const HALLAZGOS_A_TIPO = {
         ralenti: 'ralenti', ralenti_camionetas: 'ralenti_camioneta', ralenti_inverosimil: 'ralenti_inverosimil',
-        estimacion_inverosimil: 'estimacion_inverosimil', metas: 'meta_rara'
+        estimacion_inverosimil: 'estimacion_inverosimil', metas: 'meta_rara', datos_parciales: 'datos_parciales'
     };
     hallazgos.forEach(h => {
         if (h.id === 'cargas_exceden_dias_habiles') {

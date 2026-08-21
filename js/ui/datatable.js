@@ -604,7 +604,11 @@ async function renderMovimientos(tipo) {
             }).join('')}
             ${accionTd}
         </tr>`;
-    }).join('') || `<tr><td colspan="${colspan}">No hay registros${estado.anio || estado.mes ? ' en el período elegido' : ''}.</td></tr>`;
+    }).join('') || `<tr><td colspan="${colspan}">${
+        estado.anio || estado.mes ? 'No hay registros en el período elegido.'
+        : estado.buscar ? `Ningún registro coincide con "${esc(estado.buscar)}".`
+        : 'No hay registros en esta tabla.'
+    }</td></tr>`;
 
     // Botón "Sin asignar" en contador (solo cargas)
     let btnHuerfanasHtml = '';
@@ -929,7 +933,7 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan, correccionExis
                 <p class="correc-titulo">${editando ? 'Editar asignación y datos extra' : 'Asignación manual y datos extra'}</p>
                 <div class="correc-manual-row">
                     <datalist id="correc-sugg-${record.id}">${listaSugg}</datalist>
-                    <label class="correc-field-label">Interno</label>
+                    <label class="correc-field-label">Interno <small style="opacity:.6">(opcional)</small></label>
                     <input type="text" class="correc-interno-input"
                         placeholder="Ej: MX66" list="correc-sugg-${record.id}" autocomplete="off" value="${esc(valInterno)}">
                 </div>
@@ -997,9 +1001,87 @@ function conectarPanelCorreccion(panelTr, record, todasCargas, equipos = []) {
         };
     }
 
+    // Las cargas que se corrigen a mano casi nunca traen centro de costo, y el criterio real que
+    // se usa es derivarlo del lugar de carga o del sector. Se propone solo, dejándolo editable:
+    // completa el caso habitual sin decidir por el usuario.
+    const ccInput = panelTr.querySelector('.correc-cc-input');
+    ['.correc-lugar-input', '.correc-sector-input'].forEach(sel => {
+        panelTr.querySelector(sel)?.addEventListener('blur', (e) => {
+            const v = (e.target.value || '').trim();
+            if (v && ccInput && !ccInput.value.trim()) {
+                ccInput.value = v.toUpperCase();
+                ccInput.classList.add('correc-cc-sugerido');
+                ccInput.title = 'Propuesto a partir del lugar de carga o el sector. Editalo si corresponde otro.';
+            }
+        });
+    });
+
+    /** Corrección sin interno: solo enriquece el registro (centro de costo, lugar, sector, obs). */
+    async function guardarSoloExtras(extra) {
+        const internoOriginalReal = (record._interno_original ?? record.interno) || '';
+        await saveCorreccionCarga({
+            huella, accion: 'enriquecer',
+            interno_correcto: '', dominio_correcto: extra.dominio_correcto,
+            centro_costo_correcto: extra.centro_costo_correcto,
+            lugar_carga_correcto: extra.lugar_carga_correcto,
+            sector_correcto: extra.sector_correcto,
+            observacion: extra.observacion,
+            interno_original: internoOriginalReal,
+            fecha: record.fecha, litros: record.litros, importe: record.importe
+        });
+        const cambios = { _corregido: true, _interno_original: internoOriginalReal };
+        if (extra.dominio_correcto) { cambios.dominio = extra.dominio_correcto; cambios.dominio_key = normalizeEquipoKey(extra.dominio_correcto); }
+        if (extra.centro_costo_correcto) cambios.centro_costo = extra.centro_costo_correcto;
+        if (extra.lugar_carga_correcto) cambios.lugar_carga = extra.lugar_carga_correcto;
+        if (extra.sector_correcto) cambios.sector = extra.sector_correcto;
+        await updateRawRecord(record.id, cambios);
+        await registrarEdicion({
+            tabla: 'carga', registroId: record.id, etiqueta: `${formatFechaAR(record.fecha)} · datos corregidos sin interno`,
+            campo: 'Centro de costo', valorAnterior: record.centro_costo || '', valorNuevo: extra.centro_costo_correcto || ''
+        });
+        await renderDataTable(estado.tipo);
+    }
+
     async function asignarA(interno, dominioHint) {
         interno = (interno || '').toUpperCase().trim();
-        if (!interno) { alert('Ingresá un interno válido (ej: MX66).'); return; }
+        const extraPrevio = leerCamposExtra();
+        // El interno dejó de ser obligatorio: hay cargas que nunca van a tener un equipo del
+        // padrón detrás (caldera, jardinería, una herramienta a combustión) y lo único que
+        // necesitan es quedar imputadas a un centro de costo. Si no hay interno pero sí hay
+        // algún dato para corregir, se guarda igual como enriquecimiento del registro.
+        if (!interno) {
+            const algo = extraPrevio.dominio_correcto || extraPrevio.centro_costo_correcto ||
+                         extraPrevio.lugar_carga_correcto || extraPrevio.sector_correcto || extraPrevio.observacion;
+            if (!algo) { alert('Completá al menos un dato: interno, dominio, centro de costo, lugar, sector u observación.'); return; }
+            await guardarSoloExtras(extraPrevio);
+            return;
+        }
+        // Interno nuevo, que no existe en el maestro: se ofrece darlo de alta ahí mismo como
+        // equipo cargado a mano. Antes había que salir a la pestaña del maestro, crearlo y
+        // volver — y en el medio se perdía el contexto de la carga que se estaba corrigiendo.
+        if (!equipoKeysSet.has(normalizeEquipoKey(interno))) {
+            const ccSugerido = extraPrevio.centro_costo_correcto || extraPrevio.sector_correcto || extraPrevio.lugar_carga_correcto || '';
+            const ok = confirm(
+                `"${interno}" no existe en el maestro de equipos.\n\n` +
+                `ACEPTAR = darlo de alta ahora como equipo cargado a mano (fuera de la flota medida)` +
+                (ccSugerido ? `, con centro de costo "${ccSugerido}"` : '') + `.\n` +
+                `CANCELAR = guardar igual la corrección sin crear el equipo.`
+            );
+            if (ok) {
+                await updateEquipo({
+                    interno,
+                    interno_key: normalizeEquipoKey(interno),
+                    dominio: extraPrevio.dominio_correcto || dominioHint || '',
+                    dominio_key: normalizeEquipoKey(extraPrevio.dominio_correcto || dominioHint || ''),
+                    denominacion: extraPrevio.sector_correcto || 'CARGADO A MANO',
+                    centro_costo: ccSugerido,
+                    fuera_de_flota: true,
+                    origen: 'alta manual desde corrección de cargas',
+                    editado_manual: ['interno', 'denominacion', 'centro_costo', 'fuera_de_flota']
+                });
+                equipoKeysSet.add(normalizeEquipoKey(interno));
+            }
+        }
         // Misma normalización que se usa para cruzar Cargas/GPS/Equipos en todos lados
         // (normalizeEquipoKey saca ceros a la izquierda: BM07 y BM7 tienen que quedar con la
         // misma clave). Antes acá se armaba la clave a mano sin esa normalización, así que una
@@ -1453,6 +1535,12 @@ async function abrirHistorialEdiciones() {
 
 function poblarFiltrosFecha(records) {
     const { anios, meses } = periodosDisponibles(records);
+    // Si el año/mes que quedó seleccionado en OTRA pestaña no existe en esta, se limpia. Si no,
+    // la tabla muestra "0 de 0 filas" por un filtro que ni siquiera figura en el desplegable
+    // (y por lo tanto no se puede sacar). Pasa siempre con las planillas genéricas, que muchas
+    // veces no traen columna de fecha: sus registros no tienen año ni mes con qué comparar.
+    if (estado.anio && !anios.includes(Number(estado.anio))) estado.anio = '';
+    if (estado.mes && !meses.includes(Number(estado.mes))) estado.mes = '';
     const a = document.getElementById('tabla-anio');
     const m = document.getElementById('tabla-mes');
     if (a) { a.innerHTML = '<option value="">Todos los años</option>' + anios.map(x => `<option value="${x}">${x}</option>`).join(''); a.value = estado.anio; }

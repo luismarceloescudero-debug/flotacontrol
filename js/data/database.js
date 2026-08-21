@@ -26,7 +26,10 @@ const DB_NAME = 'FlotaControlDB';
 // v7: estados persistentes de "consumo fuera de la flota" (vehículos con patente sin interno,
 // planta, otros) marcados como válidos así — para que dejen de aparecer en el diagnóstico sin
 // necesidad de darlos de alta en el maestro (ej. vehículos de un programa de préstamo/demo).
-const DB_VERSION = 7;
+// v8: equipos apartados del análisis a mano (ej. una unidad que pasó a San Juan y por eso deja
+// de aparecer en el Resumen de Flota de estos archivos): siguen en el maestro y en las tablas,
+// pero no generan hallazgos ni ensucian los promedios.
+const DB_VERSION = 8;
 
 let dbInstance = null;
 
@@ -94,6 +97,10 @@ export function initDB() {
             // v7 — "consumo fuera de la flota" (código/dominio, no interno de padrón) aceptado
             if (!db.objectStoreNames.contains('noFlotaAceptados')) {
                 db.createObjectStore('noFlotaAceptados', { keyPath: 'codigo' });
+            }
+            // v8 — equipos apartados del análisis a mano
+            if (!db.objectStoreNames.contains('equiposExcluidos')) {
+                db.createObjectStore('equiposExcluidos', { keyPath: 'interno' });
             }
         };
     });
@@ -499,6 +506,25 @@ export function quitarNoFlotaAceptado(codigo) {
     return writeTx(['noFlotaAceptados'], ([store]) => { store.delete(codigo); });
 }
 
+// ============================ EQUIPOS APARTADOS DEL ANÁLISIS ============================
+
+/**
+ * Equipo que sigue en el maestro y en las tablas, pero que queda afuera del diagnóstico y de los
+ * promedios porque sus datos no representan su operación real. El caso típico: una unidad que
+ * pasó a San Juan y por eso deja de reportar en el Resumen de Flota de estos archivos — no está
+ * fallando, simplemente no se la está midiendo acá, y tratarla como si trabajara cero genera
+ * alertas falsas mes tras mes. { interno, motivo, sede, fecha }
+ */
+export function getEquiposExcluidos() { return readAll('equiposExcluidos'); }
+export function setEquipoExcluido(interno, motivo = '', sede = '') {
+    return writeTx(['equiposExcluidos'], ([store]) => {
+        store.put({ interno, motivo, sede, fecha: new Date().toISOString() });
+    });
+}
+export function quitarEquipoExcluido(interno) {
+    return writeTx(['equiposExcluidos'], ([store]) => { store.delete(interno); });
+}
+
 // ============================ RECLAMOS DE REVISIÓN DE GPS ============================
 
 /**
@@ -535,7 +561,8 @@ export function actualizarReclamoGPS(id, cambios) {
 export function clearAllData() {
     return writeTx(
         ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
-         'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS', 'noFlotaAceptados'],
+         'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS', 'noFlotaAceptados',
+         'equiposExcluidos'],
         (stores) => { stores.forEach(s => s.clear()); }
     );
 }

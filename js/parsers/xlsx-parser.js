@@ -115,12 +115,18 @@ function detectarFormato(rawRows, filename) {
 }
 
 function tituloDesdeArchivo(filename) {
-    return filename
+    const limpio = filename
         .replace(/\.(xlsx|xls|csv)$/i, '')
         .replace(/[_]+/g, ' ')
         .replace(/\s*\d{4}\s*$/, '')
         .replace(/\s+/g, ' ')
-        .trim() || 'Planilla';
+        .trim();
+    // Un archivo bajado de un sistema puede llegar con un nombre opaco (un hash, un id largo
+    // sin vocales ni espacios). Usarlo como etiqueta de la pestaña deja al usuario mirando
+    // "286d98d10cb2f87e2d217e0362aad59e" sin saber qué subió: mejor un nombre honesto.
+    const opaco = !limpio
+        || (limpio.length >= 16 && !/\s/.test(limpio) && (/^[0-9a-f]+$/i.test(limpio) || !/[AEIOUaeiou]/.test(limpio)));
+    return opaco ? 'Otra planilla' : limpio;
 }
 
 /** Encabezados normalizados; las columnas repetidas se numeran para que no se pisen. */

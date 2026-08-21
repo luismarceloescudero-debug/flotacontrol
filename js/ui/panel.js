@@ -4,11 +4,11 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado } from '../data/database.js';
-import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos } from '../data/analyzer.js';
-import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD } from '../data/diagnostico.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido } from '../data/database.js';
+import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio } from '../data/analyzer.js';
+import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR } from '../data/normalizer.js';
-import { diasHabiles } from '../data/feriados.js';
+import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
 import { abrirComparativa } from './comparativa.js';
@@ -36,6 +36,7 @@ let ralentiEstadosCache = [];
 // Códigos de "consumo fuera de la flota" (vehículo con patente sin interno, planta, otros)
 // marcados como "así está bien" — mismo patrón que ralentiEstadosCache.
 let noFlotaAceptadosCache = [];
+let equiposExcluidosCache = [];
 
 // Equipos marcados para comparar desde las tarjetas (checkbox en cada card + barra flotante),
 // para no depender de buscar manualmente cada equipo dentro del modal de comparativa.
@@ -52,6 +53,34 @@ const diagAbiertos = new Map();
 // diagSeguimiento: Map<hallazgoId, Set<interno>> — equipos marcados para seguimiento en cada hallazgo.
 const diagIgnorados = new Set();
 const diagSeguimiento = new Map();
+// diagAtendidos: Map<hallazgoId, Map<interno, motivo>> — equipos sobre los que YA se tomó una
+// acción en esta sesión (se aceptó el ralentí, se generó el reclamo, se ajustó la meta, se marcó
+// para seguimiento). Salen de la lista principal del hallazgo y quedan en un desplegable aparte:
+// el diagnóstico se va vaciando a medida que se trabaja, en vez de mostrar siempre lo mismo.
+const diagAtendidos = new Map();
+// Modo compacto: esconde los párrafos explicativos de cada hallazgo. Se enciende solo la primera
+// vez que se toma una acción — la explicación sirve para entender el hallazgo, no para leerla
+// cada vez que se vuelve al panel.
+let diagCompacto = false;
+
+// Último diagnóstico calculado, para poder guardar los datos de un equipo en el momento de
+// atenderlo: acciones como "ralentí aceptable" lo sacan del hallazgo en el recálculo siguiente,
+// y sin esta copia el registro de "lo que ya atendí" quedaría vacío.
+let diagUltimosHallazgos = [];
+
+function marcarAtendido(hallazgoId, interno, motivo) {
+    if (!hallazgoId || !interno) return;
+    if (!diagAtendidos.has(hallazgoId)) diagAtendidos.set(hallazgoId, new Map());
+    const eq = (diagUltimosHallazgos.find(h => h.id === hallazgoId)?.equipos || []).find(e => e.interno === interno) || {};
+    const previo = diagAtendidos.get(hallazgoId).get(interno);
+    diagAtendidos.get(hallazgoId).set(interno, {
+        motivo,
+        denominacion: eq.denominacion || previo?.denominacion || '',
+        texto: eq.texto || previo?.texto || '',
+        sub: eq.sub || previo?.sub || ''
+    });
+    if (!diagCompacto) diagCompacto = true;
+}
 
 const MESES_CORTO = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -69,7 +98,7 @@ const periodoDeAnalisis = (analisis) => ({ desde: analisis?.totales?.periodo_des
 export function datosParaSeguimiento() {
     if (!ultimoAnalisis) return null;
     const rawRecords = datosCrudos?.rawRecords || [];
-    const hallazgos = generarDiagnostico(ultimoAnalisis.filas, ultimoAnalisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache);
+    const hallazgos = generarDiagnostico(ultimoAnalisis.filas, ultimoAnalisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache);
     return { analisis: ultimoAnalisis, rawRecords, hallazgos };
 }
 
@@ -114,6 +143,10 @@ const ACCIONES_PROPUESTAS = {
         { texto: 'Revisar las estimaciones', icono: 'fa-magnifying-glass-chart', accion: 'revisar_estimaciones' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
+    datos_parciales: [
+        { texto: 'Revisar y decidir equipo por equipo', icono: 'fa-list-check', accion: 'revisar_parciales' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
     cargas_exceden_dias_habiles: [
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
@@ -121,17 +154,25 @@ const ACCIONES_PROPUESTAS = {
         { texto: 'Comparar peores vs mejores', icono: 'fa-code-compare', accion: 'comparar_pares' }
     ],
     ralenti: [
+        { texto: 'Cómo lo resuelvo', icono: 'fa-wand-magic-sparkles', accion: 'resolver' },
         { texto: 'Ver detalle de ralentí por equipo', icono: 'fa-chart-simple', accion: 'detalle_ralenti' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     ralenti_camionetas: [
+        { texto: 'Cómo lo resuelvo', icono: 'fa-wand-magic-sparkles', accion: 'resolver' },
         { texto: 'Ver detalle de ralentí por equipo', icono: 'fa-chart-simple', accion: 'detalle_ralenti' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
+    ralenti_inverosimil: [
+        { texto: 'Cómo lo resuelvo', icono: 'fa-wand-magic-sparkles', accion: 'resolver' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
     ralenti_espera: [
+        { texto: 'Cómo lo resuelvo', icono: 'fa-wand-magic-sparkles', accion: 'resolver' },
         { texto: 'Comparar espera mes a mes', icono: 'fa-chart-line', accion: 'comparar_espera' }
     ],
     sin_medicion: [
+        { texto: 'Cómo lo resuelvo', icono: 'fa-wand-magic-sparkles', accion: 'resolver' },
         { texto: 'Cargar metas para estimar actividad', icono: 'fa-bullseye', accion: 'ajustar_sin_medicion' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
@@ -166,12 +207,13 @@ export async function renderPanel() {
     kpiEl.innerHTML = '<p style="color:var(--text-muted)">Analizando datos...</p>';
 
     try {
-        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados] = await Promise.all([
-            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados()
+        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos] = await Promise.all([
+            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos()
         ]);
         datosCrudos = { equipos, rawRecords, estimados };
         ralentiEstadosCache = ralentiEstados;
         noFlotaAceptadosCache = noFlotaAceptados;
+        equiposExcluidosCache = equiposExcluidos;
 
         const fuentes = {
             equipos: equipos.length,
@@ -616,7 +658,7 @@ function renderKPIs(el, t, fuentes) {
 function renderDiagnostico(analisis, rawRecords = []) {
     const el = document.getElementById('panel-diagnostico');
     if (!el) return;
-    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache);
+    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache);
 
     // Qué categorías de hallazgo había la vez anterior y ya no están: es la señal de que un
     // ajuste de metas o un archivo nuevo realmente cambió algo, no solo un texto que dice
@@ -626,9 +668,15 @@ function renderDiagnostico(analisis, rawRecords = []) {
     const resueltos = esPrimerCalculo ? [] : [...diagHallazgosPrevios.entries()].filter(([id]) => !idsNuevos.has(id));
     diagAbiertos.forEach((_, id) => { if (!idsNuevos.has(id)) diagAbiertos.delete(id); }); // no arrastrar estado de categorías que ya no existen
     diagHallazgosPrevios = new Map(hallazgos.map(h => [h.id, h.titulo]));
+    diagUltimosHallazgos = hallazgos;
 
     // Limpiar seguimientos de hallazgos que ya no existen
     diagSeguimiento.forEach((_, id) => { if (!idsNuevos.has(id)) diagSeguimiento.delete(id); });
+    // Ídem con los "atendidos": si el hallazgo desapareció (porque el ajuste lo resolvió de
+    // verdad), no tiene sentido seguir arrastrando la lista de lo que se atendió dentro de él.
+    diagAtendidos.forEach((_, id) => { if (!idsNuevos.has(id)) diagAtendidos.delete(id); });
+    let totalAtendidos = 0;
+    diagAtendidos.forEach(m => { totalAtendidos += m.size; });
 
     const bannerResueltos = resueltos.length ? `
         <div class="diag-resuelto">
@@ -662,8 +710,18 @@ function renderDiagnostico(analisis, rawRecords = []) {
         const acciones = ACCIONES_PROPUESTAS[h.id] || [];
         const esRalenti = esHallazgoRalenti(h.id);
         const esNoflCard = h.id.startsWith('nofl_');
+        // Los equipos ya atendidos en esta sesión salen de la lista principal: el hallazgo se va
+        // vaciando a medida que se trabaja en vez de quedar siempre igual de largo.
+        const atendidos = diagAtendidos.get(h.id) || new Map();
+        const equiposTodos = h.equipos || [];
+        const equiposPendientes = equiposTodos.filter(e => !atendidos.has(e.interno));
+        // Se listan desde el registro y no desde h.equipos: una acción como "ralentí aceptable"
+        // saca al equipo del hallazgo en el recálculo, y aun así hay que poder ver qué se hizo
+        // (y poder reabrirlo) sin tener que recordarlo de memoria.
+        const equiposAtendidos = [...atendidos.entries()].map(([interno, d]) => ({ interno, ...d }));
+        const todoAtendido = equiposPendientes.length === 0 && equiposAtendidos.length > 0;
         return `
-        <details class="diag-card ${sev[h.severidad]} ${esIgnorado ? 'diag-ignorado' : ''}" data-id="${esc(h.id)}" ${abierto ? 'open' : ''}>
+        <details class="diag-card ${sev[h.severidad]} ${esIgnorado ? 'diag-ignorado' : ''}${todoAtendido ? ' diag-todo-atendido' : ''}" data-id="${esc(h.id)}" ${abierto && !todoAtendido ? 'open' : ''}>
             <summary>
                 <i class="fa-solid ${h.icono} diag-icon"></i>
                 <div class="diag-titulo">
@@ -671,11 +729,12 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     <h3>${esc(h.titulo)}</h3>
                     ${esIgnorado ? '<span class="diag-badge-ignorado">Ignorado</span>' : ''}
                     ${seguidos.size ? `<span class="diag-badge-seguimiento"><i class="fa-solid fa-eye"></i> ${seguidos.size} en seguimiento</span>` : ''}
+                    ${atendidos.size ? `<span class="diag-badge-atendidos"><i class="fa-solid fa-check"></i> ${todoAtendido ? 'todo atendido' : `${atendidos.size} atendido${atendidos.size === 1 ? '' : 's'}`}</span>` : ''}
                 </div>
                 <i class="fa-solid fa-chevron-down diag-chevron"></i>
             </summary>
             <div class="diag-body">
-                <p>${h.detalle}</p>
+                <p class="diag-detalle">${h.detalle}</p>
                 <div class="diag-acciones-bar">
                     ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
                     ${acciones.map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
@@ -735,9 +794,9 @@ function renderDiagnostico(analisis, rawRecords = []) {
                         </ul>
                     </details>`;
                 })()}
-                ${h.equipos && h.equipos.length ? `
+                ${equiposPendientes.length ? `
                 <ul class="diag-lista">
-                    ${h.equipos.map(e => {
+                    ${equiposPendientes.map(e => {
                         const enSeg = seguidos.has(e.interno);
                         const esNofl = h.id.startsWith('nofl_');
                         const esCargasExceso = h.id === 'cargas_exceden_dias_habiles';
@@ -769,6 +828,19 @@ function renderDiagnostico(analisis, rawRecords = []) {
                         </li>`;
                     }).join('')}
                 </ul>` : ''}
+                ${equiposAtendidos.length ? `
+                <details class="diag-atendidos" ${todoAtendido ? 'open' : ''}>
+                    <summary>${equiposAtendidos.length} equipo${equiposAtendidos.length === 1 ? '' : 's'} ya atendido${equiposAtendidos.length === 1 ? '' : 's'} en esta sesión${todoAtendido ? ' — no queda nada pendiente en este hallazgo' : ''}</summary>
+                    <ul class="diag-lista">
+                        ${equiposAtendidos.map(e => `
+                        <li data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" class="diag-li-atendido">
+                            <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
+                            <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small></span>
+                            <span class="diag-atendido-motivo"><i class="fa-solid fa-check"></i> ${esc(e.motivo || 'atendido')}</span>
+                            <button class="btn-xs btn-diag-desatender" data-hallazgo="${esc(h.id)}" data-interno="${esc(e.interno)}" title="Volver a dejarlo pendiente en este hallazgo"><i class="fa-solid fa-rotate-left"></i> Reabrir</button>
+                        </li>`).join('')}
+                    </ul>
+                </details>` : ''}
             </div>
         </details>`;
     };
@@ -777,9 +849,14 @@ function renderDiagnostico(analisis, rawRecords = []) {
         ${bannerResueltos}
         <div class="diag-head">
             <h2><i class="fa-solid fa-clipboard-check"></i> Diagnóstico automático</h2>
-            <span class="diag-sub">${hallazgos.length} hallazgo${hallazgos.length === 1 ? '' : 's'} calculado${hallazgos.length === 1 ? '' : 's'} sobre los datos del período${ignorados.length ? ` · ${ignorados.length} ignorado${ignorados.length === 1 ? '' : 's'}` : ''}</span>
+            <span class="diag-sub">${hallazgos.length} hallazgo${hallazgos.length === 1 ? '' : 's'} calculado${hallazgos.length === 1 ? '' : 's'} sobre los datos del período${ignorados.length ? ` · ${ignorados.length} ignorado${ignorados.length === 1 ? '' : 's'}` : ''}${totalAtendidos ? ` · ${totalAtendidos} equipo${totalAtendidos === 1 ? '' : 's'} atendido${totalAtendidos === 1 ? '' : 's'} en esta sesión` : ''}</span>
+            <div class="diag-head-tools">
+                <button class="btn-diag-compacto ${diagCompacto ? 'active' : ''}" id="btn-diag-compacto" title="${diagCompacto ? 'Volver a mostrar la explicación de cada hallazgo' : 'Esconder los párrafos explicativos y dejar solo títulos, acciones y equipos'}">
+                    <i class="fa-solid ${diagCompacto ? 'fa-align-left' : 'fa-bars-staggered'}"></i> ${diagCompacto ? 'Mostrar explicaciones' : 'Modo compacto'}
+                </button>
+            </div>
         </div>
-        <div class="diag-grid">
+        <div class="diag-grid ${diagCompacto ? 'diag-compacto' : ''}">
             ${visibles.map((h, i) => renderHallazgoCard(h, i, false)).join('')}
         </div>
         ${ignorados.length ? `
@@ -788,7 +865,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
                 <i class="fa-solid fa-eye-slash"></i> ${ignorados.length} hallazgo${ignorados.length === 1 ? '' : 's'} ignorado${ignorados.length === 1 ? '' : 's'}
                 <button class="btn-xs btn-diag-restaurar-todos" title="Restaurar todos"><i class="fa-solid fa-eye"></i> Restaurar todos</button>
             </summary>
-            <div class="diag-grid">
+            <div class="diag-grid ${diagCompacto ? 'diag-compacto' : ''}">
                 ${ignorados.map((h, i) => renderHallazgoCard(h, i, true)).join('')}
             </div>
         </details>` : ''}`;
@@ -833,6 +910,22 @@ function renderDiagnostico(analisis, rawRecords = []) {
     });
     el.querySelectorAll('details.diag-card[data-id]').forEach(det => {
         det.addEventListener('toggle', () => diagAbiertos.set(det.dataset.id, det.open));
+    });
+
+    // Modo compacto: esconde los párrafos explicativos de todos los hallazgos de una.
+    el.querySelector('#btn-diag-compacto')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        diagCompacto = !diagCompacto;
+        renderDiagnostico(analisis, rawRecords);
+    });
+
+    // "Reabrir": devuelve a la lista principal un equipo que se había atendido.
+    el.querySelectorAll('.btn-diag-desatender').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            diagAtendidos.get(b.dataset.hallazgo)?.delete(b.dataset.interno);
+            renderDiagnostico(analisis, rawRecords);
+        });
     });
 
     // Botón "Ignorar" individual — antes de ocultar el hallazgo sin más, si tiene una acción
@@ -900,7 +993,8 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const int = b.dataset.interno;
             if (!diagSeguimiento.has(hid)) diagSeguimiento.set(hid, new Set());
             const s = diagSeguimiento.get(hid);
-            if (s.has(int)) s.delete(int); else s.add(int);
+            if (s.has(int)) { s.delete(int); diagAtendidos.get(hid)?.delete(int); }
+            else { s.add(int); marcarAtendido(hid, int, 'en seguimiento'); }
             renderDiagnostico(analisis, rawRecords);
         });
     });
@@ -961,6 +1055,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const interno = b.dataset.interno;
             await setRalentiEstado(interno, 'aceptable');
             ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'aceptable' }]);
+            marcarAtendido(b.closest('li')?.dataset.hallazgo || '', interno, 'ralentí aceptable');
             renderDiagnostico(analisis, rawRecords);
         });
     });
@@ -974,7 +1069,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const motivoSugerido = b.dataset.hallazgo === 'ralenti_inverosimil'
                 ? 'Ralentí inverosímil (posible error de datos o sensor del GPS)'
                 : 'Ralentí muy alto sostenido: pedir verificación de que el equipo GPS esté reportando bien';
-            abrirNuevoReclamoModal([b.dataset.interno], motivoSugerido, analisis, rawRecords);
+            abrirNuevoReclamoModal([b.dataset.interno], motivoSugerido, analisis, rawRecords, b.dataset.hallazgo);
         });
     });
 
@@ -991,7 +1086,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const motivoSugerido = hid === 'ralenti_inverosimil'
                 ? 'Ralentí inverosímil (posible error de datos o sensor del GPS)'
                 : 'Ralentí alto sostenido: pedir verificación de que el equipo GPS esté reportando bien';
-            abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords);
+            abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords, hid);
         });
     });
 
@@ -1083,7 +1178,7 @@ function mailtoReclamoLote(reclamos) {
  * `internos` es siempre un array: con uno solo es el caso de siempre (botón "Reclamo GPS" de
  * una fila); con varios es "Reclamo GPS (selección)" — se guarda un reclamo por equipo, todos
  * con el mismo motivo (editable acá antes de guardar), y un único mail agrupa a todos. */
-function abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords) {
+function abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords, hallazgoId = '') {
     const container = document.getElementById('modals-container');
     if (!container) return;
     const lista = Array.isArray(internos) ? internos : [internos];
@@ -1119,7 +1214,10 @@ function abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords) 
     const guardar = async (enviarMail) => {
         const motivo = modal.querySelector('.reclamo-motivo-input').value.trim() || motivoSugerido;
         const reclamos = [];
-        for (const interno of lista) reclamos.push(await crearReclamoGPS({ interno, motivo }));
+        for (const interno of lista) {
+            reclamos.push(await crearReclamoGPS({ interno, motivo }));
+            if (hallazgoId) marcarAtendido(hallazgoId, interno, 'reclamo GPS generado');
+        }
         cerrar();
         renderDiagnostico(analisis, rawRecords);
         if (enviarMail) mailtoReclamoLote(reclamos);
@@ -1280,10 +1378,10 @@ const CONSEJOS = {
         titulo: 'Metas que no cierran contra el consumo real',
         intro: 'Que el real difiera mucho de la meta tiene cuatro explicaciones posibles, y cada una se arregla distinto. Antes de pisar la meta, mirá la etiqueta de causa probable que aparece al lado de cada equipo en la lista.',
         pasos: [
-            ['Posible unidad distinta', 'La diferencia es de casi exactamente 100×. La meta está cargada en L/km y la app mide en L/100Km (o al revés). Se corrige la <em>unidad</em> en "Consumos Estimados", no el número.'],
-            ['Período fuera de servicio', 'Hay meses con actividad registrada por GPS y cero litros cargados: el promedio del período queda diluido y el consumo real da imposiblemente bajo. Usá <strong>Chequear período fuera de servicio</strong> para verlo mes a mes. Si sacando esos meses la meta cierra, la meta está bien — lo que falta es explicar esos meses (equipo en taller, motor encendido sin operar, o cargas que nunca se registraron).'],
-            ['Meta lejos de sus pares', 'La meta está a más de 3× (o menos de un tercio) de lo que miden equipos iguales. Ahí sí: reemplazala por la mediana de pares o por el consumo real desde <strong>Ajustar metas</strong>.'],
-            ['Pocos datos', 'Una o dos cargas no alcanzan para afirmar nada. Dejalos para el final y confirmá primero que no falten cargas del período sin cargar en la planilla.']
+            ['Posible unidad distinta', 'La diferencia es de casi exactamente 100×. La meta está cargada en L/km y la app mide en L/100Km (o al revés). Se corrige la <em>unidad</em> en "Consumos Estimados", no el número.', { texto: 'Ver los equipos con este síntoma', modo: 'causa:unidad' }],
+            ['Período fuera de servicio', 'Hay meses con actividad registrada por GPS y cero litros cargados: el promedio del período queda diluido y el consumo real da imposiblemente bajo. Si sacando esos meses la meta cierra, la meta está bien — lo que falta es explicar esos meses (equipo en taller, motor encendido sin operar, o cargas que nunca se registraron).', { texto: 'Ver el detalle mes a mes de estos equipos', modo: 'fuera_servicio' }],
+            ['Meta lejos de sus pares', 'La meta está a más de 3× (o menos de un tercio) de lo que miden equipos iguales. Ahí sí: reemplazala por la mediana de pares o por el consumo real.', { texto: 'Ver equipos, meta actual y valor sugerido', modo: 'metas' }],
+            ['Pocos datos', 'Una o dos cargas no alcanzan para afirmar nada. Dejalos para el final y confirmá primero que no falten cargas del período sin cargar en la planilla.', { texto: 'Ver los que apenas tienen datos', modo: 'pocos_datos' }]
         ],
         prevenir: [
             'Cargar la meta con la unidad explícita en la planilla de "Consumos Estimados" (poner "L/100Km", no "L/km") evita de una la causa más frecuente.',
@@ -1295,7 +1393,7 @@ const CONSEJOS = {
         titulo: 'Equipos sin meta cargada',
         intro: 'Sin meta no hay contra qué comparar: el equipo no aparece ni como sobreconsumo ni como ahorro, simplemente queda afuera del control.',
         pasos: [
-            ['Usar la sugerencia', 'La app propone la mediana de sus pares medidos, o su propio consumo real si no hay pares suficientes. Es un punto de partida realista, no un valor definitivo.'],
+            ['Usar la sugerencia', 'La app propone la mediana de sus pares medidos, o su propio consumo real si no hay pares suficientes. Es un punto de partida realista, no un valor definitivo.', { texto: 'Ver equipos y valor sugerido para cada uno', modo: 'metas' }],
             ['Aplicarlas en bloque', 'Desde <strong>Ajustar metas faltantes</strong> se aplican todas juntas y después se afinan las que haga falta.'],
             ['Reemplazar cuando llegue el dato oficial', 'La meta sugerida queda marcada como "estimada": cuando el fabricante o el área técnica dé el valor real, se pisa y la tarjeta pasa a decir "ajustada".']
         ],
@@ -1308,9 +1406,9 @@ const CONSEJOS = {
         titulo: 'Estimaciones por cálculo inverso que no son creíbles',
         intro: 'Estos equipos no tienen GPS. Su actividad se estima dividiendo los litros cargados por la meta. Si la meta está mal, el resultado no es aproximado: es inventado — y se muestra con cara de dato medido ("≈ 1,6 hs"), que es lo peligroso.',
         pasos: [
-            ['Mirar la meta, no la estimación', 'El número raro es la consecuencia, no la causa. Entrá al equipo desde <strong>Investigar estas estimaciones</strong> y comparalo contra la mediana de sus pares.'],
+            ['Mirar la meta, no la estimación', 'El número raro es la consecuencia, no la causa: hay que comparar la meta contra la mediana de sus pares.', { texto: 'Ver equipos, meta actual y valor sugerido', modo: 'metas' }],
             ['Usar la sugerencia de la tarjeta', 'En la ficha del equipo, el botón <strong>Usar sugerencia</strong> ya trae la mediana de sus pares medidos. Guardar con ese valor recalcula la estimación al instante.'],
-            ['Chequear los litros también', 'Si la meta ya es razonable y el número sigue sin cerrar, el problema está del otro lado: una carga con litros mal tipeados (un cero de más) infla todo. Se ve en la tabla de cargas.'],
+            ['Chequear los litros también', 'Si la meta ya es razonable y el número sigue sin cerrar, el problema está del otro lado: una carga con litros mal tipeados (un cero de más) infla todo.', { texto: 'Ver las cargas de estos equipos', modo: 'cargas_equipos' }],
             ['Empezar por arriba', 'La lista viene ordenada de más a menos datos: los primeros se pueden corregir hoy con confianza, los últimos apenas registran una carga y conviene esperar.']
         ],
         prevenir: [
@@ -1335,7 +1433,7 @@ const CONSEJOS = {
         titulo: 'Cargan combustible sin ningún dato de actividad',
         intro: 'No tienen km ni horas del Resumen de Flota y tampoco meta cargada: no hay forma de calcular ni de estimar nada. Son gasto sin control.',
         pasos: [
-            ['Cargarles una meta', 'Es el primer paso: con meta, al menos se puede estimar la actividad por cálculo inverso.'],
+            ['Cargarles una meta', 'Es el primer paso: con meta, al menos se puede estimar la actividad por cálculo inverso.', { texto: 'Ver equipos y valor sugerido para cada uno', modo: 'metas' }],
             ['Verificar si deberían tener GPS', 'Si el equipo tiene GPS instalado pero no aparece en el Resumen de Flota, es un problema del equipo GPS y corresponde un reclamo, no una meta.']
         ],
         prevenir: [
@@ -1349,7 +1447,7 @@ const CONSEJOS = {
         pasos: [
             ['Aceptar lo que tiene explicación', 'Si un equipo tiene una razón operativa para estar encendido sin moverse, marcalo como aceptable: sale del hallazgo de ahora en más sin borrar el dato.'],
             ['Marcar en bloque', 'Los que están en la media para abajo vienen tildados por defecto: se aceptan todos juntos con <strong>Marcar aceptable (selección)</strong>.'],
-            ['Reclamar el GPS cuando el número es imposible', 'Más horas de ralentí que horas del período, o ralentí sin ninguna hora de trabajo, es una falla de medición: usá <strong>Reclamo GPS</strong>.']
+            ['Reclamar el GPS cuando el número es imposible', 'Más horas de ralentí que horas del período, o ralentí sin ninguna hora de trabajo, es una falla de medición.', { texto: 'Ver los equipos de este hallazgo', modo: 'equipos' }]
         ],
         prevenir: [
             'Volver a mirar los aceptados cada tanto: una excepción que se vuelve permanente deja de ser excepción.',
@@ -1360,16 +1458,31 @@ const CONSEJOS = {
         titulo: 'Más cargas que días hábiles',
         intro: 'Un equipo no puede cargar combustible más veces que los días laborales que tuvo el mes. Cuando pasa, casi nunca es que trabajó fin de semana: suele ser otra cosa.',
         pasos: [
-            ['Cargas duplicadas', 'La misma carga cargada dos veces en la planilla, o un archivo del mismo mes subido dos veces. Es la causa más común.'],
-            ['Interno mal asignado', 'Cargas de otro equipo imputadas a este por error de tipeo en el interno. Se ve mirando los importes y los sectores.'],
-            ['Trabajo real fuera de días hábiles', 'Guardias, obra con plazo, o un feriado que en esta empresa se trabajó. Es legítimo, pero conviene confirmarlo.'],
-            ['Ir a la tabla', 'El botón <strong>Ver cargas de ese mes</strong> te deja la tabla filtrada justo en el período del problema.']
+            ['Cargas duplicadas', 'La misma carga cargada dos veces en la planilla, o un archivo del mismo mes subido dos veces. Es la causa más común.', { texto: 'Ver las cargas repetidas detectadas', modo: 'duplicadas' }],
+            ['Interno mal asignado', 'Cargas de otro equipo imputadas a este por error de tipeo en el interno. Se ve mirando los importes y los sectores.', { texto: 'Ver las cargas agrupadas por sector y chofer', modo: 'sectores' }],
+            ['Trabajo real fuera de días hábiles', 'Guardias, obra con plazo, o un feriado que en esta empresa se trabajó. Es legítimo, pero conviene confirmarlo.', { texto: 'Ver las cargas de sábado, domingo o feriado', modo: 'no_habiles' }],
+            ['Ir a la tabla', 'Todas las cargas del equipo en el mes del problema, en la tabla de Base de Datos.', { texto: 'Abrir la tabla filtrada por ese mes', modo: 'tabla_mes' }]
         ],
         prevenir: [
             'Antes de subir un archivo de cargas, verificar que no se haya subido ya ese período: la app limpia los movimientos al iniciar, pero no dentro de la misma sesión.',
             'Normalizar los internos en la planilla de cargas (misma nomenclatura que el maestro) elimina la mayoría de las imputaciones cruzadas.'
         ]
     }
+};
+CONSEJOS.datos_parciales = {
+    titulo: 'Equipos con datos de solo una parte del período',
+    intro: 'Aparecen en las planillas de todos los meses pero solo tienen actividad real en uno o dos. Las filas del GPS en cero (0 km, 0 hs, 0 litros) ya no se cuentan como "trabajó cero" sino como "ese mes no hay dato" — no estiran el período ni bajan el promedio. Lo que queda es decidir por qué falta el resto.',
+    pasos: [
+        ['Pasó a la otra provincia', 'El caso más común: el equipo se fue a San Juan y por eso dejó de aparecer en el Resumen de Flota de estos archivos. No está fallando, no se lo está midiendo acá. Se marca la provincia en el maestro y se lo aparta del análisis.', { texto: 'Revisar y decidir equipo por equipo', modo: 'parciales' }],
+        ['Salió de servicio o le sacaron el GPS', 'Baja, venta, reparación larga, alquiler a un tercero, o el equipo GPS desinstalado. Mismo tratamiento: apartarlo del análisis con el motivo escrito, para que dentro de tres meses se sepa por qué está afuera.', { texto: 'Revisar y decidir equipo por equipo', modo: 'parciales' }],
+        ['Realmente trabajó solo esos meses', 'Equipo estacional o contratado para una obra puntual. Ahí los datos están bien: se marca como correcto y deja de figurar como pendiente.', { texto: 'Revisar y decidir equipo por equipo', modo: 'parciales' }],
+        ['Falta subir un archivo', 'Antes de apartar nada, confirmá que estén cargadas las planillas de todos los meses del período: si falta un Resumen de Flota, medio parque va a aparecer acá.', { texto: 'Ver sus filas de GPS', modo: 'gps_equipos' }]
+    ],
+    prevenir: [
+        'Cuando un equipo cambia de provincia, actualizar la UBICACIÓN en el maestro de Equipos en ese momento: es el dato que separa "no reporta" de "no anda".',
+        'Escribir siempre el motivo al apartar un equipo. Un equipo afuera del análisis sin motivo es peor que uno adentro con datos flojos.',
+        'Revisar la lista de apartados cada tanto: si el equipo volvió a reportar, hay que volver a incluirlo.'
+    ]
 };
 CONSEJOS.ralenti_camionetas = CONSEJOS.ralenti;
 CONSEJOS.ralenti_inverosimil = CONSEJOS.ralenti;
@@ -1384,9 +1497,12 @@ function abrirConsejos(hallazgoId) {
 
     const cuerpo = c ? `
         <p class="modal-note" style="margin-bottom:1rem">${c.intro}</p>
-        <h4 class="consejo-sub"><i class="fa-solid fa-list-check"></i> Qué hacer con esto</h4>
+        <h4 class="consejo-sub"><i class="fa-solid fa-list-check"></i> Qué hacer con esto — tocá un paso para ir a los registros</h4>
         <ol class="consejo-lista">
-            ${c.pasos.map(([t, d]) => `<li><strong>${esc(t)}</strong><span>${d}</span></li>`).join('')}
+            ${c.pasos.map(([t, d, accion]) => `<li class="${accion ? 'consejo-accionable' : ''}" ${accion ? `data-modo="${esc(accion.modo)}"` : ''}>
+                <strong>${esc(t)}</strong><span>${d}</span>
+                ${accion ? `<span class="consejo-cta"><i class="fa-solid fa-arrow-right-long"></i> ${esc(accion.texto)}</span>` : ''}
+            </li>`).join('')}
         </ol>
         <h4 class="consejo-sub"><i class="fa-solid fa-shield-halved"></i> Para que no vuelva a aparecer</h4>
         <ul class="consejo-prevenir">
@@ -1408,6 +1524,15 @@ function abrirConsejos(hallazgoId) {
     const modal = document.getElementById(modalId);
     modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => modal.remove()));
     modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    // Cada paso con acción lleva a los registros concretos que lo provocan, con varias formas
+    // de corregirlo — el consejo deja de ser un texto y pasa a ser el punto de entrada.
+    modal.querySelectorAll('.consejo-accionable').forEach(li => {
+        li.addEventListener('click', () => {
+            const modo = li.dataset.modo;
+            modal.remove();
+            abrirRegistrosConsejo(modo, hallazgoId);
+        });
+    });
 }
 
 /**
@@ -1562,9 +1687,457 @@ function abrirRevisionEstimaciones(analisis, soloDudosas) {
     modal.querySelectorAll('.btn-est-ver').forEach(b => b.addEventListener('click', () => { modal.remove(); buscarEquipo(b.dataset.interno); }));
 }
 
+
+/**
+ * Registros concretos detrás de un consejo. Cada paso de la guía deja de ser un texto y pasa a
+ * ser una puerta: abre las filas reales que lo provocan (las cargas repetidas, las de fin de
+ * semana, los equipos con la meta lejos de sus pares) y ofrece varias formas de corregirlo —
+ * abrir la tabla filtrada, entrar al equipo, mirar el maestro o dejarlo marcado como atendido.
+ */
+function abrirRegistrosConsejo(modo, hallazgoId) {
+    const container = document.getElementById('modals-container');
+    const analisis = ultimoAnalisis;
+    if (!container || !analisis) return;
+
+    // El modo "fuera_servicio" ya tiene su propia pantalla mes a mes: no se duplica acá.
+    const h = generarDiagnostico(analisis.filas, analisis.totales, datosCrudos?.rawRecords || [], ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache)
+        .find(x => x.id === hallazgoId);
+    const equiposH = (h && h.equipos) || [];
+    if (modo === 'fuera_servicio') { abrirChequeoFueraServicio(analisis, equiposH.map(e => e.interno)); return; }
+    if (modo === 'parciales') { abrirRevisionParciales(analisis, datosCrudos?.rawRecords || []); return; }
+    if (modo === 'gps_equipos') {
+        const e = equiposH[0];
+        if (e && typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('gps', e.interno);
+        return;
+    }
+    if (modo === 'tabla_mes') {
+        const e = equiposH.find(x => x.anio && x.mes) || equiposH[0];
+        if (e && typeof window.abrirTablaConBusqueda === 'function') {
+            window.abrirTablaConBusqueda('carga', e.interno, 'id', e.anio ? { anio: e.anio, mes: e.mes } : null);
+        }
+        return;
+    }
+
+    const filaDe = (interno) => analisis.filas.find(f => f.equipo.interno === interno);
+    const periodoDe = (fecha) => {
+        const [a, m] = String(fecha || '').split('-');
+        return { anio: a, mes: String(Number(m)) };
+    };
+
+    let titulo = 'Registros a corregir';
+    let intro = '';
+    let grupos = [];
+
+    if (modo === 'duplicadas') {
+        titulo = 'Cargas repetidas';
+        intro = 'Se agrupan las cargas del mismo equipo con la <strong>misma fecha y los mismos litros</strong>. Dos filas iguales casi siempre son la misma carga cargada dos veces, o un archivo del mes subido dos veces. Confirmá contra el comprobante antes de borrar nada en la planilla.';
+        equiposH.forEach(eq => {
+            const f = filaDe(eq.interno);
+            if (!f) return;
+            const porClave = new Map();
+            (f.cargas || []).forEach(c => {
+                const k = `${c.fecha}|${Math.round((parseFloat(c.litros) || 0) * 10)}`;
+                if (!porClave.has(k)) porClave.set(k, []);
+                porClave.get(k).push(c);
+            });
+            const dups = [...porClave.values()].filter(v => v.length > 1);
+            if (dups.length) grupos.push({ interno: eq.interno, denominacion: eq.denominacion, sub: `${dups.length} grupo${dups.length === 1 ? '' : 's'} de cargas idénticas`, filas: dups.flat(), marcarDup: true });
+        });
+    } else if (modo === 'no_habiles') {
+        titulo = 'Cargas fuera de días hábiles';
+        intro = 'Cargas registradas en <strong>sábado, domingo o feriado</strong>. Si el equipo realmente trabajó (guardia, obra con plazo), está bien y el hallazgo se puede ignorar; si no, la fecha de la carga está mal tipeada.';
+        equiposH.forEach(eq => {
+            const f = filaDe(eq.interno);
+            if (!f) return;
+            const raras = (f.cargas || []).filter(c => c.fecha && !esDiaHabil(c.fecha));
+            if (raras.length) grupos.push({ interno: eq.interno, denominacion: eq.denominacion, sub: `${raras.length} carga${raras.length === 1 ? '' : 's'} en fin de semana o feriado`, filas: raras, marcarNoHabil: true });
+        });
+    } else if (modo === 'sectores') {
+        titulo = 'Cargas por sector y chofer';
+        intro = 'Si a un equipo le aparecen cargas de sectores o choferes que no son los suyos, lo más probable es que sean cargas de <strong>otro equipo imputadas acá por un error de tipeo en el interno</strong>. Comparalo contra el maestro.';
+        equiposH.forEach(eq => {
+            const f = filaDe(eq.interno);
+            if (!f || !(f.cargas || []).length) return;
+            grupos.push({ interno: eq.interno, denominacion: eq.denominacion, sub: `${f.cargas.length} cargas en el período`, filas: [...f.cargas].sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))), verMaestro: true });
+        });
+    } else if (modo === 'cargas_equipos') {
+        titulo = 'Cargas de estos equipos';
+        intro = 'Todas las cargas registradas, para buscar litros mal tipeados: un cero de más en una sola fila alcanza para desarmar el promedio de todo el período.';
+        equiposH.forEach(eq => {
+            const f = filaDe(eq.interno);
+            if (!f || !(f.cargas || []).length) return;
+            const litros = f.cargas.map(c => parseFloat(c.litros) || 0);
+            const max = Math.max(...litros);
+            const med = litros.slice().sort((a, b) => a - b)[Math.floor(litros.length / 2)];
+            grupos.push({ interno: eq.interno, denominacion: eq.denominacion, sub: `${f.cargas.length} cargas · mayor ${nf(max, 1)} L · típica ${nf(med, 1)} L`, filas: [...f.cargas].sort((a, b) => (parseFloat(b.litros) || 0) - (parseFloat(a.litros) || 0)) });
+        });
+    } else if (modo === 'metas' || modo === 'pocos_datos' || modo === 'equipos' || modo.startsWith('causa:')) {
+        const causaFiltro = modo.startsWith('causa:') ? modo.split(':')[1] : null;
+        titulo = modo === 'pocos_datos' ? 'Equipos con pocos datos'
+            : causaFiltro ? 'Equipos con ese síntoma'
+            : modo === 'equipos' ? 'Equipos de este hallazgo' : 'Metas: valor actual y sugerido';
+        intro = modo === 'pocos_datos'
+            ? 'Con una o dos cargas cualquier promedio es frágil. Antes de tocar la meta, confirmá que no falten cargas del período sin registrar en la planilla.'
+            : causaFiltro ? 'Los equipos del hallazgo cuya causa probable coincide con ese síntoma.'
+            : 'Para cada equipo: qué meta tiene cargada hoy y qué valor sugiere la app a partir de sus pares medidos o de su propio consumo real. El cambio se aplica desde la ficha del equipo.';
+        const equipos = equiposH.filter(e => {
+            if (causaFiltro) return e.causa === causaFiltro;
+            if (modo === 'pocos_datos') return e.completitud === 'bajo' || e.causa === 'pocos_datos';
+            return true;
+        });
+        grupos = [{ interno: null, filas: [], equipos }];
+    }
+
+    const modalId = 'modal-registros';
+    document.getElementById(modalId)?.remove();
+
+    const formasDeCorregir = (interno, periodo) => `
+        <div class="reg-formas">
+            <button class="btn-xs btn-reg-tabla" data-interno="${esc(interno)}" ${periodo ? `data-anio="${esc(periodo.anio)}" data-mes="${esc(periodo.mes)}"` : ''}><i class="fa-solid fa-table-list"></i> ${periodo ? 'Abrir la tabla en ese mes' : 'Ver sus cargas en la tabla'}</button>
+            <button class="btn-xs btn-reg-equipo" data-interno="${esc(interno)}"><i class="fa-solid fa-id-card"></i> Abrir la ficha del equipo</button>
+            <button class="btn-xs btn-reg-maestro" data-interno="${esc(interno)}"><i class="fa-solid fa-list"></i> Ver en el maestro</button>
+            <button class="btn-xs btn-reg-atendido" data-interno="${esc(interno)}"><i class="fa-solid fa-check"></i> Marcar como atendido</button>
+        </div>`;
+
+    let cuerpo;
+    if (modo === 'metas' || modo === 'pocos_datos' || modo === 'equipos' || modo.startsWith('causa:')) {
+        const equipos = grupos[0] ? grupos[0].equipos : [];
+        cuerpo = equipos.length ? equipos.map(e => {
+            const f = filaDe(e.interno);
+            const sug = f ? (sugerirMeta(f, analisis.filas) || metaDesdeConsumoRealLocal(f)) : null;
+            const metaAct = f && f.confirmed && f.confirmed.valor ? `${nf(f.confirmed.valor, 2)} ${esc(f.metrics.tipo_calculo)}` : 'sin meta cargada';
+            return `<div class="reg-grupo">
+                <h4 class="reg-grupo-head"><strong style="color:var(--accent-cyan)">${esc(e.interno)}</strong> <small>${esc(e.denominacion || '')}</small></h4>
+                <p class="reg-nota">${esc(e.texto || '')} — ${esc(e.sub || '')}</p>
+                <p class="reg-nota">Meta cargada hoy: <strong>${metaAct}</strong>${sug ? ` · sugerido: <strong>${nf(sug.valor, 2)}</strong> <small>(${esc(sug.base)})</small>` : ''}</p>
+                ${formasDeCorregir(e.interno, null)}
+            </div>`;
+        }).join('') : '<p class="reg-vacio">No quedan equipos en este hallazgo con ese síntoma: puede que ya se hayan corregido.</p>';
+    } else {
+        cuerpo = grupos.length ? grupos.map(g => `
+            <div class="reg-grupo">
+                <h4 class="reg-grupo-head"><strong style="color:var(--accent-cyan)">${esc(g.interno)}</strong> <small>${esc(g.denominacion || '')} · ${esc(g.sub || '')}</small></h4>
+                <div class="table-responsive">
+                    <table class="data-table reg-tabla">
+                        <thead><tr><th>Fecha</th><th>Litros</th><th>Importe</th><th>Sector</th><th>Chofer</th><th>Lugar</th><th></th></tr></thead>
+                        <tbody>
+                            ${g.filas.slice(0, 40).map(c => {
+                                const noHabil = c.fecha && !esDiaHabil(c.fecha);
+                                const marca = g.marcarNoHabil && noHabil ? (esFeriado(c.fecha) ? 'feriado' : 'fin de semana') : '';
+                                return `<tr class="${g.marcarDup ? 'reg-dup' : ''}">
+                                    <td>${esc(c.fecha || '—')}</td>
+                                    <td>${nf(parseFloat(c.litros) || 0, 1)}</td>
+                                    <td>${c.importe ? '$' + nf(parseFloat(c.importe) || 0) : '—'}</td>
+                                    <td>${esc(c.sector || '—')}</td>
+                                    <td>${esc(c.chofer || '—')}</td>
+                                    <td>${esc(c.lugar_carga || '—')}</td>
+                                    <td>${marca ? `<span class="fs-flag">${esc(marca)}</span>` : ''}</td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+                ${g.filas.length > 40 ? `<p class="reg-nota">Se muestran las primeras 40 de ${g.filas.length}. El resto está en la tabla de cargas.</p>` : ''}
+                ${formasDeCorregir(g.interno, g.filas[0] ? periodoDe(g.filas[0].fecha) : null)}
+            </div>`).join('')
+        : `<p class="reg-vacio">No se encontraron registros con ese patrón en los equipos de este hallazgo. Eso ya es información: descarta esa causa y conviene mirar las otras del listado de consejos.</p>`;
+    }
+
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>${esc(titulo)}</h2>
+                    <p class="modal-sub">Registros concretos y varias formas de corregirlos.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    ${intro ? `<p class="reg-intro">${intro}</p>` : ''}
+                    ${cuerpo}
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+    modal.querySelectorAll('.btn-reg-tabla').forEach(b => b.addEventListener('click', () => {
+        cerrar();
+        const { interno, anio, mes } = b.dataset;
+        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', interno, 'id', anio ? { anio, mes } : null);
+    }));
+    modal.querySelectorAll('.btn-reg-equipo').forEach(b => b.addEventListener('click', () => { cerrar(); buscarEquipo(b.dataset.interno); }));
+    modal.querySelectorAll('.btn-reg-maestro').forEach(b => b.addEventListener('click', () => {
+        cerrar();
+        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('maestro', b.dataset.interno);
+    }));
+    modal.querySelectorAll('.btn-reg-atendido').forEach(b => b.addEventListener('click', () => {
+        marcarAtendido(hallazgoId, b.dataset.interno, 'revisado desde consejos');
+        b.innerHTML = '<i class="fa-solid fa-check-double"></i> Atendido';
+        b.disabled = true;
+        renderDiagnostico(analisis, datosCrudos?.rawRecords || []);
+    }));
+}
+
+/** Meta implícita a partir del propio consumo real, sin depender de pares. */
+function metaDesdeConsumoRealLocal(fila) {
+    const m = fila.metrics;
+    if (!m.consumo_real || m.consumo_real <= 0) return null;
+    return { valor: Math.round(m.consumo_real * 100) / 100, base: `consumo real medido sobre ${m.cantidad_cargas} cargas` };
+}
+
+
+/**
+ * "Revisar y decidir": la pantalla donde se resuelve, de una vez, qué pasa con un equipo que
+ * tiene datos de solo una parte del período. Muestra mes a mes qué llegó (y qué llegó en cero,
+ * que ya no se cuenta) y ofrece las tres salidas reales: era de la otra provincia y hay que
+ * marcarlo como tal, hay que apartarlo del análisis por otro motivo, o está bien así.
+ */
+function abrirRevisionParciales(analisis, rawRecords) {
+    const container = document.getElementById('modals-container');
+    if (!container || !analisis) return;
+    const modalId = 'modal-parciales';
+    document.getElementById(modalId)?.remove();
+
+    const periodo = { desde: analisis.totales.periodo_desde, hasta: analisis.totales.periodo_hasta };
+    const items = (analisis.filas || [])
+        .filter(f => f.metrics.cantidad_cargas > 0 || f.metrics.cantidad_gps > 0)
+        .map(f => ({ fila: f, cob: coberturaMensual(f, periodo) }))
+        .filter(x => x.cob.parcial)
+        .sort((a, b) => a.cob.conDatos - b.cob.conDatos || b.fila.metrics.total_litros - a.fila.metrics.total_litros);
+
+    // Cuántas filas en cero traía cada equipo: es la prueba de que el equipo figuraba en la
+    // planilla pero sin nada adentro, que es distinto de no figurar.
+    const vaciosPorInterno = new Map();
+    (rawRecords || []).forEach(r => {
+        if (!registroVacio(r)) return;
+        const k = r.interno_key || r.interno;
+        if (!k) return;
+        vaciosPorInterno.set(k, (vaciosPorInterno.get(k) || 0) + 1);
+    });
+
+    const excluidosMap = new Map(equiposExcluidosCache.map(e => [e.interno, e]));
+
+    const bloques = items.map(({ fila, cob }) => {
+        const interno = fila.equipo.interno;
+        const ex = excluidosMap.get(interno);
+        const meses = evolucionMensual(fila);
+        const esHora = fila.metrics.tipo_calculo === 'L/Hora';
+        const vacios = vaciosPorInterno.get(interno) || vaciosPorInterno.get(fila.equipo.interno_key) || 0;
+        return `
+        <div class="par-bloque ${ex ? 'par-excluido' : ''}" data-interno="${esc(interno)}">
+            <div class="par-head">
+                <strong>${esc(interno)}</strong> <small>${esc(fila.equipo.denominacion || '')}</small>
+                <span class="fs-chip">${cob.conDatos} de ${cob.mesesPeriodo} meses con datos</span>
+                ${fila.equipo.provincia ? `<span class="fs-chip">padrón: ${esc(fila.equipo.provincia)}</span>` : '<span class="fs-chip">sin provincia en el padrón</span>'}
+                ${vacios ? `<span class="fs-chip fs-chip-causa">${vacios} fila${vacios === 1 ? '' : 's'} en cero descartada${vacios === 1 ? '' : 's'}</span>` : ''}
+                ${ex ? `<span class="par-chip-excluido"><i class="fa-solid fa-ban"></i> apartado: ${esc(ex.motivo || 'sin motivo')}</span>` : ''}
+            </div>
+            <div class="table-responsive">
+                <table class="data-table fs-tabla">
+                    <thead><tr><th>Mes</th><th>Litros</th><th>${esHora ? 'hs trabajadas' : 'km'}</th><th>hs parado</th><th>Cargas</th><th></th></tr></thead>
+                    <tbody>
+                        ${meses.length ? meses.map(m => `<tr>
+                            <td>${esc(m.periodo)}</td>
+                            <td>${nf(m.litros, 1)}</td>
+                            <td>${nf(m.factor, 1)}</td>
+                            <td>${nf(m.parado || 0, 1)}</td>
+                            <td>${nf(m.cargas)}</td>
+                            <td>${m.litros <= 0 && m.factor <= 0 ? `<span class="fs-flag">${(m.parado || 0) > 0 ? 'el GPS reportó: quieto' : 'sin dato'}</span>` : ''}</td>
+                        </tr>`).join('') : '<tr><td colspan="6">Sin meses con datos útiles.</td></tr>'}
+                    </tbody>
+                </table>
+            </div>
+            <p class="reg-nota">${vacios
+                ? `Figuraba en las planillas de los otros meses, pero esas filas venían en cero (0 km, 0 hs): eso no es "trabajó cero", es "no hay dato de ese mes". Ya no se cuentan.`
+                : `En los meses que faltan directamente no aparece en las planillas.`}</p>
+            <div class="par-acciones">
+                ${ex
+                    ? `<button class="btn-xs btn-par-reactivar" data-interno="${esc(interno)}"><i class="fa-solid fa-rotate-left"></i> Volver a incluirlo en el análisis</button>`
+                    : `<button class="btn-xs btn-par-sanjuan" data-interno="${esc(interno)}" title="Marca la provincia del equipo como SAN JUAN en el maestro y lo aparta del análisis: no está fallando, no se lo está midiendo en estos archivos"><i class="fa-solid fa-location-dot"></i> Es de San Juan: marcar y apartar</button>
+                       <button class="btn-xs btn-par-excluir" data-interno="${esc(interno)}" title="Apartarlo del análisis por otro motivo (baja, sin GPS, alquilado…)"><i class="fa-solid fa-ban"></i> Apartar por otro motivo</button>`}
+                <button class="btn-xs btn-par-equipo" data-interno="${esc(interno)}"><i class="fa-solid fa-id-card"></i> Ver la ficha</button>
+                <button class="btn-xs btn-par-gps" data-interno="${esc(interno)}"><i class="fa-solid fa-satellite-dish"></i> Ver sus filas de GPS</button>
+                <button class="btn-xs btn-par-ok" data-interno="${esc(interno)}" title="Los datos son correctos: el equipo trabajó solo esos meses"><i class="fa-solid fa-check"></i> Está bien así</button>
+            </div>
+        </div>`;
+    }).join('');
+
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Equipos con datos de solo una parte del período</h2>
+                    <p class="modal-sub">Las filas del GPS en cero ya se descartan del cálculo. Lo que falta decidir es si el equipo dejó de reportar acá o si realmente trabajó solo esos meses.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    ${excluidosMap.size ? `<p class="reg-nota" style="margin-bottom:0.8rem">${excluidosMap.size} equipo${excluidosMap.size === 1 ? '' : 's'} ya apartado${excluidosMap.size === 1 ? '' : 's'} del análisis: ${[...excluidosMap.keys()].map(esc).join(', ')}.</p>` : ''}
+                    ${bloques || '<p class="reg-vacio">Ningún equipo tiene datos parciales con el período cargado.</p>'}
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    const refrescar = async () => { equiposExcluidosCache = await getEquiposExcluidos(); cerrar(); await renderPanel(); abrirRevisionParciales(ultimoAnalisis, datosCrudos?.rawRecords || []); };
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    modal.querySelectorAll('.btn-par-sanjuan').forEach(b => b.addEventListener('click', async () => {
+        const interno = b.dataset.interno;
+        const fila = analisis.filas.find(f => f.equipo.interno === interno);
+        if (fila) {
+            const eq = { ...fila.equipo, ubicacion: 'SAN JUAN' };
+            eq.editado_manual = [...new Set([...(eq.editado_manual || []), 'ubicacion'])];
+            await updateEquipo(eq);
+        }
+        await setEquipoExcluido(interno, 'opera en San Juan: no reporta en estos archivos', 'SAN JUAN');
+        await refrescar();
+    }));
+    modal.querySelectorAll('.btn-par-excluir').forEach(b => b.addEventListener('click', async () => {
+        const motivo = prompt('¿Por qué se aparta este equipo del análisis?\n(ej. de baja, alquilado, sin GPS instalado, en reparación)', 'sin GPS reportando en estos archivos');
+        if (motivo === null) return;
+        await setEquipoExcluido(b.dataset.interno, motivo.trim() || 'apartado a mano', '');
+        await refrescar();
+    }));
+    modal.querySelectorAll('.btn-par-reactivar').forEach(b => b.addEventListener('click', async () => {
+        await quitarEquipoExcluido(b.dataset.interno);
+        await refrescar();
+    }));
+    modal.querySelectorAll('.btn-par-ok').forEach(b => b.addEventListener('click', () => {
+        marcarAtendido('datos_parciales', b.dataset.interno, 'datos correctos');
+        b.innerHTML = '<i class="fa-solid fa-check-double"></i> Marcado';
+        b.disabled = true;
+        renderDiagnostico(analisis, rawRecords);
+    }));
+    modal.querySelectorAll('.btn-par-equipo').forEach(b => b.addEventListener('click', () => { cerrar(); buscarEquipo(b.dataset.interno); }));
+    modal.querySelectorAll('.btn-par-gps').forEach(b => b.addEventListener('click', () => {
+        cerrar();
+        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('gps', b.dataset.interno);
+    }));
+}
+
+
+/**
+ * "¿Cómo lo resuelvo?": para cada equipo del hallazgo, qué escenario es y qué corresponde hacer,
+ * con la acción ya elegida. Se puede aplicar de a uno, o todo junto con "Aplicar lo sugerido"
+ * — que es la corrección masiva que faltaba: en vez de un botón que hace lo mismo con todos,
+ * aplica a cada equipo LO QUE LE CORRESPONDE (a uno aceptable, a otro reclamo, a otro seguimiento).
+ */
+function abrirResolucion(hallazgoId, analisis, rawRecords) {
+    const container = document.getElementById('modals-container');
+    if (!container || !analisis) return;
+    const modalId = 'modal-resolucion';
+    document.getElementById(modalId)?.remove();
+
+    const h = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache)
+        .find(x => x.id === hallazgoId);
+    if (!h) return;
+
+    // Se resuelve sobre TODOS los equipos del hallazgo, no solo los 10 que la tarjeta lista:
+    // "aplicar lo sugerido" sobre una décima parte del problema no es una corrección masiva.
+    const porInterno = new Map((h.equipos || []).map(e => [e.interno, e]));
+    const internos = (h.internos_todos && h.internos_todos.length) ? h.internos_todos : [...porInterno.keys()];
+    const filas = internos.map(interno => {
+        const f = analisis.filas.find(x => x.equipo.interno === interno);
+        if (!f) return null;
+        const eq = porInterno.get(interno) || { interno, denominacion: f.equipo.denominacion };
+        return { eq, fila: f, res: resolverEquipo(hallazgoId, f, analisis.filas) };
+    }).filter(x => x && x.res);
+
+    const ICONO = { aceptar: 'fa-check', reclamo: 'fa-satellite-dish', seguimiento: 'fa-eye', meta: 'fa-bullseye', excluir: 'fa-ban', tabla: 'fa-table-list' };
+    const porAccion = new Map();
+    filas.forEach(x => porAccion.set(x.res.accion, (porAccion.get(x.res.accion) || 0) + 1));
+    const resumen = [...porAccion.entries()].map(([a, n]) => `${n} → ${({ aceptar: 'marcar aceptable', reclamo: 'reclamo GPS', seguimiento: 'seguimiento', meta: 'cargar meta', excluir: 'apartar', tabla: 'revisar en la tabla' })[a] || a}`).join(' · ');
+
+    const cuerpo = filas.length ? `
+        <p class="reg-intro">Cada equipo se mira por separado y se propone <strong>lo que le corresponde a ese caso</strong>, no lo mismo para todos: ${esc(resumen)}.</p>
+        <div class="table-responsive">
+            <table class="data-table res-tabla">
+                <thead><tr><th>Equipo</th><th>Situación</th><th>Qué corresponde hacer</th><th></th></tr></thead>
+                <tbody>
+                    ${filas.map(x => `<tr data-interno="${esc(x.eq.interno)}">
+                        <td><strong style="color:var(--accent-cyan)">${esc(x.eq.interno)}</strong><br><small style="color:var(--text-muted)">${esc(x.eq.denominacion || '')}</small></td>
+                        <td><span class="seg-badge ${x.res.accion === 'aceptar' ? 'seg-ok' : x.res.accion === 'reclamo' ? 'seg-alta' : 'seg-media'}">${esc(x.res.etiqueta)}</span></td>
+                        <td>${esc(x.res.veredicto)}</td>
+                        <td><button class="btn-xs btn-res-aplicar" data-interno="${esc(x.eq.interno)}" data-accion="${esc(x.res.accion)}"><i class="fa-solid ${ICONO[x.res.accion] || 'fa-play'}"></i> ${esc(x.res.textoAccion)}</button></td>
+                    </tr>`).join('')}
+                </tbody>
+            </table>
+        </div>
+        <div class="res-bulk">
+            <button class="btn-xs btn-res-todos"><i class="fa-solid fa-wand-magic-sparkles"></i> Aplicar lo sugerido a los ${filas.length}</button>
+            <span class="reg-nota">Se aplica a cada equipo su propia acción. Todo es reversible: lo aceptado se puede desmarcar y lo apartado se puede volver a incluir.</span>
+        </div>`
+        : '<p class="reg-vacio">No quedan equipos con acción pendiente en este hallazgo.</p>';
+
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Cómo resolver: ${esc(h.titulo)}</h2>
+                    <p class="modal-sub">Un veredicto por equipo, con la acción que le corresponde.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">${cuerpo}</div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    const aplicar = async (interno, accion) => {
+        if (accion === 'aceptar') {
+            await setRalentiEstado(interno, 'aceptable');
+            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'aceptable' }]);
+            marcarAtendido(hallazgoId, interno, 'ralentí aceptable');
+        } else if (accion === 'seguimiento') {
+            await setRalentiEstado(interno, 'seguimiento');
+            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'seguimiento' }]);
+            if (!diagSeguimiento.has(hallazgoId)) diagSeguimiento.set(hallazgoId, new Set());
+            diagSeguimiento.get(hallazgoId).add(interno);
+            marcarAtendido(hallazgoId, interno, 'en seguimiento');
+        } else if (accion === 'reclamo') {
+            const x = filas.find(y => y.eq.interno === interno);
+            await crearReclamoGPS({ interno, motivo: x ? x.res.veredicto : 'Revisión de equipo GPS' });
+            marcarAtendido(hallazgoId, interno, 'reclamo GPS generado');
+        } else if (accion === 'meta') {
+            cerrar(); buscarEquipo(interno); return true;
+        } else if (accion === 'tabla') {
+            cerrar();
+            if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', interno);
+            return true;
+        }
+        return false;
+    };
+
+    modal.querySelectorAll('.btn-res-aplicar').forEach(b => b.addEventListener('click', async () => {
+        const salio = await aplicar(b.dataset.interno, b.dataset.accion);
+        if (salio) return;
+        b.innerHTML = '<i class="fa-solid fa-check-double"></i> Hecho';
+        b.disabled = true;
+        renderDiagnostico(analisis, rawRecords);
+    }));
+    modal.querySelector('.btn-res-todos')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Aplicando…';
+        for (const x of filas) {
+            if (x.res.accion === 'meta' || x.res.accion === 'tabla') continue; // esos son navegación, no se pueden hacer en bloque
+            await aplicar(x.eq.interno, x.res.accion);
+        }
+        cerrar();
+        renderDiagnostico(analisis, rawRecords);
+    });
+}
+
 /** Ejecuta la acción propuesta para un hallazgo: abrir comparativa, ajustar metas, etc. */
 function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
-    const h = generarDiagnostico(analisis.filas, analisis.totales, [], ralentiEstadosCache, noFlotaAceptadosCache).find(x => x.id === hallazgoId);
+    const h = generarDiagnostico(analisis.filas, analisis.totales, [], ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache).find(x => x.id === hallazgoId);
     const internos = h && h.equipos ? h.equipos.map(e => e.interno) : [];
 
     switch (accion) {
@@ -1605,6 +2178,12 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
             break;
         case 'consejos':
             abrirConsejos(hallazgoId);
+            break;
+        case 'revisar_parciales':
+            abrirRevisionParciales(ultimoAnalisis, datosCrudos?.rawRecords || []);
+            break;
+        case 'resolver':
+            abrirResolucion(hallazgoId, ultimoAnalisis, datosCrudos?.rawRecords || []);
             break;
         default:
             if (internos.length) buscarEquipo(internos[0]);

@@ -10,7 +10,7 @@
  */
 
 import { getPrefijo, clasificarIdentificador, MESES } from './normalizer.js';
-import { diasHabiles } from './feriados.js';
+import { diasHabiles, esDiaHabil } from './feriados.js';
 
 const TOLERANCIA = 0.15;
 const META_ALTA = 2.5;
@@ -275,13 +275,17 @@ export function evolucionMensual(fila) {
     const porMes = new Map();
     const agregar = (r, campo, valor) => {
         if (!r.periodo) return;
-        if (!porMes.has(r.periodo)) porMes.set(r.periodo, { periodo: r.periodo, litros: 0, km: 0, horas: 0, cargas: 0 });
+        if (!porMes.has(r.periodo)) porMes.set(r.periodo, { periodo: r.periodo, litros: 0, km: 0, horas: 0, parado: 0, cargas: 0 });
         porMes.get(r.periodo)[campo] += valor;
     };
     fila.cargas.forEach(c => { agregar(c, 'litros', parseFloat(c.litros) || 0); agregar(c, 'cargas', 1); });
     fila.gps.forEach(g => {
         agregar(g, 'km', parseFloat(g.distancia) || 0);
         agregar(g, 'horas', (g.horas && g.horas.total) || 0);
+        // Horas "parado": el GPS reportó y el equipo estaba quieto con el motor apagado. No entra
+        // en ningún cálculo de consumo, pero distingue "no hay dato de ese mes" de "hay dato y
+        // dice que no trabajó" — que son dos conclusiones muy distintas.
+        agregar(g, 'parado', (g.horas && g.horas.parado) || 0);
     });
 
     const esHora = fila.metrics.tipo_calculo === 'L/Hora';
@@ -434,10 +438,129 @@ export function estimacionCreible(fila, todas = []) {
     return { implicita: imp, meta, creible: motivos.length === 0, motivos, sugerida: sug, factorPares, completitud: comp };
 }
 
+/**
+ * Meses en los que el equipo tiene datos REALES (cargas con litros, o GPS con km/horas), contra
+ * los meses que abarca el período cargado. Un equipo que aparece en las seis planillas pero solo
+ * tiene actividad en enero no es un equipo con seis meses de datos: es un equipo con uno. Los
+ * registros en cero ya vienen filtrados desde el analyzer, así que acá simplemente se cuentan
+ * los meses que quedaron.
+ */
+export function coberturaMensual(fila, periodo = {}) {
+    const meses = new Set();
+    (fila.cargas || []).forEach(c => { if (c.periodo) meses.add(c.periodo); });
+    (fila.gps || []).forEach(g => { if (g.periodo) meses.add(g.periodo); });
+    let mesesPeriodo = 0;
+    if (periodo.desde && periodo.hasta) {
+        const [a1, m1] = periodo.desde.slice(0, 7).split('-').map(Number);
+        const [a2, m2] = periodo.hasta.slice(0, 7).split('-').map(Number);
+        if (a1 && m1 && a2 && m2) mesesPeriodo = (a2 - a1) * 12 + (m2 - m1) + 1;
+    }
+    const conDatos = meses.size;
+    const listaMeses = [...meses].sort();
+    const ratio = mesesPeriodo > 0 ? conDatos / mesesPeriodo : null;
+    return { conDatos, mesesPeriodo, listaMeses, ratio, parcial: mesesPeriodo >= 3 && conDatos > 0 && (conDatos <= 1 || ratio <= 0.34) };
+}
+
+
+/**
+ * Qué corresponde hacer con UN equipo dentro de UN hallazgo. Es la respuesta a "¿y esto cómo lo
+ * resuelvo?": en vez de dejar la decisión a criterio de quien mire la lista, se mira el dato y se
+ * dice qué escenario es y cuál es el siguiente paso concreto — con la acción ya elegida, para que
+ * se pueda aplicar de a uno o en bloque.
+ *
+ * `accion` es lo que la interfaz sabe ejecutar: 'aceptar' (ralentí aceptable), 'reclamo' (reclamo
+ * de revisión de GPS), 'seguimiento', 'meta' (ir a ajustar la meta), 'excluir' (apartar del
+ * análisis), 'tabla' (ir a los registros) o 'nada' (no corresponde tocar nada).
+ */
+export function resolverEquipo(hallazgoId, fila, todas = []) {
+    const m = fila.metrics;
+    const ralenti = m.horas_ralenti || 0;
+    const totalHs = m.total_horas || 0;
+    const pct = totalHs > 0 ? (ralenti / totalHs) * 100 : null;
+
+    // --- Ralentí en equipos cuyo trabajo es desplazarse (y camionetas) ---
+    if (hallazgoId === 'ralenti' || hallazgoId === 'ralenti_camionetas') {
+        const grupo = todas.filter(f => f.metrics.horas_ralenti > 0 && categoriaRalenti(f.equipo.interno) === categoriaRalenti(fila.equipo.interno));
+        const prom = grupo.length ? grupo.reduce((s, f) => s + f.metrics.horas_ralenti, 0) / grupo.length : 0;
+        if (pct !== null && pct >= 60) {
+            return { escenario: 'desproporcionado', etiqueta: 'desproporcionado', accion: 'reclamo',
+                veredicto: `${fmt(pct)}% de sus horas en ralentí: más tiempo encendido sin trabajar que trabajando. Antes de asumir desperdicio hay que descartar que el GPS esté contando mal — pedir revisión del equipo.`,
+                textoAccion: 'Reclamo GPS' };
+        }
+        if (prom > 0 && ralenti <= prom) {
+            return { escenario: 'en_promedio', etiqueta: 'dentro del promedio del grupo', accion: 'aceptar',
+                veredicto: `${fmt(ralenti)} hs contra un promedio de ${fmt(prom)} hs de su grupo: está en la media para abajo. Se promedia y se acepta — no hay nada que corregir acá.`,
+                textoAccion: 'Marcar aceptable' };
+        }
+        if (prom > 0 && ralenti < prom * 2) {
+            return { escenario: 'sobre_promedio', etiqueta: 'por encima del grupo', accion: 'seguimiento',
+                veredicto: `${fmt(ralenti)} hs contra ${fmt(prom)} hs de promedio del grupo: está arriba pero no es imposible. Conviene confirmarlo con el operador antes de aceptarlo o accionar.`,
+                textoAccion: 'Marcar para seguimiento' };
+        }
+        return { escenario: 'muy_alto', etiqueta: 'muy por encima del grupo', accion: 'seguimiento',
+            veredicto: `${fmt(ralenti)} hs: más del doble del promedio de su grupo (${fmt(prom)} hs). Vale revisar la operación de este equipo puntual antes de aceptar el número.`,
+            textoAccion: 'Marcar para seguimiento' };
+    }
+
+    // --- Ralentí inverosímil: acá NO se acepta nada, el número no puede ser real ---
+    if (hallazgoId === 'ralenti_inverosimil') {
+        if (totalHs > 0 && ralenti > totalHs) {
+            return { escenario: 'ralenti_mayor_total', etiqueta: 'imposible', accion: 'reclamo',
+                veredicto: `El GPS reporta ${fmt(ralenti)} hs de ralentí sobre ${fmt(totalHs)} hs totales: más ralentí que tiempo transcurrido. Es una falla de medición, no una forma de operar — corresponde reclamo, no "aceptable".`,
+                textoAccion: 'Reclamo GPS' };
+        }
+        if (ralenti > 0 && (m.horas_movimiento || 0) <= 0) {
+            return { escenario: 'sin_movimiento', etiqueta: 'ralentí sin trabajo', accion: 'reclamo',
+                veredicto: `${fmt(ralenti)} hs de ralentí y cero horas de movimiento: el equipo figura encendido todo el período sin haber trabajado nunca. O el sensor quedó trabado, o el equipo está mal identificado.`,
+                textoAccion: 'Reclamo GPS' };
+        }
+        return { escenario: 'revisar', etiqueta: 'a verificar', accion: 'reclamo',
+            veredicto: 'El número no resiste una lectura razonable. Antes de usarlo para cualquier conclusión, pedir revisión del equipo GPS.',
+            textoAccion: 'Reclamo GPS' };
+    }
+
+    // --- Mixers y bombas: parte de la espera es operativa ---
+    if (hallazgoId === 'ralenti_espera') {
+        if (pct !== null && pct >= 70) {
+            return { escenario: 'espera_excesiva', etiqueta: 'espera excesiva', accion: 'seguimiento',
+                veredicto: `${fmt(pct)}% del tiempo en espera. Aguardar descarga en obra es parte del trabajo, pero a este nivel el problema es de programación de obra, no del equipo: vale llevarlo a quien coordina.`,
+                textoAccion: 'Marcar para seguimiento' };
+        }
+        return { escenario: 'espera_normal', etiqueta: 'espera operativa', accion: 'aceptar',
+            veredicto: `${pct !== null ? fmt(pct) + '% ' : ''}en espera: para un mixer o una bomba, aguardar la descarga en obra ES el trabajo. Se acepta y deja de aparecer.`,
+            textoAccion: 'Marcar aceptable' };
+    }
+
+    // --- Cargan combustible sin ningún dato de actividad ---
+    if (hallazgoId === 'sin_medicion') {
+        const tuvoGpsAlgunaVez = (fila.gps || []).length > 0;
+        const cat = categoriaRalenti(fila.equipo.interno);
+        if (tuvoGpsAlgunaVez) {
+            return { escenario: 'gps_dejo_de_reportar', etiqueta: 'el GPS dejó de reportar', accion: 'reclamo',
+                veredicto: 'Tiene filas de GPS pero sin km ni horas útiles: el equipo está instalado y no está midiendo. Eso se reclama, no se compensa con una meta.',
+                textoAccion: 'Reclamo GPS' };
+        }
+        if (cat === 'estacionario') {
+            return { escenario: 'estacionario_sin_gps', etiqueta: 'equipo estacionario sin GPS', accion: 'meta',
+                veredicto: 'Es un equipo que trabaja quieto (grupo electrógeno, motobomba, compresor): nunca va a tener km. Cargándole una meta en L/hora se puede estimar la actividad por cálculo inverso y al menos controlarlo.',
+                textoAccion: 'Cargar meta' };
+        }
+        return { escenario: 'sin_gps', etiqueta: 'sin GPS instalado', accion: 'meta',
+            veredicto: 'No hay telemetría de este equipo. Cargarle una meta es el único camino para pasar de "no se puede calcular" a un número con el que trabajar; si carga muchos litros, es candidato a que se le instale GPS.',
+            textoAccion: 'Cargar meta' };
+    }
+
+    return null;
+}
+
 // ============================================================ HALLAZGOS
 
-export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = [], noFlotaAceptados = []) {
+export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = [], noFlotaAceptados = [], equiposExcluidos = []) {
     const hallazgos = [];
+    // Equipos apartados a mano (ej. pasaron a San Juan y dejaron de reportar acá): siguen en el
+    // maestro y en las tablas, pero no generan hallazgos ni ensucian promedios ni medianas.
+    const excluidosMap = new Map(equiposExcluidos.map(e => [e.interno, e]));
+    filas = filas.filter(f => !excluidosMap.has(f.equipo.interno));
 
     // Estado que el usuario le asignó al ralentí de un equipo puntual (aceptable/seguimiento):
     // "aceptable" saca al equipo de los hallazgos de ralentí de ahora en más (sin borrar el
@@ -668,6 +791,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     if (desperdicio.length) {
         hallazgos.push({
             id: 'ralenti', severidad: hsDesperdicio > 2000 ? 'alta' : 'media', icono: 'fa-hourglass-half',
+            internos_todos: desperdicio.map(x => x.fila.equipo.interno),
             titulo: `${fmt(hsDesperdicio)} horas de ralentí evitable en equipos de desplazamiento`,
             detalle: `Solo se cuentan aquí los equipos cuyo trabajo es moverse (tractores, cargadoras, volcadores...): en ellos el motor encendido sin desplazarse sí es combustible sin producción. Las camionetas se listan aparte porque suelen tener una razón operativa (esperar cuadrilla, portería) que el resto no tiene. ` +
                 (hsEstacionario > 0 ? `Quedan excluidas <strong>${fmt(hsEstacionario)} hs</strong> de grupos electrógenos y equipos estacionarios, donde trabajar quieto es justamente su función. ` : '') +
@@ -697,6 +821,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     if (camionetas.length) {
         hallazgos.push({
             id: 'ralenti_camionetas', severidad: hsCamionetas > 800 ? 'alta' : 'media', icono: 'fa-truck-pickup',
+            internos_todos: camionetas.map(x => x.fila.equipo.interno),
             titulo: `${fmt(hsCamionetas)} horas de ralentí en camionetas`,
             detalle: `Separadas del resto de "equipos de desplazamiento" porque suelen tener una razón operativa que un tractor o una cargadora no tienen: esperar a una cuadrilla, portería/acceso, apoyo de seguridad. Eso no las exime de revisión — si el ralentí es alto y sostenido igual conviene confirmarlo — pero el criterio para aceptar en bloque o pedir revisión de GPS debería ser distinto al del resto.` +
                 (aceptadasCamionetas.length ? ` <strong>${aceptadasCamionetas.length}</strong> camioneta${aceptadasCamionetas.length === 1 ? '' : 's'} más quedaron afuera porque se marcaron como "ralentí aceptable".` : ''),
@@ -717,6 +842,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     if (espera.length) {
         hallazgos.push({
             id: 'ralenti_espera', severidad: 'baja', icono: 'fa-truck-ramp-box',
+            internos_todos: espera.map(x => x.fila.equipo.interno),
             titulo: `${espera.length} mixers y bombas con alta proporción de espera`,
             detalle: `En estos equipos parte del ralentí es operativo: esperar turno de descarga o bombeo en obra. No es desperdicio automático, pero un porcentaje muy alto y sostenido en el tiempo sí señala demoras en obra que cuestan combustible. Conviene mirar si se repite mes a mes o fue puntual de un período.`,
             equipos: espera.slice(0, 10).map(x => ({
@@ -743,6 +869,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         const litros = sinMedicionSinMeta.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
         hallazgos.push({
             id: 'sin_medicion', severidad: 'media', icono: 'fa-eye-slash',
+            internos_todos: sinMedicionSinMeta.map(x => x.fila.equipo.interno),
             titulo: `${sinMedicionSinMeta.length} equipos cargan combustible sin dato de actividad`,
             detalle: `Suman <strong>${fmt(litros)} L</strong>. Falta el km u hora del Resumen de Flota (normalmente porque el equipo no tiene GPS) y tampoco tienen una meta cargada para poder estimar por cálculo inverso. Cargarles una meta en "Consumos Estimados" es el primer paso para poder controlarlos.`,
             equipos: sinMedicionSinMeta.slice(0, 10).map(x => ({
@@ -887,6 +1014,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         if (ralentiExtremo.length) {
             hallazgos.push({
                 id: 'ralenti_inverosimil', severidad: 'media', icono: 'fa-circle-exclamation',
+                internos_todos: ralentiExtremo.map(x => x.equipo.interno),
                 titulo: `${ralentiExtremo.length} equipos con ralentí inverosímil`,
                 detalle: `Promedian más de 18 hs diarias de ralentí o >90% del total de horas. Esto suele indicar un error en los datos del GPS, un equipo que quedó encendido por accidente, o un problema con el sensor — por eso la acción sugerida es pedir revisión del equipo GPS, no directamente cuestionar al chofer.` +
                     (aceptadosExtremo.length ? ` <strong>${aceptadosExtremo.length}</strong> más quedaron afuera porque se marcaron como "ralentí aceptable".` : ''),
@@ -922,25 +1050,45 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // antes esto solo se detectaba al revés (cobertura BAJA, ver confiabilidad() más arriba);
     // la cobertura por encima del 100% quedaba invisible porque el % se recortaba a 100 en la
     // tarjeta, mostrando "cobertura ok" en vez de la alerta que en realidad es.
+    // OJO con la cuenta: un equipo puede cargar dos veces en el MISMO día (doble turno, se quedó
+    // sin combustible a media jornada, cargó parcial en el surtidor y completó en la estación).
+    // Comparar "cantidad de cargas" contra "días hábiles" marcaba como imposible algo que pasa
+    // todos los meses. Lo que de verdad no puede pasar es cargar en más DÍAS DISTINTOS que días
+    // hábiles hubo — y aun así hay que descontar las cargas de sábado, domingo y feriado, que son
+    // legítimas (guardias, obra con plazo). Recién lo que queda después de eso es un problema.
     const excesoCargas = [];
     activos.forEach(f => {
         const porMes = new Map();
         f.cargas.forEach(c => {
             const p = c.periodo || (c.fecha ? c.fecha.slice(0, 7) : null);
-            if (!p) return;
-            porMes.set(p, (porMes.get(p) || 0) + 1);
+            if (!p || !c.fecha) return;
+            if (!porMes.has(p)) porMes.set(p, { cargas: 0, dias: new Set(), diasNoHabiles: new Set(), cargasNoHabiles: 0, diasConVarias: new Map() });
+            const m = porMes.get(p);
+            m.cargas++;
+            m.dias.add(c.fecha);
+            m.diasConVarias.set(c.fecha, (m.diasConVarias.get(c.fecha) || 0) + 1);
+            if (!esDiaHabil(c.fecha)) { m.diasNoHabiles.add(c.fecha); m.cargasNoHabiles++; }
         });
         let peor = null;
-        porMes.forEach((cantidad, periodo) => {
+        porMes.forEach((m, periodo) => {
             const [anio, mes] = periodo.split('-').map(Number);
             if (!anio || !mes) return;
-            const desde = `${periodo}-01`;
             const ultimoDia = new Date(anio, mes, 0).getDate();
-            const hasta = `${periodo}-${String(ultimoDia).padStart(2, '0')}`;
-            const dh = diasHabiles(desde, hasta);
-            if (dh.dias > 0 && cantidad > dh.dias) {
-                const exceso = cantidad - dh.dias;
-                if (!peor || exceso > peor.exceso) peor = { periodo, anio, mes, cantidad, diasHabiles: dh.dias, exceso };
+            const dh = diasHabiles(`${periodo}-01`, `${periodo}-${String(ultimoDia).padStart(2, '0')}`);
+            if (dh.dias <= 0) return;
+            // Días hábiles en los que cargó = días distintos con carga, menos los que cayeron en
+            // sábado, domingo o feriado (esos no consumen "cupo" de días hábiles).
+            const diasHabilesConCarga = m.dias.size - m.diasNoHabiles.size;
+            const exceso = diasHabilesConCarga - dh.dias;
+            if (exceso > 0) {
+                const repetidos = [...m.diasConVarias.values()].filter(n => n > 1).length;
+                const cand = {
+                    periodo, anio, mes, cantidad: m.cargas, dias: m.dias.size,
+                    diasHabilesConCarga, diasNoHabiles: m.diasNoHabiles.size,
+                    cargasNoHabiles: m.cargasNoHabiles, diasRepetidos: repetidos,
+                    diasHabiles: dh.dias, exceso
+                };
+                if (!peor || exceso > peor.exceso) peor = cand;
             }
         });
         if (peor) excesoCargas.push({ fila: f, ...peor });
@@ -950,12 +1098,12 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     if (excesoCargas.length) {
         hallazgos.push({
             id: 'cargas_exceden_dias_habiles', severidad: 'alta', icono: 'fa-triangle-exclamation',
-            titulo: `${excesoCargas.length} equipo${excesoCargas.length === 1 ? '' : 's'} ${excesoCargas.length === 1 ? 'cargó' : 'cargaron'} combustible más veces que los días hábiles de algún mes`,
-            detalle: `Se marcan automáticamente para seguimiento: en el mes más comprometido de cada equipo, la cantidad de cargas registradas superó la cantidad de días hábiles disponibles ese mes. Casi siempre es un problema de datos, no de uso real — cargas duplicadas al importar, dos equipos compartiendo el mismo interno, o un período mal recortado — y conviene confirmarlo en la <strong>tabla de cargas</strong> del mes señalado antes de sacar cualquier conclusión sobre el consumo de ese equipo.`,
+            titulo: `${excesoCargas.length} equipo${excesoCargas.length === 1 ? '' : 's'} cargó combustible en más días hábiles de los que tuvo el mes`,
+            detalle: `Se cuentan <strong>días distintos con carga</strong>, no cantidad de cargas: cargar dos veces el mismo día es normal (doble turno, carga parcial y después completa) y antes se marcaba como error. También se descuentan las cargas de sábado, domingo y feriado, que son legítimas. Lo que queda es lo que no puede pasar: el equipo figura cargando en más días hábiles de los que el mes tuvo. Ahí sí hay algo mal en el dato — el mismo interno usado por dos unidades, cargas de otro equipo imputadas acá, o un archivo del mes subido dos veces.`,
             equipos: excesoCargas.slice(0, 12).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
-                texto: `${x.cantidad} cargas en ${MESES[x.mes - 1]} ${x.anio}`,
-                sub: `solo hubo ${x.diasHabiles} días hábiles ese mes · ${x.exceso} carga${x.exceso === 1 ? '' : 's'} de más`,
+                texto: `${x.diasHabilesConCarga} días hábiles con carga en ${MESES[x.mes - 1]} ${x.anio}`,
+                sub: `el mes tuvo ${x.diasHabiles} días hábiles · ${x.exceso} día${x.exceso === 1 ? '' : 's'} de más · ${x.cantidad} cargas en total${x.diasRepetidos ? `, ${x.diasRepetidos} día${x.diasRepetidos === 1 ? '' : 's'} con más de una` : ''}${x.diasNoHabiles ? ` · ${x.cargasNoHabiles} en fin de semana o feriado (no cuentan)` : ''}`,
                 anio: x.anio, mes: x.mes
             }))
         });
@@ -973,7 +1121,39 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         return false; // placeholder: la lógica real requiere un mapa de lugares → provincias
     });
 
+    // ---------- 14. Datos parciales: pocos meses reales dentro del período ----------
+    // Un equipo que aparece en todas las planillas pero solo tiene actividad en uno o dos meses
+    // no está "trabajando poco": lo más probable es que haya dejado de reportar acá (pasó a la
+    // otra provincia, salió de servicio, le sacaron el GPS). Tratarlo como si trabajara cero el
+    // resto del período le baja el consumo real, le rompe la cobertura y lo mete todos los meses
+    // en hallazgos que no le corresponden. Hay que decidirlo una vez, no discutirlo cada mes.
+    // Base más amplia que `activos`: acá también importa el equipo que reporta GPS pero nunca
+    // carga combustible (o al revés). Justamente ese desbalance es parte del síntoma.
+    const conAlgunDato = filas.filter(f => f.metrics.cantidad_cargas > 0 || f.metrics.cantidad_gps > 0);
+    const desc = totales.registros_descartados;
+    const parciales = conAlgunDato
+        .map(f => ({ fila: f, cob: coberturaMensual(f, periodo), comp: completitudDatos(f) }))
+        .filter(x => x.cob.parcial)
+        .sort((a, b) => a.cob.conDatos - b.cob.conDatos || b.fila.metrics.total_litros - a.fila.metrics.total_litros);
+
+    if (parciales.length) {
+        hallazgos.push({
+            id: 'datos_parciales', severidad: 'media', icono: 'fa-calendar-day',
+            titulo: `${parciales.length} equipo${parciales.length === 1 ? '' : 's'} con datos de solo una parte del período`,
+            detalle: `Aparecen en las planillas de todos los meses, pero solo tienen actividad real en uno o dos. ${desc && desc.total ? `Se descartaron <strong>${fmt(desc.total)} registros en cero</strong> (${fmt(desc.gps)} del GPS y ${fmt(desc.cargas)} de cargas) repartidos en ${fmt(desc.internos.length)} equipos` : 'Las filas en cero'} — <strong>no se cuentan como "trabajó cero"</strong> sino como "ese mes no hay dato", así que no estiran el período ni bajan los promedios. Lo que queda por decidir es si el equipo dejó de reportar acá (pasó a San Juan, salió de servicio, le sacaron el GPS) o si realmente trabajó solo esos meses. Mientras no se decida, van a seguir apareciendo en hallazgos que no les corresponden.`,
+            equipos: parciales.slice(0, 15).map(x => ({
+                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
+                texto: `${x.cob.conDatos} de ${x.cob.mesesPeriodo} meses con datos`,
+                sub: `con actividad en ${x.cob.listaMeses.join(', ')} · ${x.comp.etiqueta}${x.fila.equipo.provincia ? ` · padrón: ${x.fila.equipo.provincia}` : ''}`,
+                completitud: x.comp.nivel,
+                meses_con_datos: x.cob.conDatos,
+                meses_periodo: x.cob.mesesPeriodo
+            }))
+        });
+    }
+
     const orden = { alta: 0, media: 1, baja: 2, ok: 3 };
     hallazgos.sort((a, b) => (orden[a.severidad] - orden[b.severidad]) || (Math.abs(b.impacto_costo || 0) - Math.abs(a.impacto_costo || 0)));
+
     return hallazgos;
 }

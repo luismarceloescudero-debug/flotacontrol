@@ -65,6 +65,29 @@ export function getConfirmedConsumption(equipoOInterno, estimadosData = []) {
 
 // ============================================================ PERÍODOS
 
+/**
+ * Un registro "en cero": el GPS reportó la fila del mes pero sin nada adentro (0 km, 0 hs de
+ * ralentí, movimiento, parado y total), o una carga sin litros ni importe. No significa que el
+ * equipo haya trabajado cero: significa que ese mes NO HAY DATO. Contarlos como si fueran datos
+ * estira el período hacia meses vacíos, diluye los promedios y hace que un equipo con un solo
+ * mes real parezca tener seis. Se descartan del análisis; en la tabla de Base de Datos siguen
+ * estando, porque ahí lo que se muestra es el registro histórico tal cual llegó.
+ */
+export function registroVacio(r) {
+    if (!r) return false;
+    if (r.type === 'gps') {
+        const km = parseFloat(r.distancia) || 0;
+        const h = (r.horas && typeof r.horas === 'object')
+            ? (r.horas.total || 0) + (r.horas.ralenti || 0) + (r.horas.movimiento || 0) + (r.horas.parado || 0)
+            : (parseFloat(r.horas) || 0);
+        return km === 0 && h === 0;
+    }
+    if (r.type === 'carga') {
+        return (parseFloat(r.litros) || 0) === 0 && (parseFloat(r.importe) || 0) === 0;
+    }
+    return false;
+}
+
 export function calculateAlignedPeriod(cargas = [], gps = []) {
     let minC = null, maxC = null, minG = null, maxG = null;
     cargas.forEach(c => {
@@ -383,9 +406,20 @@ export function getGPSForEquipo(interno, rawRecords = []) {
 export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], filtro = {} } = {}) {
     const idx = indexarMaestro(equipos);
 
-    const allCargas = rawRecords.filter(r => r.type === 'carga');
-    const allGps = rawRecords.filter(r => r.type === 'gps');
-    const allOtros = rawRecords.filter(r => r.type !== 'carga' && r.type !== 'gps');
+    // Los registros en cero se sacan ANTES de calcular el período: si no, un equipo con una
+    // sola fila real de enero y cinco filas vacías hasta junio arrastra el período de toda la
+    // flota y aparece como si tuviera seis meses de datos.
+    const vacios = rawRecords.filter(registroVacio);
+    const utiles = rawRecords.filter(r => !registroVacio(r));
+    const allCargas = utiles.filter(r => r.type === 'carga');
+    const allGps = utiles.filter(r => r.type === 'gps');
+    const allOtros = utiles.filter(r => r.type !== 'carga' && r.type !== 'gps');
+    const descartados = {
+        total: vacios.length,
+        gps: vacios.filter(r => r.type === 'gps').length,
+        cargas: vacios.filter(r => r.type === 'carga').length,
+        internos: [...new Set(vacios.map(r => r.interno).filter(Boolean))]
+    };
 
     const auto = calculateAlignedPeriod(allCargas, allGps);
     const usaFiltroManual = !!(filtro.anio || filtro.mes || filtro.desde || filtro.hasta || (filtro.periodos && filtro.periodos.length));
@@ -484,6 +518,7 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         periodo_desde: start, periodo_hasta: end, criterio_periodo: criterioPeriodo,
         equipos: equipos.length,
         equipos_con_datos: filas.filter(f => f.metrics.cantidad_cargas > 0 || f.metrics.cantidad_gps > 0).length,
+        registros_descartados: descartados,
         total_litros: litrosTot, total_costo: costoTot, total_km: kmTot,
         total_horas: hs.total, horas_ralenti: hs.ralenti, horas_movimiento: hs.movimiento,
         cantidad_cargas: cargas.length, cantidad_gps: gps.length, cantidad_otros: otros.length,

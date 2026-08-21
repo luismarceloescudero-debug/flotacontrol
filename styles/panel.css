@@ -1673,3 +1673,156 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
    lea de un vistazo por dónde conviene empezar a corregir. */
 .diag-lista li.diag-comp-bajo { opacity: 0.72; }
 .diag-lista li.diag-comp-alto .diag-eq { border-left: 2px solid rgba(48,209,88,0.5); padding-left: 0.45rem; }
+
+/* ---------- Barra de acciones del diagnóstico: un solo estilo para todos ----------
+   Antes cada botón traía el estilo que le tocaba por su clase (btn-primary, btn-sm,
+   btn-diag-propuesta…) y la misma barra mostraba tres tratamientos visuales distintos.
+   Ahora TODOS se ven como "Ignorar" / "Ignorar todos": fondo transparente, texto atenuado
+   y color solo al pasar el mouse. La jerarquía la da el orden, no el peso visual. */
+.diag-acciones-bar button {
+    background: transparent; color: var(--text-muted);
+    border: 1px solid transparent; border-radius: 6px;
+    padding: 0.45rem 0.75rem !important; margin: 0;
+    font-size: 0.8rem !important; font-weight: 500; line-height: 1.2;
+    cursor: pointer; transition: all var(--transition-fast);
+    display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap;
+    box-shadow: none;
+}
+.diag-acciones-bar button i { font-size: 0.72rem; }
+.diag-acciones-bar button:hover {
+    background: transparent; color: var(--accent-cyan); border-color: var(--accent-cyan);
+}
+.diag-acciones-bar .btn-diag-ignorar:hover,
+.diag-acciones-bar .btn-diag-ignorar-todos:hover {
+    color: var(--accent-amber); border-color: var(--accent-amber);
+}
+
+/* ---------- Modo compacto del diagnóstico ---------- */
+.diag-head-tools { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
+.btn-diag-compacto {
+    background: transparent; color: var(--text-muted);
+    border: 1px solid transparent; border-radius: 6px;
+    padding: 0.3rem 0.6rem; font-size: 0.75rem; cursor: pointer;
+    transition: all var(--transition-fast);
+    display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap;
+}
+.btn-diag-compacto:hover { color: var(--accent-cyan); border-color: var(--accent-cyan); }
+.btn-diag-compacto.active { color: var(--accent-cyan); border-color: var(--accent-cyan); }
+.diag-compacto .diag-detalle { display: none; }
+.diag-compacto .diag-body { padding-top: 0.2rem; }
+
+/* ---------- Equipos ya atendidos dentro de un hallazgo ---------- */
+.diag-badge-atendidos {
+    font-size: 0.7rem; font-weight: 700; padding: 0.12rem 0.5rem; border-radius: 999px;
+    background: rgba(48,209,88,0.15); color: var(--accent-green, #30d158); white-space: nowrap;
+}
+.diag-atendidos { margin-top: 0.7rem; }
+.diag-atendidos > summary {
+    cursor: pointer; font-size: 0.8rem; color: var(--text-muted);
+    padding: 0.35rem 0; list-style: none;
+}
+.diag-atendidos > summary::-webkit-details-marker { display: none; }
+.diag-atendidos > summary::before { content: '▸ '; color: var(--accent-green, #30d158); }
+.diag-atendidos[open] > summary::before { content: '▾ '; }
+.diag-lista li.diag-li-atendido { opacity: 0.55; }
+.diag-lista li.diag-li-atendido .diag-eq { text-decoration: line-through; text-decoration-thickness: 1px; }
+.diag-atendido-motivo {
+    font-size: 0.7rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 6px;
+    background: rgba(48,209,88,0.13); color: var(--accent-green, #30d158); white-space: nowrap;
+}
+.btn-diag-desatender {
+    background: transparent; color: var(--text-muted); border: 1px solid transparent;
+    border-radius: 6px; padding: 0.15rem 0.45rem; font-size: 0.7rem; cursor: pointer;
+}
+.btn-diag-desatender:hover { color: var(--accent-amber); border-color: var(--accent-amber); }
+
+/* ---------- Pasos de consejo accionables ---------- */
+.consejo-lista li.consejo-accionable { cursor: pointer; transition: all var(--transition-fast); }
+.consejo-lista li.consejo-accionable:hover {
+    border-color: rgba(76,158,255,0.45); background: rgba(76,158,255,0.07);
+}
+.consejo-cta {
+    grid-column: 2; display: inline-flex; align-items: center; gap: 0.35rem;
+    margin-top: 0.35rem; font-size: 0.78rem; font-weight: 600;
+    color: var(--accent-blue, #4a9eff);
+}
+.consejo-lista li.consejo-accionable:hover .consejo-cta { text-decoration: underline; }
+
+/* ---------- Modal de registros concretos a corregir ---------- */
+.reg-intro { font-size: 0.86rem; color: var(--text-muted); line-height: 1.5; margin: 0 0 0.9rem; }
+.reg-vacio { font-size: 0.86rem; color: var(--text-muted); padding: 0.8rem; border-radius: 10px; background: rgba(255,255,255,0.03); }
+.reg-grupo { margin-bottom: 1.2rem; }
+.reg-grupo-head {
+    display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.45rem;
+    font-size: 0.92rem; color: var(--text-primary, #e8e8ea);
+}
+.reg-grupo-head small { color: var(--text-muted); font-weight: 400; }
+.reg-tabla td, .reg-tabla th { padding: 0.35rem 0.6rem; font-size: 0.83rem; }
+.reg-dup { background: rgba(255, 69, 58, 0.08); }
+.reg-formas { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.5rem; }
+.reg-formas .btn-xs { white-space: nowrap; }
+.reg-nota { font-size: 0.78rem; color: var(--text-muted); margin: 0.4rem 0 0; }
+
+/* ---------- Revisión de equipos con datos parciales ---------- */
+.par-bloque {
+    padding: 0.9rem; border-radius: 12px; margin-bottom: 1rem;
+    background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.07);
+}
+.par-bloque.par-excluido { opacity: 0.7; border-color: rgba(255,159,10,0.3); }
+.par-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.6rem; }
+.par-head strong { color: var(--accent-cyan, #64d2ff); font-size: 1rem; }
+.par-head small { color: var(--text-muted); }
+.par-chip-excluido {
+    font-size: 0.7rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 999px;
+    background: rgba(255,159,10,0.16); color: var(--accent-amber, #ffb300); white-space: nowrap;
+}
+.par-acciones { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-top: 0.6rem; }
+.diag-lista li.diag-li-excluido { opacity: 0.5; }
+
+/* ---------- Un solo estilo de botón chico en todo lo que agregamos ----------
+   Mismo criterio que la barra de acciones del diagnóstico: fondo transparente, texto atenuado,
+   color solo al pasar el mouse. Antes cada lista/modal traía el .btn-xs con su propio peso
+   visual y convivían tres tratamientos distintos en la misma pantalla. */
+#seg-lista .btn-xs,
+.reg-formas .btn-xs,
+.par-acciones .btn-xs,
+.fs-acciones .btn-xs,
+.res-tabla .btn-xs,
+.res-bulk .btn-xs,
+#modal-estimaciones .btn-xs,
+.diag-atendidos .btn-xs {
+    background: transparent; color: var(--text-muted);
+    border: 1px solid transparent; border-radius: 6px;
+    padding: 0.45rem 0.75rem !important; margin: 0;
+    font-size: 0.8rem !important; font-weight: 500; line-height: 1.2;
+    cursor: pointer; transition: all var(--transition-fast);
+    display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap;
+    box-shadow: none;
+}
+#seg-lista .btn-xs:hover,
+.reg-formas .btn-xs:hover,
+.par-acciones .btn-xs:hover,
+.fs-acciones .btn-xs:hover,
+.res-tabla .btn-xs:hover,
+.res-bulk .btn-xs:hover,
+#modal-estimaciones .btn-xs:hover,
+.diag-atendidos .btn-xs:hover {
+    background: transparent; color: var(--accent-cyan); border-color: var(--accent-cyan);
+}
+#seg-lista .btn-xs:disabled,
+.reg-formas .btn-xs:disabled,
+.par-acciones .btn-xs:disabled,
+.res-tabla .btn-xs:disabled {
+    color: var(--accent-green, #30d158); border-color: transparent; cursor: default; opacity: 0.8;
+}
+
+/* ---------- Modal "Cómo lo resuelvo" ---------- */
+.res-tabla td { vertical-align: top; font-size: 0.84rem; line-height: 1.45; }
+.res-tabla td:nth-child(3) { color: var(--text-muted); max-width: 46ch; }
+.res-bulk {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem;
+    margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--border-color);
+}
+.res-bulk .btn-res-todos { border-color: rgba(76,158,255,0.4) !important; color: var(--accent-blue, #4a9eff) !important; }
+.res-bulk .btn-res-todos:hover { background: rgba(76,158,255,0.12) !important; }
+.correc-cc-sugerido { border-color: rgba(76,158,255,0.45) !important; }
