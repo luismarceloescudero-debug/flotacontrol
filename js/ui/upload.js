@@ -51,7 +51,7 @@ function detectVisualType(filename) {
     return 'unknown';
 }
 
-const BADGE_LABEL = { pending: 'PENDING', processing: 'PROCESANDO', done: 'LISTO', error: 'ERROR' };
+const BADGE_LABEL = { pending: 'PENDIENTE', processing: 'PROCESANDO', done: 'LISTO', error: 'ERROR' };
 
 function renderFileList() {
     const list = document.getElementById('file-list');

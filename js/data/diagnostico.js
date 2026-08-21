@@ -186,7 +186,7 @@ export function actividadImplicita(fila) {
  * vehículos con patente pero sin interno asignado, y servicios de planta
  * (calderas, caloventores, limpieza, jardinería, herramientas a combustión).
  */
-export function clasificarNoFlota(huerfanos = [], rawRecords = []) {
+export function clasificarNoFlota(huerfanos = [], rawRecords = [], codigosAceptados = new Set()) {
     const cargasPorClave = new Map();
     rawRecords.filter(r => r.type === 'carga').forEach(r => {
         const k = r.interno_key || r.dominio_key;
@@ -217,6 +217,15 @@ export function clasificarNoFlota(huerfanos = [], rawRecords = []) {
         const esDominio = clasificarIdentificador(h.interno).tipo === 'dominio';
         const g = esDominio ? grupos.vehiculo_sin_interno
             : (PALABRAS_PLANTA.test(h.interno) || PALABRAS_PLANTA.test(topSector) ? grupos.planta : grupos.otros);
+
+        // Código marcado como "así está bien" (ej. un vehículo de un programa de préstamo/demo
+        // que nunca va a tener un interno propio en el padrón): se cuenta aparte para el aviso
+        // de "quedaron afuera", pero no entra en la lista ni en los totales del hallazgo.
+        if (codigosAceptados.has(h.interno)) {
+            g.excluidos = (g.excluidos || 0) + 1;
+            g.excluidosLitros = (g.excluidosLitros || 0) + h.litros;
+            return;
+        }
 
         g.items.push({ codigo: h.interno, litros: h.litros, costo, cargas: h.cargas, centro_costo: topCentro, sector: topSector });
         g.litros += h.litros;
@@ -254,7 +263,7 @@ export function evolucionMensual(fila) {
 
 // ============================================================ HALLAZGOS
 
-export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = []) {
+export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = [], noFlotaAceptados = []) {
     const hallazgos = [];
 
     // Estado que el usuario le asignó al ralentí de un equipo puntual (aceptable/seguimiento):
@@ -470,6 +479,13 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             // como aceptable" pueda marcar a TODOS los que están en la media para abajo, no
             // solo a los que se llegan a ver en pantalla.
             internos_bajo_promedio: desperdicio.filter(x => x.fila.metrics.horas_ralenti <= promedioRalenti).map(x => x.fila.equipo.interno),
+            // Detalle completo (interno + denominación + horas) de esos mismos equipos, para
+            // poder listarlos con checkbox en el panel aunque no estén entre los primeros 10
+            // que se muestran arriba (que son justamente los peores, casi nunca los que están
+            // en la media para abajo).
+            bajo_promedio_detalle: desperdicio.filter(x => x.fila.metrics.horas_ralenti <= promedioRalenti).map(x => ({
+                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion, horas: x.fila.metrics.horas_ralenti
+            })),
             equipos: desperdicio.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.horas_ralenti)} hs en ralentí`,
@@ -533,13 +549,17 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     }
 
     // ---------- 8. Consumo fuera de la flota ----------
-    const grupos = clasificarNoFlota(totales.huerfanos || [], rawRecords);
+    const codigosNoFlotaAceptados = new Set(noFlotaAceptados.map(a => a.codigo));
+    const grupos = clasificarNoFlota(totales.huerfanos || [], rawRecords, codigosNoFlotaAceptados);
     grupos.forEach(g => {
+        const notaExcluidos = g.excluidos
+            ? ` <strong>${g.excluidos}</strong> código${g.excluidos === 1 ? '' : 's'} más (${fmt(g.excluidosLitros)} L) ${g.excluidos === 1 ? 'quedó afuera porque se marcó' : 'quedaron afuera porque se marcaron'} como "así está bien".`
+            : '';
         hallazgos.push({
             id: 'nofl_' + g.id, severidad: g.id === 'vehiculo_sin_interno' ? 'media' : 'baja',
             icono: g.id === 'vehiculo_sin_interno' ? 'fa-car-side' : (g.id === 'planta' ? 'fa-industry' : 'fa-link-slash'),
             titulo: `${g.etiqueta}: ${fmt(g.litros)} L${g.costo ? ` · $${fmt(g.costo)}` : ''}`,
-            detalle: g.detalle,
+            detalle: g.detalle + notaExcluidos,
             impacto_costo: g.costo,
             equipos: g.items.slice(0, 10).map(i => ({
                 interno: i.codigo, denominacion: i.centro_costo !== '—' ? `centro de costo ${i.centro_costo}` : 'sin centro de costo',
@@ -625,6 +645,12 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                 internos_bajo_promedio: (() => {
                     const prom = ralentiExtremo.length ? ralentiExtremo.reduce((s, x) => s + x.metrics.horas_ralenti, 0) / ralentiExtremo.length : 0;
                     return ralentiExtremo.filter(x => x.metrics.horas_ralenti <= prom).map(x => x.equipo.interno);
+                })(),
+                bajo_promedio_detalle: (() => {
+                    const prom = ralentiExtremo.length ? ralentiExtremo.reduce((s, x) => s + x.metrics.horas_ralenti, 0) / ralentiExtremo.length : 0;
+                    return ralentiExtremo.filter(x => x.metrics.horas_ralenti <= prom).map(x => ({
+                        interno: x.equipo.interno, denominacion: x.equipo.denominacion, horas: x.metrics.horas_ralenti
+                    }));
                 })(),
                 equipos: ralentiExtremo.slice(0, 10).map(x => {
                     const pct = x.metrics.total_horas > 0 ? (x.metrics.horas_ralenti / x.metrics.total_horas * 100) : 0;

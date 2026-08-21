@@ -23,9 +23,10 @@
 import { normalizeEquipoKey } from './normalizer.js';
 
 const DB_NAME = 'FlotaControlDB';
-// v6: historial de ediciones manuales, etiquetas de columna para tablas de movimientos,
-// estados de ralentí (aceptable/seguimiento) y reclamos internos de revisión de GPS.
-const DB_VERSION = 6;
+// v7: estados persistentes de "consumo fuera de la flota" (vehículos con patente sin interno,
+// planta, otros) marcados como válidos así — para que dejen de aparecer en el diagnóstico sin
+// necesidad de darlos de alta en el maestro (ej. vehículos de un programa de préstamo/demo).
+const DB_VERSION = 7;
 
 let dbInstance = null;
 
@@ -89,6 +90,10 @@ export function initDB() {
                 const s = db.createObjectStore('reclamosGPS', { keyPath: 'id', autoIncrement: true });
                 s.createIndex('interno', 'interno', { unique: false });
                 s.createIndex('estado', 'estado', { unique: false });
+            }
+            // v7 — "consumo fuera de la flota" (código/dominio, no interno de padrón) aceptado
+            if (!db.objectStoreNames.contains('noFlotaAceptados')) {
+                db.createObjectStore('noFlotaAceptados', { keyPath: 'codigo' });
             }
         };
     });
@@ -475,6 +480,25 @@ export function quitarRalentiEstado(interno) {
     return writeTx(['ralentiEstados'], ([store]) => { store.delete(interno); });
 }
 
+// ============================ CONSUMO FUERA DE LA FLOTA: ACEPTADO ============================
+
+/**
+ * Un código/dominio del hallazgo "consumo fuera de la flota" (vehículo con patente sin interno,
+ * planta, u otros) marcado como "así está bien" — por ejemplo un vehículo de un programa de
+ * préstamo/demo que nunca va a tener un interno propio en el padrón, pero sí tiene centro de
+ * costo asignado. { codigo, motivo, fecha }. `codigo` es el mismo valor que se muestra en el
+ * hallazgo (el interno/dominio huérfano), no un interno real del maestro.
+ */
+export function getNoFlotaAceptados() { return readAll('noFlotaAceptados'); }
+export function setNoFlotaAceptado(codigo, motivo = '') {
+    return writeTx(['noFlotaAceptados'], ([store]) => {
+        store.put({ codigo, motivo, fecha: new Date().toISOString() });
+    });
+}
+export function quitarNoFlotaAceptado(codigo) {
+    return writeTx(['noFlotaAceptados'], ([store]) => { store.delete(codigo); });
+}
+
 // ============================ RECLAMOS DE REVISIÓN DE GPS ============================
 
 /**
@@ -511,7 +535,7 @@ export function actualizarReclamoGPS(id, cambios) {
 export function clearAllData() {
     return writeTx(
         ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
-         'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS'],
+         'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS', 'noFlotaAceptados'],
         (stores) => { stores.forEach(s => s.clear()); }
     );
 }

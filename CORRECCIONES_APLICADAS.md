@@ -444,3 +444,78 @@ pieza por separado).
   registro interno completo (equipo, motivo, fecha, estado) con el campo `proveedor` ya
   preparado en la base para cuando se sume esa integración, pero sin conectar nada externo
   todavía.
+
+## 20/08/2026, quinta tanda
+
+Ronda de correcciones a partir de un feedback largo con 6 capturas de la corrección masiva en
+Cargas, el hallazgo de ralentí y el hallazgo de "vehículos sin interno" en producción. Todo lo
+siguiente se verificó en vivo con Playwright contra los 9 archivos reales de `ARCHIVOS/`,
+incluida una pasada final que ejercita las 7 correcciones juntas en una sola sesión de
+navegador, más una repetición completa de la pasada de regresión de la ronda anterior (8 áreas)
+para confirmar que nada se rompió.
+
+1. **La corrección masiva de interno en Cargas no aplicaba a todos los registros** (el bug
+   principal de las capturas, ej. "DEMO SCANIA"): la causa NO estaba en la selección múltiple
+   por checkbox de la tabla (esa se probó aparte y ya funcionaba bien), sino en que corregir
+   una fila una por una desde el panel de "Corregir" solo tocaba esa fila. Se agregó, dentro de
+   ese mismo panel, un checkbox tildado por defecto "Aplicar esta asignación a las otras N
+   cargas sin asignar del mismo dominio (patente)" — al guardar, además de la fila que se
+   estaba corrigiendo, se les asigna el mismo interno a todas las demás cargas de ese dominio
+   que todavía no tenían equipo asignado. De paso se encontró y corrigió un `ReferenceError`
+   (`interno_original is not defined`) que quedó de una variable renombrada, y que cortaba en
+   seco la función antes de llegar a aplicar el resto del dominio — sin ese error a la vista en
+   pantalla, porque quedaba silenciado en la consola. Verificado en vivo: corregir 1 de 18
+   cargas del mismo dominio con el checkbox tildado asignó el interno a las 18, no solo a 1.
+
+2. **"Promediar y marcar como aceptable" aplicaba a los 15 equipos a ciegas, sin poder elegir**:
+   al revisar se encontró que esa acción trabaja sobre los equipos "en la media para abajo",
+   que casi nunca son los mismos que ya se ven en la lista principal del hallazgo (esa lista
+   muestra los peores, no los de la media) — por eso no había forma de tildar/destildar nada,
+   directamente no estaban listados en ningún lado. Se agregó un desplegable "Ver los N equipos
+   en la media para abajo" dentro de la tarjeta, con un checkbox tildado por defecto para cada
+   uno, y el botón "Promediar" ahora solo marca como aceptable a los que quedaron tildados.
+   Verificado en vivo: con un equipo destildado a propósito, el botón marcó a los otros 15 pero
+   ese en particular no quedó como aceptable.
+
+3. **Reclamo GPS: el motivo no se veía bien y no ofrecía enviar por mail**: el `prompt()` del
+   navegador cortaba el motivo sugerido (que puede ser largo) y no daba forma de abrirlo en un
+   cliente de mail. Se reemplazó por un modal propio con el motivo en un textarea editable
+   (se ve completo, se puede corregir antes de guardar) y dos botones: "Guardar reclamo" (como
+   antes) y "Guardar y enviar por mail", que arma un `mailto:` con asunto y cuerpo ya redactados
+   y lo abre con el cliente de correo predeterminado del equipo (Outlook u otro) — la app no
+   manda nada por sí sola, solo prepara el mensaje para que lo mande la persona, ya que
+   (como se definió en la ronda anterior) no hay integración con ningún proveedor todavía.
+   Verificado en vivo: el modal muestra el motivo completo, el botón de mail está presente, y
+   guardar sin mail deja el reclamo registrado igual.
+
+4. **Hallazgo "vehículos con patente pero sin interno en el padrón": no había forma de marcar
+   un código como válido así**: asignarle un interno a mano a una de estas cargas no alcanza,
+   porque este hallazgo solo compara contra los equipos reales del padrón — un interno inventado
+   nunca va a calzar. Se agregó un mecanismo aparte, independiente del padrón: un nuevo store en
+   la base (`noFlotaAceptados`, IndexedDB pasó de v6 a v7) donde se guarda qué códigos se
+   marcaron como "así está bien" (típico caso: vehículo de un programa de préstamo/demo, con
+   centro de costo pero sin interno propio). Cada código marcado sale del cálculo del hallazgo
+   de ahí en adelante (se excluye de litros/costo/cantidad, con una nota de cuántos quedaron
+   afuera por esta razón en el detalle) y se puede ver y desmarcar desde un modal "Códigos
+   válidos así". Verificado en vivo: marcar un código lo sacó de la lista del hallazgo (bajó de
+   3 a 2 ítems) y quedó excluido del cálculo.
+
+5. **La sugerencia de cálculo inverso (CF38) no mostraba de qué equipos salía la referencia**:
+   el cálculo (`sugerirMeta`) ya traía internamente la lista de equipos usados como referencia,
+   simplemente no se mostraba en ningún lado. Se agregó un botón chico "Ver equipos de
+   referencia" junto al botón de sugerir, que abre el mismo popover de "cómo se calculó" ya
+   existente con el detalle de cada equipo de referencia y su valor. Verificado en vivo: el
+   popover se abrió mostrando los 8 equipos usados como referencia para la sugerencia.
+
+6. **El overlay de detalle de equipo perdía información que sí estaba en la tarjeta chica**
+   (días hábiles cubiertos, cantidad de puntos GPS): las dos vistas tenían implementaciones
+   separadas y desactualizadas de la misma idea de "info del período" — la tarjeta chica se
+   había ido actualizando en rondas anteriores y el overlay se quedó atrás. En vez de parchear
+   el overlay a mano se lo hizo llamar a la misma función compartida que ya arma esa línea en la
+   tarjeta chica (`cardPeriodoInfo()`), para que las dos vistas queden sincronizadas de acá en
+   más y no vuelvan a desviarse. Verificado en vivo: el overlay ahora muestra días hábiles
+   cubiertos, período, cantidad de puntos GPS y el aviso de ralentí, igual que la tarjeta chica.
+
+7. **Badge "PENDING" en inglés al cargar archivos**: quedó de una ronda anterior que tradujo
+   "LISTO"/"ERROR" pero se le pasó por alto "pending". Corregido a "PENDIENTE". Verificado en
+   vivo: el badge dice "PENDIENTE" antes de procesar los archivos.

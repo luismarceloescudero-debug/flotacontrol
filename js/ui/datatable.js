@@ -660,7 +660,7 @@ async function renderMovimientos(tipo) {
                 ? correccionesMap.get(huellaCarga(record)) : null;
             const panelTr = buildCorrecionRow(record, todos, equipos, colspan, correccionExistente);
             tr.insertAdjacentElement('afterend', panelTr);
-            conectarPanelCorreccion(panelTr, record, todos);
+            conectarPanelCorreccion(panelTr, record, todos, equipos);
         });
     }
 }
@@ -874,6 +874,19 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan, correccionExis
         .map(e => `<option value="${esc(e.interno)}">${esc(e.interno)}${e.denominacion ? ' – ' + esc(e.denominacion) : ''}</option>`)
         .join('');
 
+    // Otras cargas del MISMO dominio (patente) que todavía no tienen equipo asignado: pasa
+    // seguido con un vehículo prestado/demo que aparece con el mismo dominio en decenas de
+    // cargas — corregir una sola fila a mano y tener que repetir lo mismo fila por fila (o
+    // armar la selección múltiple a mano) es innecesario si el dominio ya identifica al mismo
+    // vehículo en todas ellas. Solo se cuentan las que siguen sin asignar (no se toca una carga
+    // que ya tiene un equipo distinto asignado, aunque comparta dominio por coincidencia).
+    const equipoKeysSet = new Set(equipos.map(e => e.interno_key || normalizeEquipoKey(e.interno)));
+    const domNorm = (record.dominio || '').trim().toUpperCase();
+    const hermanosMismoDominio = domNorm
+        ? todasCargas.filter(r => r.id !== record.id && (r.dominio || '').trim().toUpperCase() === domNorm &&
+            (!r.interno_key || !equipoKeysSet.has(r.interno_key)))
+        : [];
+
     const editando = !!correccionExistente;
     const interno_original = record._interno_original ?? record.interno ?? '';
     const valInterno = editando ? (correccionExistente.interno_correcto || record.interno || '') : '';
@@ -940,6 +953,13 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan, correccionExis
                     <input type="text" class="correc-obs-input"
                         placeholder="Nota libre" value="${esc(valObs)}">
                 </div>
+                ${hermanosMismoDominio.length ? `
+                <div class="correc-manual-row correc-aplicar-todos-row">
+                    <label class="correc-checkbox-label">
+                        <input type="checkbox" class="correc-aplicar-todos" checked>
+                        Aplicar esta asignación a las otras <strong>${hermanosMismoDominio.length}</strong> carga${hermanosMismoDominio.length === 1 ? '' : 's'} sin asignar del mismo dominio (<strong>${esc(record.dominio)}</strong>)
+                    </label>
+                </div>` : ''}
                 <div class="correc-manual-row" style="margin-top:10px">
                     <button class="btn-asignar-manual btn-primary btn-sm"><i class="fa-solid fa-check"></i> ${editando ? 'Guardar cambios' : 'Guardar corrección'}</button>
                     ${editando ? '<button class="btn-deshacer-correc btn-secondary btn-sm" title="Sacarle la asignación de equipo y volver a dejarla como carga sin asignar"><i class="fa-solid fa-rotate-left"></i> Deshacer corrección</button>' : ''}
@@ -957,8 +977,10 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan, correccionExis
 }
 
 /** Conecta los handlers dentro del panel de corrección inline. */
-function conectarPanelCorreccion(panelTr, record, todasCargas) {
+function conectarPanelCorreccion(panelTr, record, todasCargas, equipos = []) {
     const huella = huellaCarga(record);
+    const equipoKeysSet = new Set(equipos.map(e => e.interno_key || normalizeEquipoKey(e.interno)));
+    const domNorm = (record.dominio || '').trim().toUpperCase();
 
     function leerCamposExtra() {
         return {
@@ -1014,9 +1036,42 @@ function conectarPanelCorreccion(panelTr, record, todasCargas) {
         if (extra.lugar_carga_correcto) cambiosRecord.lugar_carga = extra.lugar_carga_correcto;
         if (extra.sector_correcto) cambiosRecord.sector = extra.sector_correcto;
         await updateRawRecord(record.id, cambiosRecord);
+        await registrarEdicion({
+            tabla: 'carga', registroId: record.id, etiqueta: `${formatFechaAR(record.fecha)} · corrección`,
+            campo: 'Interno', valorAnterior: internoOriginalReal, valorNuevo: interno
+        });
+
+        // "Aplicar a las demás cargas del mismo dominio": mismo criterio que en el panel
+        // (mismo dominio, todavía sin equipo asignado), recalculado acá por si el usuario tocó
+        // el dominio a mano antes de guardar.
+        const aplicarTodos = panelTr.querySelector('.correc-aplicar-todos');
+        let nHermanos = 0;
+        if (aplicarTodos && aplicarTodos.checked && domNorm) {
+            const hermanos = todasCargas.filter(r => r.id !== record.id && (r.dominio || '').trim().toUpperCase() === domNorm &&
+                (!r.interno_key || !equipoKeysSet.has(r.interno_key)));
+            for (const hr of hermanos) {
+                const hOriginal = (hr._interno_original ?? hr.interno) || '';
+                await saveCorreccionCarga({
+                    huella: huellaCarga(hr), accion: 'asignar', interno_correcto: interno, dominio_correcto: dominio,
+                    centro_costo_correcto: extra.centro_costo_correcto, lugar_carga_correcto: extra.lugar_carga_correcto,
+                    interno_original: hOriginal, fecha: hr.fecha, litros: hr.litros, importe: hr.importe
+                });
+                const cambiosHr = { interno, interno_key: ikey, dominio: dominio || hr.dominio || '', dominio_key: normalizeEquipoKey(dominio || hr.dominio || ''), _corregido: true, _interno_original: hOriginal };
+                if (extra.centro_costo_correcto) cambiosHr.centro_costo = extra.centro_costo_correcto;
+                if (extra.lugar_carga_correcto) cambiosHr.lugar_carga = extra.lugar_carga_correcto;
+                await updateRawRecord(hr.id, cambiosHr);
+                await registrarEdicion({
+                    tabla: 'carga', registroId: hr.id, etiqueta: `${formatFechaAR(hr.fecha)} · corrección en lote por dominio`,
+                    campo: 'Interno', valorAnterior: hOriginal, valorNuevo: interno
+                });
+                nHermanos++;
+            }
+        }
+
         panelTr.remove();
         renderDataTable();
         if (typeof window.renderPanel === 'function') window.renderPanel();
+        if (nHermanos) alert(`Asignado ${interno}: esta carga y ${nHermanos} más del dominio ${dominio || record.dominio}.`);
     }
 
     panelTr.querySelectorAll('.btn-asignar-cand').forEach(btn => {

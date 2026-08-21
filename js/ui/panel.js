@@ -4,7 +4,7 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS } from '../data/database.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos } from '../data/analyzer.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR } from '../data/normalizer.js';
@@ -33,6 +33,9 @@ let datosCrudos = null;
 // Estados persistentes de ralentí (aceptable/seguimiento) por interno — se recargan al abrir
 // el panel y cada vez que se marca/desmarca uno, para que generarDiagnostico() los use.
 let ralentiEstadosCache = [];
+// Códigos de "consumo fuera de la flota" (vehículo con patente sin interno, planta, otros)
+// marcados como "así está bien" — mismo patrón que ralentiEstadosCache.
+let noFlotaAceptadosCache = [];
 
 // Equipos marcados para comparar desde las tarjetas (checkbox en cada card + barra flotante),
 // para no depender de buscar manualmente cada equipo dentro del modal de comparativa.
@@ -129,11 +132,12 @@ export async function renderPanel() {
     kpiEl.innerHTML = '<p style="color:var(--text-muted)">Analizando datos...</p>';
 
     try {
-        const [equipos, rawRecords, estimados, ralentiEstados] = await Promise.all([
-            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados()
+        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados] = await Promise.all([
+            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados()
         ]);
         datosCrudos = { equipos, rawRecords, estimados };
         ralentiEstadosCache = ralentiEstados;
+        noFlotaAceptadosCache = noFlotaAceptados;
 
         const fuentes = {
             equipos: equipos.length,
@@ -338,6 +342,27 @@ function fuentesHTML(f) {
             <i class="fa-solid fa-triangle-exclamation"></i>
             <div><strong>Falta procesar:</strong> ${faltan.map(i => `<code>${esc(i.archivo)}</code>`).join(' · ')}. Sin eso, los cálculos quedan incompletos.</div>
         </div>` : ''}`;
+}
+
+/**
+ * Registra el detalle de una sugerencia de meta (sugerirMeta, ver diagnostico.js) para que se
+ * pueda abrir con el mismo mecanismo de "ver cálculo" del resto de la app: qué equipos entraron
+ * en la mediana y cuánto midió cada uno, no solo el número final. Devuelve los atributos HTML
+ * para el botón que abre ese detalle (separado del botón "Usar sugerencia": ese aplica el
+ * valor, este solo lo explica — no pueden ser el mismo elemento o un click en uno dispara el
+ * otro por el listener por delegación de calcpopover.js).
+ */
+function registrarSugerenciaCalculo(interno, sug) {
+    return registrarCalculo(`sugerencia-${interno}`, {
+        titulo: `De dónde sale la sugerencia para ${interno}`,
+        valor: `${nf(sug.valor, 2)} ${sug.unidad}`,
+        nota: sug.base,
+        pasos: sug.pares.map(p => ({
+            texto: `${p.interno}`,
+            calculo: `${p.cargas} carga${p.cargas === 1 ? '' : 's'}`,
+            resultado: `${nf(p.valor, 2)} ${sug.unidad}`
+        }))
+    });
 }
 
 // ---------------------------------------------------------------- KPIs
@@ -557,7 +582,7 @@ function renderKPIs(el, t, fuentes) {
 function renderDiagnostico(analisis, rawRecords = []) {
     const el = document.getElementById('panel-diagnostico');
     if (!el) return;
-    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache);
+    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache);
 
     // Qué categorías de hallazgo había la vez anterior y ya no están: es la señal de que un
     // ajuste de metas o un archivo nuevo realmente cambió algo, no solo un texto que dice
@@ -602,6 +627,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
         const seguidos = diagSeguimiento.get(h.id) || new Set();
         const acciones = ACCIONES_PROPUESTAS[h.id] || [];
         const esRalenti = esHallazgoRalenti(h.id);
+        const esNoflCard = h.id.startsWith('nofl_');
         return `
         <details class="diag-card ${sev[h.severidad]} ${esIgnorado ? 'diag-ignorado' : ''}" data-id="${esc(h.id)}" ${abierto ? 'open' : ''}>
             <summary>
@@ -623,6 +649,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     ${esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.length ? `<button class="btn-sm btn-ralenti-promediar" data-hallazgo="${esc(h.id)}" title="Marca como aceptable a los ${h.internos_bajo_promedio.length} equipos en la media (${nf(h.promedio_ralenti)} hs) para abajo, dejando visibles solo a los que se salen por arriba"><i class="fa-solid fa-chart-simple"></i> Promediar y marcar como aceptable (${h.internos_bajo_promedio.length})</button>` : ''}
                     ${esRalenti ? `<button class="btn-sm btn-ver-reclamos-gps" title="Ver los reclamos de revisión de GPS generados"><i class="fa-solid fa-list-check"></i> Reclamos GPS</button>` : ''}
                     ${esRalenti && ralentiEstadosCache.some(r => r.estado === 'aceptable') ? `<button class="btn-sm btn-ver-ralenti-aceptados" title="Ver y desmarcar equipos con ralentí aceptable"><i class="fa-solid fa-list-check"></i> Ralentí aceptable (${ralentiEstadosCache.filter(r => r.estado === 'aceptable').length})</button>` : ''}
+                    ${esNoflCard && noFlotaAceptadosCache.length ? `<button class="btn-sm btn-ver-nofl-aceptados" title="Ver y desmarcar códigos marcados como 'así está bien'"><i class="fa-solid fa-list-check"></i> Códigos válidos así (${noFlotaAceptadosCache.length})</button>` : ''}
                     <span class="diag-acciones-sep"></span>
                     ${esIgnorado
                         ? `<button class="btn-sm btn-diag-restaurar" data-hallazgo="${esc(h.id)}" title="Volver a mostrar este hallazgo"><i class="fa-solid fa-eye"></i> Restaurar</button>`
@@ -645,16 +672,44 @@ function renderDiagnostico(analisis, rawRecords = []) {
                                 </div>`).join('')}
                         </div>
                     </div>`).join('') : ''}
+                ${(() => {
+                    if (!esRalenti || !h.bajo_promedio_detalle || !h.bajo_promedio_detalle.length) return '';
+                    // Los equipos "en la media para abajo" casi nunca coinciden con los que ya se
+                    // ven en la lista de abajo (esa lista muestra los PEORES) — por eso se listan
+                    // acá aparte, con checkbox, para poder elegir cuáles incluye "Promediar y
+                    // marcar como aceptable" en vez de que sea todo-o-nada.
+                    const yaMostrados = new Set((h.equipos || []).map(e => e.interno));
+                    const extra = h.bajo_promedio_detalle.filter(x => !yaMostrados.has(x.interno));
+                    if (!extra.length) return '';
+                    return `
+                    <details class="diag-bajo-promedio">
+                        <summary>Ver los ${extra.length} equipos en la media para abajo (elegir cuáles incluir)</summary>
+                        <ul class="diag-lista diag-lista-bajo-promedio">
+                            ${extra.map(x => `
+                            <li data-interno="${esc(x.interno)}">
+                                <input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(x.interno)}" checked title="Incluir en 'Promediar y marcar como aceptable'">
+                                <span class="diag-eq">${esc(x.interno)}<small>${esc(x.denominacion || '')}</small></span>
+                                <span class="diag-val">${nf(x.horas)} hs en ralentí</span>
+                            </li>`).join('')}
+                        </ul>
+                    </details>`;
+                })()}
                 ${h.equipos && h.equipos.length ? `
                 <ul class="diag-lista">
                     ${h.equipos.map(e => {
                         const enSeg = seguidos.has(e.interno);
                         const esNofl = h.id.startsWith('nofl_');
+                        const esBajoPromedio = esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.includes(e.interno);
                         return `
                         <li data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" class="${enSeg ? 'diag-li-seguimiento' : ''}${esNofl ? ' diag-li-nofl' : ''}">
+                            ${esBajoPromedio ? `<input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(e.interno)}" checked title="Incluir en 'Promediar y marcar como aceptable'">` : ''}
                             <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
                             <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small></span>
-                            ${esNofl ? `<button class="btn-xs btn-ver-cargas" data-interno="${esc(e.interno)}" title="Ver en tabla de cargas"><i class="fa-solid fa-table-list"></i> Ver cargas</button>` : ''}
+                            ${esNofl ? `
+                            <button class="btn-xs btn-ver-cargas" data-interno="${esc(e.interno)}" title="Ver en tabla de cargas"><i class="fa-solid fa-table-list"></i> Ver cargas</button>
+                            <button class="btn-xs btn-nofl-valido" data-codigo="${esc(e.interno)}" title="Marcar que este código está bien así (ej. un vehículo de préstamo/demo sin interno propio): sale de este hallazgo de ahora en más">
+                                <i class="fa-solid fa-check"></i> Así está bien
+                            </button>` : ''}
                             ${esRalenti ? `
                             <button class="btn-xs btn-ralenti-aceptable" data-interno="${esc(e.interno)}" title="Marcar este ralentí como aceptable: sale de este hallazgo de ahora en más">
                                 <i class="fa-solid fa-check"></i> Aceptable
@@ -695,7 +750,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
     // --- Event listeners ---
     el.querySelectorAll('.diag-lista li[data-interno]').forEach(li => {
         li.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo')) return;
+            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo, .chk-ralenti-promedio, .btn-nofl-valido')) return;
             const hallazgoId = li.dataset.hallazgo || '';
             if (hallazgoId.startsWith('nofl_')) {
                 // Para hallazgos nofl_*, navegar a tabla de cargas y buscar el valor
@@ -820,6 +875,24 @@ function renderDiagnostico(analisis, rawRecords = []) {
         });
     });
 
+    // "Consumo fuera de la flota": marcar un código puntual (vehículo con patente sin interno,
+    // planta, otros) como "así está bien" — por ejemplo un vehículo de un programa de préstamo
+    // que nunca va a tener alta en el padrón, pero sí tiene centro de costo asignado. Sale del
+    // hallazgo de ahora en más, sin necesidad de darlo de alta como equipo.
+    el.querySelectorAll('.btn-nofl-valido').forEach(b => {
+        b.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const codigo = b.dataset.codigo;
+            await setNoFlotaAceptado(codigo);
+            noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => r.codigo !== codigo).concat([{ codigo }]);
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    el.querySelectorAll('.btn-ver-nofl-aceptados').forEach(b => {
+        b.addEventListener('click', (e) => { e.stopPropagation(); abrirNoFlotaAceptados(analisis, rawRecords); });
+    });
+
     // Ralentí: marcar un equipo puntual como "aceptable" — sale del hallazgo de ahora en más
     // (queda guardado en la base, no es un toggle de sesión como "seguimiento").
     el.querySelectorAll('.btn-ralenti-aceptable').forEach(b => {
@@ -836,17 +909,12 @@ function renderDiagnostico(analisis, rawRecords = []) {
     // Alcance actual: registro local (se puede ver desde "Reclamos GPS abiertos" debajo del
     // hallazgo); todavía no hay integración con ningún proveedor.
     el.querySelectorAll('.btn-ralenti-reclamo').forEach(b => {
-        b.addEventListener('click', async (e) => {
+        b.addEventListener('click', (e) => {
             e.stopPropagation();
-            const interno = b.dataset.interno;
             const motivoSugerido = b.dataset.hallazgo === 'ralenti_inverosimil'
                 ? 'Ralentí inverosímil (posible error de datos o sensor del GPS)'
                 : 'Ralentí muy alto sostenido: pedir verificación de que el equipo GPS esté reportando bien';
-            const motivo = prompt(`Reclamo de revisión de GPS para ${interno}.\n\nMotivo:`, motivoSugerido);
-            if (motivo === null) return;
-            await crearReclamoGPS({ interno, motivo: motivo || motivoSugerido });
-            alert(`Reclamo generado para ${interno}.\n\nMotivo: ${motivo || motivoSugerido}\n\nQueda guardado en la app — todavía no se envía a ningún proveedor.`);
-            renderDiagnostico(analisis, rawRecords);
+            abrirNuevoReclamoModal(b.dataset.interno, motivoSugerido, analisis, rawRecords);
         });
     });
 
@@ -858,9 +926,14 @@ function renderDiagnostico(analisis, rawRecords = []) {
             e.stopPropagation();
             const hid = b.dataset.hallazgo;
             const h = hallazgos.find(x => x.id === hid);
-            const internos = (h && h.internos_bajo_promedio) || [];
-            if (!internos.length) return;
-            if (!confirm(`¿Marcar como "ralentí aceptable" a los ${internos.length} equipos que están en la media (${nf(h.promedio_ralenti)} hs) para abajo?\n\nLos que superan el promedio siguen visibles para revisar uno por uno.`)) return;
+            // Se toman los tildados dentro de ESTA tarjeta (el usuario puede destildar los que
+            // no quiere aceptar todavía, por ejemplo porque sospecha que ese en particular tiene
+            // un problema real de GPS y prefiere reclamarlo en vez de aceptarlo) — no la lista
+            // completa que vino del cálculo, que es solo la propuesta por defecto (todos tildados).
+            const card = b.closest('.diag-card');
+            const internos = card ? [...card.querySelectorAll('.chk-ralenti-promedio:checked')].map(c => c.dataset.interno) : [];
+            if (!internos.length) { alert('No hay equipos tildados para promediar.'); return; }
+            if (!confirm(`¿Marcar como "ralentí aceptable" a los ${internos.length} equipos tildados (de los ${(h?.internos_bajo_promedio || []).length} en la media, ${nf(h?.promedio_ralenti)} hs, para abajo)?\n\nLos que superan el promedio, y los que destildaste, siguen visibles para revisar uno por uno.`)) return;
             for (const interno of internos) await setRalentiEstado(interno, 'aceptable');
             ralentiEstadosCache = ralentiEstadosCache.filter(r => !internos.includes(r.interno))
                 .concat(internos.map(interno => ({ interno, estado: 'aceptable' })));
@@ -890,6 +963,62 @@ function renderDiagnostico(analisis, rawRecords = []) {
  * Alcance actual: registro local, sin integración con ningún proveedor todavía — el campo
  * `proveedor` en la base ya está listo para cuando se sume esa info.
  */
+/** Arma y abre un mailto: con el reclamo ya redactado, para que salga por el cliente de mail
+ * que tenga configurado por defecto la persona (Outlook, Gmail de escritorio, etc.) — la app no
+ * manda nada por sí sola, solo prepara el mensaje. Sin un mail de proveedor cargado todavía, se
+ * deja el destinatario vacío para que lo complete quien lo envía. */
+function mailtoReclamo(reclamo) {
+    const asunto = `Reclamo de revisión GPS — equipo ${reclamo.interno}`;
+    const cuerpo = `Hola,\n\nSolicitamos revisión del equipo GPS del equipo ${reclamo.interno}.\n\nMotivo: ${reclamo.motivo}\n\nFecha del reclamo: ${new Date(reclamo.fecha).toLocaleDateString('es-AR')}\n\nSaludos.`;
+    const url = `mailto:?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+    window.location.href = url;
+}
+
+/** Modal de alta de reclamo GPS: reemplaza el prompt() del navegador (difícil de leer con un
+ * motivo largo) por un formulario real donde el motivo sugerido se ve completo y se puede
+ * editar antes de guardar, con la opción de abrir de una el cliente de mail para mandarlo. */
+function abrirNuevoReclamoModal(interno, motivoSugerido, analisis, rawRecords) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const modalId = 'modal-nuevo-reclamo';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div><h2>Reclamo de revisión de GPS</h2>
+                    <p class="modal-sub">Equipo <strong>${esc(interno)}</strong></p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Motivo</label>
+                    <textarea class="reclamo-motivo-input" rows="4">${esc(motivoSugerido)}</textarea>
+                    <p class="modal-note">Se guarda como registro interno en la app. Todavía no hay integración con ningún proveedor — "Enviar por mail" abre tu cliente de correo (Outlook, etc.) con el mensaje ya redactado para que lo mandes vos.</p>
+                    <div class="modal-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:0.75rem">
+                        <button class="btn-secondary btn-sm" data-close>Cancelar</button>
+                        <button class="btn-secondary btn-sm" id="btn-reclamo-guardar"><i class="fa-solid fa-floppy-disk"></i> Guardar reclamo</button>
+                        <button class="btn-primary btn-sm" id="btn-reclamo-guardar-mail"><i class="fa-solid fa-envelope"></i> Guardar y enviar por mail</button>
+                    </div>
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    const guardar = async (enviarMail) => {
+        const motivo = modal.querySelector('.reclamo-motivo-input').value.trim() || motivoSugerido;
+        const reclamo = await crearReclamoGPS({ interno, motivo });
+        cerrar();
+        renderDiagnostico(analisis, rawRecords);
+        if (enviarMail) mailtoReclamo(reclamo);
+    };
+    modal.querySelector('#btn-reclamo-guardar').addEventListener('click', () => guardar(false));
+    modal.querySelector('#btn-reclamo-guardar-mail').addEventListener('click', () => guardar(true));
+}
+
 async function abrirReclamosGPS() {
     const container = document.getElementById('modals-container');
     if (!container) return;
@@ -915,11 +1044,14 @@ async function abrirReclamosGPS() {
                                 <td>${esc(r.motivo)}</td>
                                 <td>${esc(new Date(r.fecha).toLocaleDateString('es-AR'))}</td>
                                 <td>${r.estado === 'abierto' ? '<span class="badge-warn">Abierto</span>' : '<span class="badge-ok">Cerrado</span>'}</td>
-                                <td>${r.estado === 'abierto' ? `<button class="btn-xs btn-cerrar-reclamo" data-id="${r.id}">Marcar cerrado</button>` : ''}</td>
+                                <td style="white-space:nowrap">
+                                    <button class="btn-xs btn-mail-reclamo" data-id="${r.id}" title="Abrir el cliente de mail con este reclamo redactado"><i class="fa-solid fa-envelope"></i> Mail</button>
+                                    ${r.estado === 'abierto' ? `<button class="btn-xs btn-cerrar-reclamo" data-id="${r.id}">Marcar cerrado</button>` : ''}
+                                </td>
                             </tr>`).join('')}
                         </tbody>
                     </table>
-                    <p class="modal-note">Para pedir la revisión, copiá esta lista o imprimí la página (Ctrl/Cmd+P) y enviala al proveedor de GPS.</p>`
+                    <p class="modal-note">Todavía no hay integración con ningún proveedor — "Mail" abre tu cliente de correo con el reclamo ya redactado para que lo mandes vos, o si preferís, imprimí la página (Ctrl/Cmd+P) y enviala.</p>`
                     : '<p class="modal-note">Todavía no se generó ningún reclamo. Se crean desde el botón "Reclamo GPS" en los hallazgos de ralentí.</p>'}
                 </div>
             </div>
@@ -932,6 +1064,12 @@ async function abrirReclamosGPS() {
         b.addEventListener('click', async () => {
             await actualizarReclamoGPS(parseInt(b.dataset.id, 10), { estado: 'cerrado' });
             abrirReclamosGPS();
+        });
+    });
+    modal.querySelectorAll('.btn-mail-reclamo').forEach(b => {
+        b.addEventListener('click', () => {
+            const r = reclamos.find(x => x.id === parseInt(b.dataset.id, 10));
+            if (r) mailtoReclamo(r);
         });
     });
 }
@@ -979,9 +1117,52 @@ function abrirRalentiAceptados(analisis, rawRecords) {
     });
 }
 
+/** Lista de códigos de "consumo fuera de la flota" marcados como "así está bien", con opción
+ * de desmarcar (vuelven a aparecer en el hallazgo la próxima vez que se recalcule). */
+function abrirNoFlotaAceptados(analisis, rawRecords) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const aceptados = noFlotaAceptadosCache;
+
+    const modalId = 'modal-nofl-aceptados';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div><h2>Códigos marcados "así está bien"</h2>
+                    <p class="modal-sub">${aceptados.length} código${aceptados.length === 1 ? '' : 's'}. Desmarcalo para que vuelva a aparecer en el hallazgo.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    ${aceptados.length ? `
+                    <ul class="diag-lista">
+                        ${aceptados.map(r => `<li data-codigo="${esc(r.codigo)}">
+                            <span class="diag-eq">${esc(r.codigo)}</span>
+                            <button class="btn-xs btn-quitar-nofl-aceptado" data-codigo="${esc(r.codigo)}"><i class="fa-solid fa-rotate-left"></i> Desmarcar</button>
+                        </li>`).join('')}
+                    </ul>` : '<p class="modal-note">No hay códigos marcados.</p>'}
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    modal.querySelector('[data-close]').addEventListener('click', () => modal.remove());
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    modal.querySelectorAll('.btn-quitar-nofl-aceptado').forEach(b => {
+        b.addEventListener('click', async () => {
+            const codigo = b.dataset.codigo;
+            await quitarNoFlotaAceptado(codigo);
+            noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => r.codigo !== codigo);
+            modal.remove();
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+}
+
 /** Ejecuta la acción propuesta para un hallazgo: abrir comparativa, ajustar metas, etc. */
 function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
-    const h = generarDiagnostico(analisis.filas, analisis.totales, [], ralentiEstadosCache).find(x => x.id === hallazgoId);
+    const h = generarDiagnostico(analisis.filas, analisis.totales, [], ralentiEstadosCache, noFlotaAceptadosCache).find(x => x.id === hallazgoId);
     const internos = h && h.equipos ? h.equipos.map(e => e.interno) : [];
 
     switch (accion) {
@@ -1605,6 +1786,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
     }
 
     const sug = editando && ultimoAnalisis ? sugerirMeta(f, ultimoAnalisis.filas) : null;
+    const sugAttrs = sug ? registrarSugerenciaCalculo(eq.interno, sug) : '';
 
     const cuerpo = editando ? `
         <div class="card-edit">
@@ -1625,10 +1807,12 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
                     </select>
                 </label>
             </div>
-            ${sug ? `<button class="btn-sugerir" data-valor="${sug.valor}" data-unidad="${sug.unidad}">
+            ${sug ? `
+            <button class="btn-sugerir" data-valor="${sug.valor}" data-unidad="${sug.unidad}">
                 <span><i class="fa-solid fa-wand-magic-sparkles"></i> Usar sugerencia: <strong>${nf(sug.valor, 2)} ${sug.unidad}</strong></span>
                 <small>${esc(sug.base)} · rango real ${nf(sug.minimo, 1)}–${nf(sug.maximo, 1)}</small>
-            </button>` : ''}
+            </button>
+            <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>` : ''}
             <div class="edit-actions">
                 <button class="btn-primary btn-card-save"><i class="fa-solid fa-check"></i> Guardar</button>
                 <button class="btn-secondary btn-card-cancel">Cancelar</button>
@@ -1714,6 +1898,7 @@ function abrirOverlayEquipo(fila, analisis) {
 
     // Sugerencia de meta (igual que en la tarjeta)
     const sug = ultimoAnalisis ? sugerirMeta(fila, ultimoAnalisis.filas) : null;
+    const sugAttrs = sug ? registrarSugerenciaCalculo(eq.interno, sug) : '';
 
     // Estado de comparación
     const enComparacion = comparSeleccion.has(eq.interno);
@@ -1734,18 +1919,20 @@ function abrirOverlayEquipo(fila, analisis) {
     }
 
     // Ralentí
-    let ralentiLine = '';
+    let ralentiTagOverlay = '';
     if (m.horas_ralenti > 0) {
         const cat = categoriaRalenti(eq.interno);
         const info = RALENTI_INFO[cat] || RALENTI_INFO.desperdicio;
         const pct = m.total_horas > 0 ? (m.horas_ralenti / m.total_horas * 100) : 0;
-        ralentiLine = `<div class="overlay-line"><span class="ralenti-tag ${info.clase}"><i class="fa-solid ${info.icono}"></i> ${nf(m.horas_ralenti, 1)} hs ralentí (${nf(pct)}%) · ${info.texto}</span></div>`;
+        ralentiTagOverlay = `<span class="ralenti-tag ${info.clase}" title="${nf(pct)}% del tiempo total · ${info.texto}"><i class="fa-solid ${info.icono}"></i> ${nf(m.horas_ralenti, 1)} hs ralentí · ${info.texto}</span>`;
     }
 
-    // Períodos desalineados (cargas y GPS cubren meses distintos): antes esto solo se veía en
-    // la tarjeta chica, acá no había ni el dato ni forma de hacer algo al respecto.
-    const desalineadoOverlay = desalineadoInfo(fila).html;
-    const desalineadoLine = desalineadoOverlay ? `<div class="overlay-line">${desalineadoOverlay}</div>` : '';
+    // Cobertura de días hábiles, período, cantidad de reportes GPS y períodos desalineados: se
+    // reutiliza EXACTAMENTE la misma función que arma esta línea en la tarjeta chica (antes el
+    // overlay tenía su propia versión recortada, que no incluía la cobertura ni el conteo de
+    // GPS — al pasar de tarjeta a overlay esa información desaparecía). Usando la misma función
+    // en los dos lugares, no se puede volver a perder nada al cambiar de vista.
+    const periodoInfoOverlay = cardPeriodoInfo(fila, m, ubi, ralentiTagOverlay);
 
     const html = `
     <div class="equip-overlay" id="equip-overlay">
@@ -1806,8 +1993,7 @@ function abrirOverlayEquipo(fila, analisis) {
             ${combustibleLine}
             ${ubi.centroCosto ? `<div class="overlay-line"><i class="fa-solid fa-building"></i> ${esc(ubi.centroCosto)}</div>` : ''}
             ${ubi.provincia && ubi.provincia !== 'SIN DATO' ? `<div class="overlay-line"><i class="fa-solid fa-location-dot"></i> ${esc(ubi.provincia)}</div>` : ''}
-            ${ralentiLine}
-            ${desalineadoLine}
+            <div class="overlay-line overlay-periodo-info">${periodoInfoOverlay}</div>
             <div class="overlay-line overlay-fuentes">
               ${m.cantidad_cargas > 0 ? `<span class="fuente-tag fuente-cargas"><i class="fa-solid fa-gas-pump"></i> ${m.cantidad_cargas} cargas</span>` : ''}
               ${m.cantidad_gps > 0 ? `<span class="fuente-tag fuente-gps"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} GPS</span>` : ''}
@@ -1837,10 +2023,12 @@ function abrirOverlayEquipo(fila, analisis) {
                   </select>
                 </label>
               </div>
-              ${sug ? `<button class="btn-sugerir" data-valor="${sug.valor}" data-unidad="${sug.unidad}">
+              ${sug ? `
+              <button class="btn-sugerir" data-valor="${sug.valor}" data-unidad="${sug.unidad}">
                 <span><i class="fa-solid fa-wand-magic-sparkles"></i> Usar sugerencia: <strong>${nf(sug.valor, 2)} ${sug.unidad}</strong></span>
                 <small>${esc(sug.base)} · rango real ${nf(sug.minimo, 1)}–${nf(sug.maximo, 1)}</small>
-              </button>` : ''}
+              </button>
+              <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>` : ''}
               <div class="edit-actions overlay-edit-actions">
                 <button class="btn-primary btn-card-save"><i class="fa-solid fa-check"></i> Guardar</button>
                 <button class="btn-secondary btn-overlay-close-cancel">Cancelar</button>
