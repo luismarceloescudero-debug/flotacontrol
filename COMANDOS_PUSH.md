@@ -17,7 +17,7 @@ git diff --stat
 
 ```powershell
 git add -A
-git commit -m "Diagnostico accionable: veredicto y accion por equipo, correccion masiva real, y fix de la regla de cargas vs dias habiles"
+git commit -m "Auditoria de calidad del dato de cargas: meses sin Resumen de Flota, cargas sin valorizar e inconsistencias de planilla"
 git push origin main
 ```
 
@@ -29,7 +29,7 @@ falla si alguno de la lista no cambió).
 Cada `-m` es un párrafo. Todo en una sola línea de consola, sin saltos:
 
 ```powershell
-git commit -m "Diagnostico accionable y fix de la regla de cargas vs dias habiles" -m "FIX: la regla comparaba cantidad de cargas contra dias habiles. Cargar dos veces el mismo dia es normal y las cargas de sabado, domingo o feriado son legitimas. Ahora compara dias distintos con carga descontando los no habiles." -m "Nuevo modal Como lo resuelvo: un veredicto por equipo con la accion que le corresponde, sobre todos los equipos del hallazgo." -m "Correccion masiva real: Aplicar lo sugerido le aplica a cada equipo SU accion, no la misma a todos." -m "Registros en cero descartados del analisis; siguen visibles en la tabla." -m "Nuevo hallazgo datos parciales, con pantalla para decidir equipo por equipo." -m "Correcciones de cargas: interno opcional, alta de internos nuevos como equipo fuera de flota, centro de costo propuesto desde lugar o sector." -m "Base de Datos: el filtro de anio/mes ya no esconde las filas de planillas sin fecha; los archivos con nombre opaco ya no titulan la pestana con un hash." -m "Estilo: botones chicos unificados en diagnostico, Seguimiento y modales."
+git commit -m "Auditoria de calidad del dato de cargas" -m "Nuevo hallazgo meses_sin_gps: detecta meses con cargas y sin Resumen de Flota subido. Con los datos reales son julio y agosto: 736 cargas (18%), 113.312 L y 253 millones sin poder controlar. Explica de una la mayoria de los sin dato de actividad, periodos desalineados y cobertura baja." -m "Nuevo hallazgo cargas_sin_valorizar: cargas con precio unitario o costo total en cero. Son 38 filas y 5.196 L: todos los importes de la app estaban subestimados en eso." -m "Nuevo hallazgo calidad_planilla: mismo combustible escrito de dos formas (YPF 500 / YPF500) y filas repetidas (mismo equipo, fecha y litros)." -m "FIX: la regla comparaba cantidad de cargas contra dias habiles. Cargar dos veces el mismo dia es normal y las cargas de sabado, domingo o feriado son legitimas. Ahora compara dias distintos con carga descontando los no habiles." -m "Nuevo modal Como lo resuelvo: un veredicto por equipo con la accion que le corresponde, sobre todos los equipos del hallazgo." -m "Correccion masiva real: Aplicar lo sugerido le aplica a cada equipo SU accion, no la misma a todos." -m "Registros en cero descartados del analisis; siguen visibles en la tabla." -m "Nuevo hallazgo datos parciales, con pantalla para decidir equipo por equipo." -m "Correcciones de cargas: interno opcional, alta de internos nuevos como equipo fuera de flota, centro de costo propuesto desde lugar o sector." -m "Base de Datos: el filtro de anio/mes ya no esconde las filas de planillas sin fecha; los archivos con nombre opaco ya no titulan la pestana con un hash." -m "Estilo: botones chicos unificados en diagnostico, Seguimiento y modales."
 ```
 
 ## Sobre las advertencias de CRLF

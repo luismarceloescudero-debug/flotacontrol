@@ -553,6 +553,69 @@ export function resolverEquipo(hallazgoId, fila, todas = []) {
     return null;
 }
 
+
+/**
+ * Auditoría de calidad de las cargas. No mira el consumo de los equipos sino el DATO en sí:
+ * si falta el archivo de un mes, si hay cargas sin valorizar, si el mismo combustible está
+ * escrito de dos formas, si hay filas repetidas. Son los errores que no se ven mirando una
+ * tarjeta — se ven mirando la planilla entera de una — y que ensucian todo lo que se calcule
+ * después: un mes sin Resumen de Flota deja a decenas de equipos "sin dato de actividad", y una
+ * carga con costo cero baja el total de gasto sin que nadie se entere.
+ */
+export function auditarCalidadCargas(rawRecords = []) {
+    const cargas = rawRecords.filter(r => r.type === 'carga');
+    const gps = rawRecords.filter(r => r.type === 'gps');
+    const mesDe = (r) => r.periodo || (r.fecha ? String(r.fecha).slice(0, 7) : null);
+    const mesesGps = new Set(gps.map(mesDe).filter(Boolean));
+
+    // 1. Meses con cargas y sin ningún Resumen de Flota cargado.
+    const porMes = new Map();
+    cargas.forEach(c => {
+        const p = mesDe(c);
+        if (!p) return;
+        if (!porMes.has(p)) porMes.set(p, { periodo: p, cargas: 0, litros: 0, costo: 0, internos: new Set() });
+        const m = porMes.get(p);
+        m.cargas++;
+        m.litros += parseFloat(c.litros) || 0;
+        m.costo += parseFloat(c.importe) || 0;
+        if (c.interno) m.internos.add(c.interno);
+    });
+    const mesesSinGps = [...porMes.values()]
+        .filter(m => !mesesGps.has(m.periodo))
+        .sort((a, b) => a.periodo.localeCompare(b.periodo))
+        .map(m => ({ ...m, equipos: m.internos.size }));
+
+    // 2. Cargas sin valorizar: hay litros pero el precio o el costo vienen en cero.
+    const sinValor = cargas.filter(c => (parseFloat(c.litros) || 0) > 0 &&
+        ((parseFloat(c.importe) || 0) <= 0 || (parseFloat(c.precio_unitario) || 0) <= 0));
+
+    // 3. El mismo combustible escrito de dos formas ("YPF 500" y "YPF500"): la app los cuenta
+    //    como productos distintos y se rompen los totales por tipo de combustible.
+    const soloLetras = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const porNorm = new Map();
+    cargas.forEach(c => {
+        const k = soloLetras(c.combustible);
+        if (!k) return;
+        if (!porNorm.has(k)) porNorm.set(k, new Map());
+        const m = porNorm.get(k);
+        m.set(c.combustible, (m.get(c.combustible) || 0) + 1);
+    });
+    const variantes = [...porNorm.entries()]
+        .filter(([, m]) => m.size > 1)
+        .map(([clave, m]) => ({ clave, formas: [...m.entries()].sort((a, b) => b[1] - a[1]) }));
+
+    // 4. Filas repetidas: mismo equipo, misma fecha y los mismos litros.
+    const vistos = new Map();
+    const duplicados = [];
+    cargas.forEach(c => {
+        const k = `${c.interno_key || c.interno}|${c.fecha}|${Math.round((parseFloat(c.litros) || 0) * 10)}`;
+        if (vistos.has(k)) duplicados.push({ original: vistos.get(k), repetida: c });
+        else vistos.set(k, c);
+    });
+
+    return { mesesSinGps, sinValor, variantes, duplicados, totalCargas: cargas.length, mesesGps: [...mesesGps].sort() };
+}
+
 // ============================================================ HALLAZGOS
 
 export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = [], noFlotaAceptados = [], equiposExcluidos = []) {
@@ -1149,6 +1212,78 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                 meses_con_datos: x.cob.conDatos,
                 meses_periodo: x.cob.mesesPeriodo
             }))
+        });
+    }
+
+
+    // ---------- 15. Calidad del dato de las cargas ----------
+    // Esto no mira equipos: mira la planilla. Son los errores que dejan a todo el resto del
+    // análisis apoyado en datos incompletos, y que no se ven revisando tarjeta por tarjeta.
+    const cal = auditarCalidadCargas(rawRecords);
+
+    if (cal.mesesSinGps.length) {
+        const litros = cal.mesesSinGps.reduce((s, m) => s + m.litros, 0);
+        const costo = cal.mesesSinGps.reduce((s, m) => s + m.costo, 0);
+        const nCargas = cal.mesesSinGps.reduce((s, m) => s + m.cargas, 0);
+        const pct = cal.totalCargas ? Math.round((nCargas / cal.totalCargas) * 100) : 0;
+        hallazgos.push({
+            id: 'meses_sin_gps', severidad: 'alta', icono: 'fa-calendar-xmark',
+            no_comparar: true,
+            titulo: `Faltan los Resumen de Flota de ${cal.mesesSinGps.length} mes${cal.mesesSinGps.length === 1 ? '' : 'es'} que sí tienen cargas`,
+            detalle: `Hay <strong>${fmt(nCargas)} cargas</strong> (${pct}% del total, ${fmt(litros)} L, $${fmt(costo)}) en meses de los que <strong>no se subió el archivo de GPS</strong>. Para esos meses no hay km ni horas, así que no se puede calcular consumo de nada: los equipos aparecen como "sin dato de actividad", con "períodos desalineados" y con la cobertura baja, sin que ninguno de ellos tenga un problema real. Subir esos Resumen de Flota es lo que más limpia el diagnóstico de una sola vez. Meses con GPS cargado: ${cal.mesesGps.join(', ') || '—'}.`,
+            impacto_costo: costo,
+            equipos: cal.mesesSinGps.map(m => ({
+                interno: m.periodo, denominacion: `${m.equipos} equipos afectados`,
+                texto: `${fmt(m.cargas)} cargas · ${fmt(m.litros)} L`,
+                sub: `$${fmt(m.costo)} sin poder controlar · falta el Resumen de Flota de ese mes`
+            }))
+        });
+    }
+
+    if (cal.sinValor.length) {
+        const litros = cal.sinValor.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0);
+        const meses = [...new Set(cal.sinValor.map(c => c.periodo || String(c.fecha || '').slice(0, 7)).filter(Boolean))].sort();
+        hallazgos.push({
+            id: 'cargas_sin_valorizar', severidad: 'alta', icono: 'fa-dollar-sign',
+            no_comparar: true,
+            titulo: `${cal.sinValor.length} cargas sin valorizar: ${fmt(litros)} L cargados con precio o costo en cero`,
+            detalle: `El combustible salió del surtidor pero la planilla lo registra con <strong>precio unitario o costo total en cero</strong>. No es que hayan sido gratis: falta el dato. Todo lo que la app muestra en pesos — el gasto del período, el costo del sobreconsumo, el ahorro — está subestimado en esa cantidad hasta que se completen. ${meses.length ? `Se concentran en ${meses.join(', ')}.` : ''}`,
+            equipos: cal.sinValor.slice(0, 12).map(c => ({
+                interno: c.interno || c.dominio || '—', denominacion: c.combustible || '',
+                texto: `${fmt(parseFloat(c.litros) || 0, 1)} L sin valorizar`,
+                sub: `${c.fecha || 'sin fecha'}${c.lugar_carga ? ` · ${c.lugar_carga}` : ''}${c.chofer ? ` · ${c.chofer}` : ''}`
+            }))
+        });
+    }
+
+    if (cal.variantes.length || cal.duplicados.length) {
+        const partes = [];
+        if (cal.variantes.length) partes.push(`${cal.variantes.length} combustible${cal.variantes.length === 1 ? '' : 's'} escrito${cal.variantes.length === 1 ? '' : 's'} de más de una forma`);
+        if (cal.duplicados.length) partes.push(`${cal.duplicados.length} carga${cal.duplicados.length === 1 ? '' : 's'} repetida${cal.duplicados.length === 1 ? '' : 's'}`);
+        const ejemplos = cal.variantes.map(v =>
+            `<strong>${v.formas.map(([f, n]) => `"${f}" (${n})`).join(' y ')}</strong>`).join('; ');
+        hallazgos.push({
+            id: 'calidad_planilla', severidad: 'media', icono: 'fa-spell-check',
+            no_comparar: true,
+            titulo: `Inconsistencias en la planilla de cargas: ${partes.join(' y ')}`,
+            detalle: (cal.variantes.length
+                ? `El mismo producto escrito de dos maneras se cuenta como dos productos distintos y rompe cualquier total por tipo de combustible: ${ejemplos}. Se arregla unificando la escritura en la planilla de origen. `
+                : '') +
+                (cal.duplicados.length
+                    ? `Además hay ${cal.duplicados.length} fila${cal.duplicados.length === 1 ? '' : 's'} con el mismo equipo, la misma fecha y los mismos litros que otra: casi siempre es la misma carga cargada dos veces. Confirmá contra el comprobante antes de borrar.`
+                    : ''),
+            equipos: [
+                ...cal.variantes.map(v => ({
+                    interno: v.formas[0][0], denominacion: 'tipo de combustible',
+                    texto: `${v.formas.length} formas de escribirlo`,
+                    sub: v.formas.map(([f, n]) => `"${f}": ${n} cargas`).join(' · ')
+                })),
+                ...cal.duplicados.slice(0, 8).map(d => ({
+                    interno: d.repetida.interno || d.repetida.dominio || '—', denominacion: 'carga repetida',
+                    texto: `${fmt(parseFloat(d.repetida.litros) || 0, 1)} L el ${d.repetida.fecha || '—'}`,
+                    sub: `aparece dos veces con los mismos litros${d.repetida.importe ? ` · $${fmt(parseFloat(d.repetida.importe) || 0)} cada una` : ''}`
+                }))
+            ]
         });
     }
 

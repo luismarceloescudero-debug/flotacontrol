@@ -147,6 +147,18 @@ const ACCIONES_PROPUESTAS = {
         { texto: 'Revisar y decidir equipo por equipo', icono: 'fa-list-check', accion: 'revisar_parciales' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
+    meses_sin_gps: [
+        { texto: 'Ir a subir los archivos que faltan', icono: 'fa-cloud-arrow-up', accion: 'ir_a_carga' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
+    cargas_sin_valorizar: [
+        { texto: 'Ver esas cargas en la tabla', icono: 'fa-table-list', accion: 'ver_cargas_sin_valor' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
+    calidad_planilla: [
+        { texto: 'Ver esas cargas en la tabla', icono: 'fa-table-list', accion: 'ver_cargas' },
+        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
     cargas_exceden_dias_habiles: [
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
@@ -738,7 +750,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
                 <div class="diag-acciones-bar">
                     ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
                     ${acciones.map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
-                    ${h.equipos && h.equipos.length >= 2 ? `<button class="btn-sm btn-diag-comparar-lista" data-hallazgo="${esc(h.id)}" title="Abrir comparativa con estos equipos"><i class="fa-solid fa-code-compare"></i> Comparar estos equipos</button>` : ''}
+                    ${h.equipos && h.equipos.length >= 2 && !h.no_comparar ? `<button class="btn-sm btn-diag-comparar-lista" data-hallazgo="${esc(h.id)}" title="Abrir comparativa con estos equipos"><i class="fa-solid fa-code-compare"></i> Comparar estos equipos</button>` : ''}
                     ${esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.length ? `<button class="btn-sm btn-ralenti-promediar" data-hallazgo="${esc(h.id)}" title="Marca como aceptable a los equipos tildados de la lista de abajo (por defecto, los ${h.internos_bajo_promedio.length} que están en la media de ${nf(h.promedio_ralenti)} hs para abajo)"><i class="fa-solid fa-check-double"></i> Marcar aceptable (selección)</button>` : ''}
                     ${esRalenti && h.equipos && h.equipos.length ? `<button class="btn-sm btn-ralenti-reclamo-lote" data-hallazgo="${esc(h.id)}" title="Genera un reclamo de revisión de GPS para cada equipo tildado en la lista de abajo"><i class="fa-solid fa-satellite-dish"></i> Reclamo GPS (selección)</button>` : ''}
                     ${esRalenti ? `<button class="btn-sm btn-ver-reclamos-gps" title="Ver los reclamos de revisión de GPS generados"><i class="fa-solid fa-list-check"></i> Reclamos GPS</button>` : ''}
@@ -1484,6 +1496,45 @@ CONSEJOS.datos_parciales = {
         'Revisar la lista de apartados cada tanto: si el equipo volvió a reportar, hay que volver a incluirlo.'
     ]
 };
+CONSEJOS.meses_sin_gps = {
+    titulo: 'Faltan Resumen de Flota de meses que sí tienen cargas',
+    intro: 'Es el problema que más ruido genera en todo el diagnóstico. Sin el archivo de GPS de un mes no hay km ni horas, así que para ese mes no se puede calcular el consumo de ningún equipo: aparecen como "sin dato de actividad", con "períodos desalineados" y con cobertura baja — todos síntomas del mismo archivo que falta, no de problemas reales de los equipos.',
+    pasos: [
+        ['Subir el Resumen de Flota de cada mes que falta', 'Es un archivo por mes, el mismo formato que ya venís usando. Con eso solo, la mayoría de las alertas de esos equipos desaparecen sin tocar nada más.', { texto: 'Ir a Carga de Datos', modo: 'subir' }],
+        ['Si el archivo no existe todavía', 'Puede que el proveedor de GPS no lo haya emitido aún para el mes en curso. En ese caso no hay nada que corregir: el mes se completa cuando llegue, y mientras tanto conviene analizar solo los meses cerrados.'],
+        ['Si el proveedor no lo emite', 'Ahí sí es un reclamo: sin ese reporte no hay forma de controlar el combustible de ese período, y el gasto involucrado no es menor.']
+    ],
+    prevenir: [
+        'Subir el Resumen de Flota junto con la planilla de cargas todos los meses, en el mismo momento: son el par que se cruza, uno solo no alcanza.',
+        'Antes de analizar, mirar en Carga de Datos que estén los mismos meses de cargas y de GPS.'
+    ]
+};
+CONSEJOS.cargas_sin_valorizar = {
+    titulo: 'Cargas con precio o costo en cero',
+    intro: 'El combustible salió del surtidor pero la planilla lo registra sin valor. No fueron gratis: falta el dato. Todo lo que la app muestra en pesos queda subestimado hasta que se completen.',
+    pasos: [
+        ['Ver cuáles son', 'Están listadas con fecha, equipo, lugar y chofer. Casi siempre se concentran en el último mes cargado.', { texto: 'Ver esas cargas en la tabla', modo: 'sin_valor' }],
+        ['Completar el precio del período', 'Si el resto de las cargas de ese combustible en ese mes tienen precio, ese es el valor que corresponde. Se puede corregir carga por carga desde la tabla, haciendo click en la celda.'],
+        ['Chequear si es un problema del sistema de origen', 'Si son todas del mismo mes y del mismo surtidor, probablemente el precio no se cargó en el sistema que emite la planilla, y conviene arreglarlo ahí antes de que se repita.']
+    ],
+    prevenir: [
+        'Al recibir la planilla del mes, ordenar por costo total y mirar si hay ceros arriba: son diez segundos y evita cerrar un mes con el gasto mal.',
+        'Si el precio del combustible es de contrato y no cambia, dejarlo cargado por defecto en el sistema de origen.'
+    ]
+};
+CONSEJOS.calidad_planilla = {
+    titulo: 'Inconsistencias de escritura y filas repetidas',
+    intro: 'Errores de la planilla, no de los equipos. Son baratos de arreglar y ensucian totales que después se usan para decidir.',
+    pasos: [
+        ['Unificar la escritura del combustible', 'El mismo producto escrito de dos formas se cuenta como dos productos distintos. Buscar y reemplazar en la planilla de origen deja los totales por combustible correctos.'],
+        ['Revisar las filas repetidas', 'Mismo equipo, misma fecha, mismos litros. Casi siempre es la misma carga cargada dos veces — pero puede ser real (dos cargas iguales el mismo día). Confirmá contra el comprobante antes de borrar.', { texto: 'Ver esas cargas en la tabla', modo: 'sin_valor' }],
+        ['Corregir en el origen, no acá', 'Si se arregla solo en la app, el mes que viene la planilla vuelve con el mismo error.']
+    ],
+    prevenir: [
+        'Usar una lista desplegable en la planilla para el tipo de combustible, en vez de texto libre: elimina las variantes de escritura de raíz.',
+        'Antes de subir un archivo, verificar que ese período no se haya subido ya.'
+    ]
+};
 CONSEJOS.ralenti_camionetas = CONSEJOS.ralenti;
 CONSEJOS.ralenti_inverosimil = CONSEJOS.ralenti;
 
@@ -1705,6 +1756,12 @@ function abrirRegistrosConsejo(modo, hallazgoId) {
     const equiposH = (h && h.equipos) || [];
     if (modo === 'fuera_servicio') { abrirChequeoFueraServicio(analisis, equiposH.map(e => e.interno)); return; }
     if (modo === 'parciales') { abrirRevisionParciales(analisis, datosCrudos?.rawRecords || []); return; }
+    if (modo === 'subir') { if (typeof window.irA === 'function') window.irA('upload'); else document.getElementById('nav-upload')?.click(); return; }
+    if (modo === 'sin_valor') {
+        const e = equiposH[0];
+        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', (e && e.interno) || '');
+        return;
+    }
     if (modo === 'gps_equipos') {
         const e = equiposH[0];
         if (e && typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('gps', e.interno);
@@ -2184,6 +2241,17 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
             break;
         case 'resolver':
             abrirResolucion(hallazgoId, ultimoAnalisis, datosCrudos?.rawRecords || []);
+            break;
+        case 'ir_a_carga':
+            // Los meses que faltan no se arreglan dentro del Panel: hay que subir el archivo.
+            if (typeof window.irA === 'function') window.irA('upload');
+            else document.getElementById('nav-upload')?.click();
+            break;
+        case 'ver_cargas_sin_valor':
+            // El primer mes donde se concentran, ya filtrado.
+            if (h && h.equipos && h.equipos[0] && typeof window.abrirTablaConBusqueda === 'function') {
+                window.abrirTablaConBusqueda('carga', h.equipos[0].interno || '');
+            }
             break;
         default:
             if (internos.length) buscarEquipo(internos[0]);

@@ -53,6 +53,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
     // Usado desde la vista de Seguimiento: volver al Panel ya con la tarjeta del equipo buscada
     // y a la vista, en vez de solo cambiar de pestaña y dejar que el usuario la busque a mano.
+    // Navegación genérica publicada para los hallazgos que no se resuelven dentro del Panel
+    // (ej. "faltan los Resumen de Flota de julio y agosto": eso se arregla subiendo el archivo).
+    window.irA = irA;
     window.irAPanelConBusqueda = (interno) => {
         irA('panel');
         buscarEquipo(interno);
