@@ -32,7 +32,7 @@ const DB_NAME = 'FlotaControlDB';
 // v9: registro de prefijos "fuera de flota" oficializados (ej. CA = CALDERA, LM = LIMPIEZA):
 // códigos que no son equipos con km/horas pero sí gasto real, dados de alta a propósito desde
 // el hallazgo "códigos nuevos de Mendoza" para que dejen de figurar como consumo sin identificar.
-const DB_VERSION = 9;
+const DB_VERSION = 10;
 
 let dbInstance = null;
 
@@ -108,6 +108,12 @@ export function initDB() {
             // v9 — prefijos "fuera de flota" oficializados (CA, LM, y los que se vayan sumando)
             if (!db.objectStoreNames.contains('prefijosNoFlota')) {
                 db.createObjectStore('prefijosNoFlota', { keyPath: 'prefijo' });
+            }
+            // v10 — equipos con pocas cargas marcados "en seguimiento": no se excluyen del
+            // análisis (a diferencia de equiposExcluidos), solo quedan anotados con un motivo
+            // para no repreguntar por ellos cada vez que aparecen con poca base de datos.
+            if (!db.objectStoreNames.contains('seguimientoEquipos')) {
+                db.createObjectStore('seguimientoEquipos', { keyPath: 'interno' });
             }
         };
     });
@@ -573,6 +579,28 @@ export function quitarPrefijoNoFlota(prefijo) {
     return writeTx(['prefijosNoFlota'], ([store]) => { store.delete(prefijo); });
 }
 
+// ============================ EQUIPOS "EN SEGUIMIENTO" ============================
+
+/**
+ * Un equipo con pocas cargas o poca cobertura NO se excluye del análisis (para eso está
+ * `equiposExcluidos`, que sí lo saca de las cuentas): acá solo queda ANOTADO, con un motivo,
+ * para que la próxima vez que aparezca con el mismo problema no se vuelva a investigar de cero.
+ * Marcar para seguimiento no vuelve confiable el dato por sí solo — lo que lo vuelve confiable
+ * es que, con más períodos importados, la cobertura real mejore o se mantenga estable; el motivo
+ * queda como explicación mientras tanto (equipo fuera de servicio parte del período, cambio de
+ * sucursal, baja de producción, carga fuera de la empresa, u otro).
+ * { interno, motivo, categoria, fecha }
+ */
+export function getSeguimientoEquipos() { return readAll('seguimientoEquipos'); }
+export function setSeguimientoEquipo(interno, motivo = '', categoria = 'otro') {
+    return writeTx(['seguimientoEquipos'], ([store]) => {
+        store.put({ interno, motivo, categoria, fecha: new Date().toISOString() });
+    });
+}
+export function quitarSeguimientoEquipo(interno) {
+    return writeTx(['seguimientoEquipos'], ([store]) => { store.delete(interno); });
+}
+
 // ============================ RECLAMOS DE REVISIÓN DE GPS ============================
 
 /**
@@ -610,7 +638,7 @@ export function clearAllData() {
     return writeTx(
         ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
          'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS', 'noFlotaAceptados',
-         'equiposExcluidos', 'prefijosNoFlota'],
+         'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos'],
         (stores) => { stores.forEach(s => s.clear()); }
     );
 }

@@ -15,8 +15,8 @@ import { diasHabiles, esDiaHabil } from './feriados.js';
 const TOLERANCIA = 0.15;
 const META_ALTA = 2.5;
 const META_BAJA = 0.4;
-const MIN_CARGAS_CONFIABLE = 3;
-const COBERTURA_MINIMA_PCT = 40; // % de días hábiles del período con al menos una carga
+export const MIN_CARGAS_CONFIABLE = 3;
+export const COBERTURA_MINIMA_PCT = 40; // % de días hábiles del período con al menos una carga
 
 /**
  * Equipos que trabajan ESTACIONARIOS: el motor encendido sin desplazarse es exactamente

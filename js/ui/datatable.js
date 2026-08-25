@@ -29,11 +29,12 @@ import {
     getColumnasExtra, setColumnasExtra, getTiposDeMovimiento, updateEstimado,
     huellaCarga, getCorreccionesCargas, saveCorreccionCarga, deleteCorreccionCarga,
     updateRawRecord, deleteRawRecord, registrarEdicion, getEdicionesLog,
-    getColLabelsMov, setColLabelMov
+    getColLabelsMov, setColLabelMov,
+    getSeguimientoEquipos, setSeguimientoEquipo, quitarSeguimientoEquipo
 } from '../data/database.js';
 import { periodosDisponibles, filtrarPorPeriodo } from '../data/analyzer.js';
 import { esDiaHabil } from '../data/feriados.js';
-import { confiabilidad } from '../data/diagnostico.js';
+import { confiabilidad, sugerirMeta, MIN_CARGAS_CONFIABLE, COBERTURA_MINIMA_PCT } from '../data/diagnostico.js';
 import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR } from '../data/normalizer.js';
 
 const PAGINA = 300;
@@ -45,6 +46,9 @@ let columnasVisibles = [];
 let colLabelsMov = {};
 const seleccionMasiva = new Set();
 const seleccionMasivaMov = new Set(); // selección para edición masiva en tablas de movimientos (por r.id)
+let seguimientoCache = new Map(); // interno -> { motivo, categoria, fecha }, recargado en renderConsumoReal()
+const MIN_CARGAS_TXT = MIN_CARGAS_CONFIABLE;
+const COBERTURA_TXT = COBERTURA_MINIMA_PCT;
 
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -183,6 +187,7 @@ async function renderMaestro() {
     mostrarFiltrosFecha(false);
     mostrarFiltrosMaestro(true);
     mostrarBulkBar(true);
+    prepararBulkBarEstimados();
 
     // Consumo real + cantidad de cargas: no vive en el equipo (es calculado sobre el período
     // vigente), así que se saca del último análisis del Panel — la misma fuente que usan las
@@ -386,13 +391,14 @@ async function renderEstimados() {
 
     document.getElementById('table-title').textContent = 'Consumos Estimados';
     document.getElementById('table-desc').innerHTML =
-        'Metas de consumo: las importadas de la planilla y las ajustadas a mano (ej. desde "Ajustar metas" en el Panel), aunque no hayan venido en la planilla original — esas quedan marcadas como <strong>"Ajustado a mano"</strong>. La columna <strong>"vs Meta"</strong> muestra la diferencia entre el estimado de la planilla y la meta actual del maestro. ' +
-        'Usá <strong>"Adoptar estimado como meta"</strong> en la barra de acciones para trasladar el estimado al maestro de un grupo de equipos.';
+        'Acá conviven DOS valores distintos, a propósito: <strong title="Lo que vino escrito en la planilla Consumos Estimados. Es una propuesta, no rige hasta que se adopta.">"Estimado (planilla)"</strong> es lo que vino en el archivo importado; <strong title="La meta que efectivamente está vigente en el maestro ahora mismo — puede diferir del Estimado si nunca se adoptó, o si se ajustó a mano después.">"Meta actual (maestro)"</strong> es la que realmente rige hoy. Las ajustadas a mano (ej. desde "Ajustar metas") quedan marcadas <strong>"Ajustado a mano"</strong>. Sumamos también <strong>"Consumo real"</strong> y <strong>"Cargas"</strong> — lo medido en el período vigente del Panel — para que se vea de un vistazo si el Estimado y la Meta están cerca de lo que la flota consume de verdad. ' +
+        'Usá <strong>"Adoptar estimado como meta"</strong> en la barra de acciones para trasladar el Estimado a la Meta de un grupo de equipos.';
     mostrarBotonesMaestro(false);
     mostrarBotonAjustarMetas(true);
     mostrarFiltrosFecha(false);
     mostrarFiltrosMaestro(true);
     mostrarBulkBar(true);
+    prepararBulkBarEstimados();
 
     // Enriquecer estimados con datos del equipo y detección de "sin actividad"
     const cargasPorInterno = new Map();
@@ -427,11 +433,21 @@ async function renderEstimados() {
         }
     });
 
+    // Consumo real vigente: misma fuente que Maestro y Consumo Real, para que "Estimado" no
+    // quede aislado de lo que la flota realmente consume — es justo lo que faltaba acá.
+    const analisisFilas = window.ultimoAnalisis?.filas || [];
+    const periodoAnalisis = window.ultimoAnalisis?.totales
+        ? { desde: window.ultimoAnalisis.totales.periodo_desde, hasta: window.ultimoAnalisis.totales.periodo_hasta } : null;
+    const porInternoAnalisis = new Map();
+    analisisFilas.forEach(f => porInternoAnalisis.set(f.equipo.interno_key || normalizeEquipoKey(f.equipo.interno), f));
+
     let filas = [...porInterno.values()].map(e => {
         const key = normalizeEquipoKey(e.interno);
         const eq = equipos.find(x => (x.interno_key || normalizeEquipoKey(x.interno)) === key);
         const nCargas = cargasPorInterno.get(key) || 0;
         const nGps = gpsPorInterno.get(key) || 0;
+        const fa = porInternoAnalisis.get(key);
+        const tieneReal = fa && fa.metrics.cantidad_cargas > 0;
         return {
             ...e,
             denominacion: eq?.denominacion || getDenominacion(e.interno, ''),
@@ -442,7 +458,8 @@ async function renderEstimados() {
             en_maestro: !!eq,
             cargas: nCargas,
             gps: nGps,
-            sin_actividad: nCargas > 0 && nGps === 0
+            sin_actividad: nCargas > 0 && nGps === 0,
+            fa: tieneReal ? fa : null
         };
     }).sort((a, b) => (a.interno || '').localeCompare(b.interno || ''));
 
@@ -466,15 +483,16 @@ async function renderEstimados() {
 
     filasActuales = filas;
 
-    const cols = [
-        '', 'Interno', 'Dominio', 'Denominación',
-        'Estimado', 'Unidad',
-        'Meta actual', 'vs Meta',
-        'Cargas', 'GPS', 'Estado'
-    ];
+    const COLSPAN_ESTIMADOS = 13;
     document.getElementById('table-header').innerHTML =
         '<th class="th-sel"><input type="checkbox" id="th-sel-all" title="Seleccionar todos"></th>' +
-        cols.slice(1).map(c => `<th>${esc(c)}</th>`).join('');
+        '<th>Interno</th><th>Dominio</th><th>Denominación</th>' +
+        '<th title="Lo que vino escrito en la planilla Consumos Estimados">Estimado (planilla)</th><th>Unidad</th>' +
+        '<th title="La meta que efectivamente rige hoy en el maestro">Meta actual (maestro)</th>' +
+        '<th title="Diferencia entre el Estimado de la planilla y la Meta actual">vs Meta</th>' +
+        '<th title="Litros/hora o litros/100km medidos de verdad en el período vigente del Panel — no lo que dice la planilla, lo que consumió">Consumo real</th>' +
+        '<th title="Diferencia entre el Consumo real medido y la Meta actual del maestro">vs real</th>' +
+        '<th>Cargas</th><th>GPS</th><th>Estado</th>';
 
     const pagina = filas.slice(estado.pagina * PAGINA, (estado.pagina + 1) * PAGINA);
     document.getElementById('table-body').innerHTML = pagina.map(e => {
@@ -497,6 +515,24 @@ async function renderEstimados() {
             vsMeta = '<span class="cell-muted">—</span>';
         }
 
+        // Consumo real vigente (lo medido) vs Meta actual — lo que "actualiza con el real".
+        let consumoRealTd, vsRealTd;
+        if (e.fa) {
+            const conf = confiabilidad(e.fa, periodoAnalisis);
+            const unidadCorta = e.fa.metrics.tipo_calculo === 'L/Hora' ? 'L/h' : (e.fa.metrics.tipo_calculo === 'L/100Km' ? 'L/100km' : '');
+            consumoRealTd = `<td class="cell-num"${conf.confiable ? '' : ` title="${esc('Poco confiable: ' + conf.avisos.join(', '))}"`}><strong>${nf(e.fa.metrics.consumo_real, 2)}</strong> <small>${esc(unidadCorta)}</small>${conf.confiable ? '' : ' <i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-yellow,#e0a000)"></i>'}</td>`;
+            if (e.meta_actual > 0) {
+                const diffR = (e.fa.metrics.consumo_real - e.meta_actual) / e.meta_actual * 100;
+                const clsR = Math.abs(diffR) < 5 ? 'cmp-ok' : (diffR > 0 ? 'cmp-alto' : 'cmp-bajo');
+                vsRealTd = `<td class="cell-num"><span class="${clsR}">${diffR > 0 ? '+' : ''}${nf(diffR, 0)}%</span></td>`;
+            } else {
+                vsRealTd = '<td class="cell-num"><span class="cmp-nuevo">sin meta</span></td>';
+            }
+        } else {
+            consumoRealTd = '<td class="cell-num cell-muted">—</td>';
+            vsRealTd = '<td class="cell-num cell-muted">—</td>';
+        }
+
         return `<tr data-interno="${esc(e.interno)}" class="${sel ? 'row-sel' : ''}">
             <td class="td-sel"><input type="checkbox" class="chk-fila" data-interno="${esc(e.interno)}" ${sel ? 'checked' : ''}></td>
             <td class="cell-key">${esc(e.interno)}</td>
@@ -506,11 +542,12 @@ async function renderEstimados() {
             <td>${esc(e.consumo_estimado_unidad || '')}</td>
             <td class="cell-num" ${e.meta_origen ? `title="${esc(e.meta_origen)}"` : ''}>${e.meta_actual ? nf(e.meta_actual, 2) : '<span class="cell-muted">—</span>'}</td>
             <td class="cell-num">${vsMeta}</td>
+            ${consumoRealTd}${vsRealTd}
             <td class="cell-num">${nf(e.cargas)}</td>
             <td class="cell-num">${nf(e.gps)}</td>
             <td>${estadoTxt}</td>
         </tr>`;
-    }).join('') || '<tr><td colspan="11">No hay datos de consumos estimados. Subí la planilla de Consumos Estimados.</td></tr>';
+    }).join('') || `<tr><td colspan="${COLSPAN_ESTIMADOS}">No hay datos de consumos estimados. Subí la planilla de Consumos Estimados.</td></tr>`;
 
     actualizarContador(filas.length, pagina.length,
         `${filas.filter(e => e.sin_actividad).length} sin actividad · ${filas.filter(e => !e.meta_actual && e.consumo_estimado_valor).length} sin meta`);
@@ -535,15 +572,20 @@ async function renderConsumoReal() {
     const analisis = window.ultimoAnalisis;
     document.getElementById('table-title').textContent = 'Consumo Real';
     document.getElementById('table-desc').innerHTML = analisis
-        ? 'Un equipo por fila, con el <strong>consumo real medido</strong> en el período vigente del Panel y la <strong>cantidad de cargas</strong> que lo respaldan — la misma estructura que "Consumos Estimados", pero desde lo medido. Usá <strong>"Investigar meta"</strong> para ver de dónde podría salir la meta de un equipo puntual, o <strong>"Ajustar metas"</strong> para aplicar en bloque.'
+        ? `Un equipo por fila, con el <strong>consumo real medido</strong> en el período vigente del Panel y la <strong>cantidad de cargas</strong> que lo respaldan — la misma estructura que "Consumos Estimados", pero desde lo medido. La confiabilidad se parte en dos: <strong title="Sí/No según el umbral fijo: ${MIN_CARGAS_TXT} cargas y ${COBERTURA_TXT}% de cobertura mínima.">"Confiable"</strong> es el veredicto, <strong title="Sobre cuántos días hábiles del período se apoya ese veredicto — ej. 'cargó 42 de 120 días hábiles (35%)'.">"Cobertura"</strong> es la proporción exacta detrás. Cuando un equipo tiene pocas cargas propias pero hay pares comparables (misma marca/modelo o denominación), se muestra además un <strong>estimado por grupo</strong> — no reemplaza el dato propio, pero evita dejarlo en blanco. Usá <strong>"Investigar meta"</strong> para ver de dónde podría salir la meta de un equipo puntual, <strong>"Seguimiento"</strong> para anotar por qué tiene poca base (fuera de servicio, cambio de sucursal, carga externa…) sin excluirlo del análisis, o <strong>"Ajustar metas"</strong> para aplicar en bloque.`
         : 'Todavía no hay datos procesados. Subí las planillas y procesalas para ver el consumo real por equipo.';
     mostrarBotonesMaestro(false);
     mostrarBotonAjustarMetas(true);
     mostrarFiltrosFecha(false);
     mostrarFiltrosMaestro(true);
-    mostrarBulkBar(false);
+    mostrarBulkBar(true);
+    prepararBulkBarReal();
 
-    let filas = (analisis?.filas || []).filter(f => f.metrics.cantidad_cargas > 0);
+    seguimientoCache = new Map((await getSeguimientoEquipos()).map(s => [s.interno, s]));
+
+    const todasFilas = analisis?.filas || [];
+    let filas = todasFilas.filter(f => f.metrics.cantidad_cargas > 0);
+    filas.forEach(f => { if (!f.interno) f.interno = f.equipo.interno; }); // reutiliza selección/checkboxes genéricos (por interno)
     const periodo = analisis?.totales ? { desde: analisis.totales.periodo_desde, hasta: analisis.totales.periodo_hasta } : null;
 
     // Poblar filtro de denominación
@@ -564,13 +606,18 @@ async function renderConsumoReal() {
     filasActuales = filas;
 
     document.getElementById('table-header').innerHTML =
+        '<th class="th-sel"><input type="checkbox" id="th-sel-all" title="Seleccionar todos"></th>' +
         '<th>Interno</th><th>Dominio</th><th>Denominación</th>' +
-        '<th>Consumo real</th><th>Cargas</th><th>Confiabilidad</th>' +
-        '<th>Meta actual</th><th>vs Meta</th><th></th>';
+        '<th>Consumo real</th><th>Cargas</th>' +
+        `<th title="Sí/No: ${MIN_CARGAS_TXT} cargas y ${COBERTURA_TXT}% de cobertura mínima de días hábiles">Confiable</th>` +
+        '<th title="Proporción real detrás del veredicto: días con carga sobre días hábiles del período">Cobertura</th>' +
+        '<th>Meta actual</th><th>vs Meta</th><th>Acciones</th>';
 
     const pagina = filas.slice(estado.pagina * PAGINA, (estado.pagina + 1) * PAGINA);
     document.getElementById('table-body').innerHTML = pagina.map(f => {
         const conf = confiabilidad(f, periodo);
+        const sel = seleccionMasiva.has(f.interno);
+        const seg = seguimientoCache.get(f.equipo.interno);
         const unidadCorta = f.metrics.tipo_calculo === 'L/Hora' ? 'L/h' : (f.metrics.tipo_calculo === 'L/100Km' ? 'L/100km' : '');
         let vsMeta = '<span class="cell-muted">—</span>';
         if (f.confirmed && f.confirmed.valor > 0) {
@@ -578,28 +625,84 @@ async function renderConsumoReal() {
             const cls = Math.abs(diff) < 5 ? 'cmp-ok' : (diff > 0 ? 'cmp-alto' : 'cmp-bajo');
             vsMeta = `<span class="${cls}">${diff > 0 ? '+' : ''}${nf(diff, 0)}%</span>`;
         }
-        return `<tr data-interno="${esc(f.equipo.interno)}">
+
+        // Estimado inverso por grupo: cuando el propio equipo tiene poca base, buscar la
+        // mediana de pares comparables (mismo marca+modelo, o denominación) confiables —
+        // así un equipo con 1 sola carga en el período no queda con el consumo en blanco.
+        let grupoTd = '';
+        if (!conf.confiable) {
+            const sugerido = sugerirMeta(f, todasFilas);
+            if (sugerido) {
+                grupoTd = `<br><small class="cell-muted" title="Mediana de ${sugerido.n} equipos comparables confiables: ${sugerido.base}">≈ ${nf(sugerido.valor, 2)} ${esc(unidadCorta)} <i class="fa-solid fa-people-group"></i> estimado por grupo</small>`;
+            }
+        }
+
+        // Confiable / Cobertura, separados: el veredicto por un lado, la proporción exacta
+        // por otro — así "de qué proporción hablamos" queda visible aunque el dato SÍ sea
+        // confiable, no solo como advertencia cuando no lo es.
+        const confiableTd = conf.confiable
+            ? (seg ? `<span class="badge-ok" title="En seguimiento: ${esc(seg.motivo || seg.categoria)}">Confiable 🔎</span>` : '<span class="badge-ok">Confiable</span>')
+            : (seg ? `<span class="badge-warn" title="En seguimiento: ${esc(seg.motivo || seg.categoria)} (anotado el ${esc((seg.fecha || '').slice(0, 10))})">🔎 En seguimiento</span>` : `<span class="badge-warn" title="${esc(conf.avisos.join(', '))}">⚠ ${esc(conf.avisos[0] || 'poca base')}</span>`);
+        const coberturaTd = conf.cobertura
+            ? `<span class="${conf.cobertura.pct < COBERTURA_MINIMA_PCT ? 'cmp-bajo' : 'cmp-ok'}">${nf(conf.cobertura.diasConCarga)}/${nf(conf.cobertura.diasHabiles)} días (${conf.cobertura.pct}%)</span>`
+            : '<span class="cell-muted" title="No se pudo calcular: hace falta más de una fecha de carga en el período">—</span>';
+
+        return `<tr data-interno="${esc(f.equipo.interno)}" class="${sel ? 'row-sel' : ''}">
+            <td class="td-sel"><input type="checkbox" class="chk-fila" data-interno="${esc(f.equipo.interno)}" ${sel ? 'checked' : ''}></td>
             <td class="cell-key">${esc(f.equipo.interno)}</td>
             <td>${esc(f.equipo.dominio || '')}</td>
             <td>${esc(f.equipo.denominacion || '')}</td>
-            <td class="cell-num"><strong>${nf(f.metrics.consumo_real, 2)}</strong> <small>${esc(unidadCorta)}</small></td>
+            <td class="cell-num"><strong>${nf(f.metrics.consumo_real, 2)}</strong> <small>${esc(unidadCorta)}</small>${grupoTd}</td>
             <td class="cell-num">${nf(f.metrics.cantidad_cargas)}</td>
-            <td>${conf.confiable ? '<span class="badge-ok">Confiable</span>' : `<span class="badge-warn" title="${esc(conf.avisos.join(', '))}">⚠ ${esc(conf.avisos[0] || 'poca base')}</span>`}</td>
+            <td>${confiableTd}</td>
+            <td class="cell-num">${coberturaTd}</td>
             <td class="cell-num" ${f.confirmed?.source ? `title="${esc(f.confirmed.source)}"` : ''}>${f.confirmed && f.confirmed.valor ? nf(f.confirmed.valor, 2) : '<span class="cell-muted">sin meta</span>'}</td>
             <td class="cell-num">${vsMeta}</td>
-            <td><button class="btn-xs btn-real-investigar" data-interno="${esc(f.equipo.interno)}"><i class="fa-solid fa-magnifying-glass-chart"></i> Investigar meta</button></td>
+            <td class="td-acciones-real">
+                <button class="btn-xs btn-real-investigar" data-interno="${esc(f.equipo.interno)}" title="Investigar de dónde podría salir la meta"><i class="fa-solid fa-magnifying-glass-chart"></i></button>
+                <button class="btn-xs btn-real-seguimiento" data-interno="${esc(f.equipo.interno)}" title="${seg ? 'Editar/quitar seguimiento' : 'Marcar para seguimiento (anotar el motivo de la poca base, sin excluirlo)'}"><i class="fa-solid fa-magnifying-glass-location"></i></button>
+            </td>
         </tr>`;
-    }).join('') || '<tr><td colspan="9">Ningún equipo con cargas coincide con el filtro. Si no procesaste ninguna planilla todavía, hacelo desde "Carga de Datos".</td></tr>';
+    }).join('') || '<tr><td colspan="11">Ningún equipo con cargas coincide con el filtro. Si no procesaste ninguna planilla todavía, hacelo desde "Carga de Datos".</td></tr>';
 
     document.querySelectorAll('.btn-real-investigar').forEach(b => {
         b.addEventListener('click', () => {
             if (typeof window.abrirInvestigacionMeta === 'function') window.abrirInvestigacionMeta(b.dataset.interno);
         });
     });
+    document.querySelectorAll('.btn-real-seguimiento').forEach(b => {
+        b.addEventListener('click', () => abrirMarcarSeguimiento(b.dataset.interno));
+    });
 
     actualizarContador(filas.length, pagina.length,
-        `${filas.filter(f => !confiabilidad(f, periodo).confiable).length} con poca base · ${filas.filter(f => !f.confirmed || !f.confirmed.valor).length} sin meta`);
+        `${filas.filter(f => !confiabilidad(f, periodo).confiable).length} con poca base · ${filas.filter(f => !f.confirmed || !f.confirmed.valor).length} sin meta · ${filas.filter(f => seguimientoCache.has(f.equipo.interno)).length} en seguimiento`);
+    actualizarSelCount();
     renderPaginacion(filas.length);
+    conectarCheckboxes();
+}
+
+/**
+ * Marcar/editar/quitar el seguimiento de un equipo puntual. No excluye nada del análisis
+ * (para eso está "equipo apartado" en el Panel) — solo deja anotado el motivo de la poca
+ * base para no tener que reinvestigarlo la próxima vez que aparece con el mismo problema.
+ * Marcarlo NO lo vuelve confiable por sí solo: lo que sí ayuda es que, con más períodos
+ * importados, se vea si la cadencia se mantiene estable (ej. 1 carga/mes todo el año) — eso
+ * es un patrón real, no un dato roto, aunque nunca supere el umbral fijo de cobertura.
+ */
+async function abrirMarcarSeguimiento(interno) {
+    const actuales = await getSeguimientoEquipos();
+    const actual = actuales.find(s => s.interno === interno);
+    const motivo = prompt(
+        `Seguimiento de "${interno}": anotá por qué tiene poca base (ej. "fuera de servicio en marzo-abril", "cambio a San Juan en mayo", "baja de producción", "carga fuera de la empresa, se pierde el dato"). Dejalo vacío para quitar el seguimiento.`,
+        actual?.motivo || ''
+    );
+    if (motivo == null) return; // canceló
+    if (!motivo.trim()) {
+        if (actual) await quitarSeguimientoEquipo(interno);
+    } else {
+        await setSeguimientoEquipo(interno, motivo.trim(), 'otro');
+    }
+    renderDataTable();
 }
 
 // ============================================================ MOVIMIENTOS
@@ -1554,6 +1657,89 @@ function prepararBulkBarCargas() {
         <option value="eliminar_masivo">Eliminar seleccionadas</option>`;
 }
 
+/** Bulk bar de Maestro/Estimados: las acciones "de siempre" sobre metas. Hace falta
+ * restaurarla explícitamente al volver de Cargas o de Consumo Real, que pisan el mismo
+ * <select> con sus propias opciones — si no, queda con las opciones de la última pestaña
+ * visitada aunque ya no correspondan. */
+function prepararBulkBarEstimados() {
+    const sel = document.getElementById('tabla-bulk-accion');
+    if (!sel) return;
+    sel.innerHTML = `
+        <option value="">Acción masiva…</option>
+        <option value="adoptar_estimado">Adoptar estimado como meta</option>
+        <option value="limpiar_meta">Limpiar meta</option>
+        <option value="set_unidad_lh">Unidad → L/Hora</option>
+        <option value="set_unidad_lkm">Unidad → L/100Km</option>
+        <option value="set_no_aplica">Unidad → No Aplica</option>`;
+}
+
+/** Bulk bar de Consumo Real: acciones por grupo o por interno seleccionado — marcar/quitar
+ * seguimiento en lote (para no repetir el motivo equipo por equipo), y adoptar el estimado
+ * por grupo (mediana de pares comparables) como meta cuando el equipo no tiene una propia. */
+function prepararBulkBarReal() {
+    const sel = document.getElementById('tabla-bulk-accion');
+    if (!sel) return;
+    sel.innerHTML = `
+        <option value="">Acción masiva…</option>
+        <option value="marcar_seguimiento_masivo">Marcar seleccionados para seguimiento</option>
+        <option value="quitar_seguimiento_masivo">Quitar seguimiento a seleccionados</option>
+        <option value="adoptar_estimado_grupo">Adoptar estimado por grupo como meta (si no tienen)</option>`;
+}
+
+/** Acciones masivas en Consumo Real: por selección directa, o por grupo completo si antes
+ * se filtró por denominación y se tildó "Todos" — el mismo mecanismo que ya usan Maestro y
+ * Estimados, reaprovechado acá para normalizar equipos con poca base sin ir uno por uno. */
+async function ejecutarAccionMasivaReal(accion) {
+    if (!seleccionMasiva.size) { alert('No hay equipos seleccionados.'); return; }
+    const internos = [...seleccionMasiva];
+    const analisis = window.ultimoAnalisis;
+    const todasFilas = analisis?.filas || [];
+
+    switch (accion) {
+        case 'marcar_seguimiento_masivo': {
+            const motivo = prompt(`Motivo de seguimiento para ${internos.length} equipos (ej: "fuera de servicio parte del período", "cambio de sucursal", "carga fuera de la empresa"):`);
+            if (motivo == null) return;
+            for (const int of internos) await setSeguimientoEquipo(int, motivo.trim(), 'otro');
+            alert(`${internos.length} equipos marcados para seguimiento.`);
+            break;
+        }
+        case 'quitar_seguimiento_masivo': {
+            for (const int of internos) await quitarSeguimientoEquipo(int);
+            alert(`Seguimiento quitado a ${internos.length} equipos.`);
+            break;
+        }
+        case 'adoptar_estimado_grupo': {
+            const equipos = await getAllEquipos();
+            let aplicados = 0, sinPares = 0;
+            for (const int of internos) {
+                const key = normalizeEquipoKey(int);
+                const fila = todasFilas.find(f => (f.equipo.interno_key || normalizeEquipoKey(f.equipo.interno)) === key);
+                if (!fila) continue;
+                const eq = equipos.find(e => (e.interno_key || normalizeEquipoKey(e.interno)) === key);
+                if (!eq || eq.meta_valor > 0) continue; // no pisa una meta que ya existe
+                const sugerido = sugerirMeta(fila, todasFilas);
+                if (!sugerido) { sinPares++; continue; }
+                eq.meta_valor = sugerido.valor;
+                eq.meta_unidad = sugerido.unidad;
+                eq.meta_texto = `${sugerido.valor} ${sugerido.unidad === 'L/Hora' ? 'L/hora' : 'L/100km'}`;
+                eq.meta_origen = `Estimado por grupo: ${sugerido.base}`;
+                eq.editado_manual = [...new Set([...(eq.editado_manual || []), 'meta_valor', 'meta_unidad', 'meta_texto'])];
+                await updateEquipo(eq);
+                aplicados++;
+            }
+            alert(`Meta asignada por grupo en ${aplicados} equipos.${sinPares ? ` ${sinPares} sin pares comparables suficientes.` : ''}`);
+            break;
+        }
+        default:
+            alert('Acción no reconocida.');
+            return;
+    }
+
+    seleccionMasiva.clear();
+    renderDataTable();
+    if (typeof window.renderPanel === 'function') window.renderPanel();
+}
+
 function mostrarFiltrosCarga(v) {
     ['tabla-filtro-cc', 'tabla-filtro-lugar', 'tabla-orden', 'tabla-filtro-correc'].forEach(id => {
         const s = document.getElementById(id);
@@ -1778,6 +1964,7 @@ export function initDataTableControls() {
         const accion = document.getElementById('tabla-bulk-accion')?.value;
         if (!accion) { alert('Elegí una acción masiva del desplegable.'); return; }
         if (estado.tipo === 'carga') ejecutarAccionMasivaCargas(accion);
+        else if (estado.tipo === 'real') ejecutarAccionMasivaReal(accion);
         else ejecutarAccionMasiva(accion);
     });
 

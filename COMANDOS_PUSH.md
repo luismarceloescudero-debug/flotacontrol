@@ -17,9 +17,11 @@ git diff --stat
 
 ```powershell
 git add -A
-git commit -m "Base de Datos: Consumo Real, Ajustar metas en Maestro, unificar variantes y codigos nuevos de Mendoza"
+git commit -m "Consumos Estimados con consumo real, Confiabilidad partida en Confiable/Cobertura, estimado por grupo y seguimiento de equipos"
 git push origin main
 ```
+
+(El commit anterior de esta lista, "Base de Datos: Consumo Real, Ajustar metas en Maestro...", ya se hizo — no hace falta repetirlo.)
 
 `git add -A` toma todos los archivos modificados sin tener que listarlos uno por uno (así no
 falla si alguno de la lista no cambió).
@@ -36,6 +38,12 @@ git commit -m "Auditoria de calidad del dato de cargas" -m "Nuevo hallazgo meses
 
 ```powershell
 git commit -m "Base de Datos - Maestro: nuevas columnas Consumo real, Cargas y vs Meta calculadas en vivo desde el ultimo analisis; ya no hace falta ir a Seguimiento para verlas." -m "Ajustar metas ahora disponible desde Base de Datos (Maestro y Consumo Real), no solo desde Seguimiento." -m "Nueva pestana Consumo Real en Base de Datos: misma logica de normalizacion que Consumos Estimados pero con litros medidos, cantidad de cargas, confiabilidad y comparacion contra la meta actual, para investigar metas fila por fila." -m "Nueva accion Unificar variantes en el hallazgo de calidad de planilla: detecta combustible, lugar de carga, centro de costo y chofer escritos con espacios, guiones o mayusculas distintas, y ofrece un modal para elegir la forma correcta equipo por equipo. Nunca corrige solo: cada fila se aplica o se deja como esta a criterio del usuario." -m "Nuevo hallazgo Codigos nuevos de Mendoza: cuando aparece un prefijo de interno que no esta en la base oficial (CL03, CA, LM, MT03, MT04, etc) lo agrupa, muestra litros/costo/centro de costo y ofrece darlo de alta con su denominacion. Restringido a Mendoza a proposito, verificado contra el centro de costo real de cada carga." -m "Se agregaron CA (CALDERA) y LM (LIMPIEZA) a los prefijos oficiales conocidos." -m "FIX de normalizacion: la deteccion de consumo fuera de flota y de codigos nuevos comparaba el interno crudo contra cargas indexadas por interno normalizado, y con codigos con cero adelante (CL03, GR01, etc) nunca encontraba sus cargas reales; el costo y centro de costo daban vacios. Ahora normaliza antes de buscar, en los dos lugares." -m "Investigacion profunda: el modal de investigar una meta ahora tiene un boton para mandar el equipo (marca, modelo, potencia, consumo real) directo al Asistente de Flota, que ya busca en fuentes web reales por su herramienta nativa de busqueda."
+```
+
+### Detalle de esta tanda (Consumos Estimados con el real, Confiabilidad partida, estimado por grupo, seguimiento)
+
+```powershell
+git commit -m "Consumos Estimados: se agregaron las columnas Consumo real y vs real (lo medido en el periodo vigente del Panel), que antes solo estaban en Maestro. Encabezados renombrados a Estimado (planilla) y Meta actual (maestro) para que quede claro que son dos valores distintos a proposito." -m "Consumo Real: la columna Confiabilidad se partio en Confiable (Si/No) y Cobertura (la proporcion exacta, ej. 42/120 dias habiles = 35%), con el umbral explicado en el tooltip del encabezado." -m "Estimado por grupo: cuando un equipo tiene pocas cargas propias (ej. CM30 con 1 carga/mes) pero hay pares comparables confiables por marca+modelo o denominacion, se muestra la mediana de esos pares al lado del consumo medido, en vez de dejarlo en 0." -m "Marcar para seguimiento: nuevo boton por equipo y accion masiva por grupo en Consumo Real. Anota el motivo de la poca base (fuera de servicio, cambio de sucursal, baja de produccion, carga fuera de la empresa) sin excluir al equipo del analisis. No lo vuelve confiable por si solo: la cobertura real sigue siendo la que manda." -m "Acciones masivas en Consumo Real: seleccionar por filtro de denominacion + Todos permite marcar/quitar seguimiento o adoptar el estimado por grupo como meta a un grupo entero de una." -m "FIX: el selector de accion masiva quedaba con las opciones de la ultima pestana visitada (Cargas o Consumo Real) al volver a Maestro/Estimados. Ahora cada pestana restaura sus propias opciones." -m "DB version 10: nuevo store seguimientoEquipos."
 ```
 
 ## Sobre las advertencias de CRLF
@@ -75,5 +83,6 @@ python -m http.server 8080
 
 ## Nota sobre la base local del navegador
 
-Pasa a la versión 9 (store nuevo `prefijosNoFlota`, para los códigos nuevos de Mendoza dados de
-alta desde el modal de revisión). Se actualiza sola al abrir la app; no hay que borrar nada.
+Pasa a la versión 10 (store nuevo `seguimientoEquipos`, para los equipos marcados con "Marcar
+para seguimiento" en Consumo Real — la v9 había agregado `prefijosNoFlota`, para los códigos
+nuevos de Mendoza). Se actualiza sola al abrir la app; no hay que borrar nada.

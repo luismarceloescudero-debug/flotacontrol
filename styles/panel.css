@@ -922,6 +922,9 @@
 .row-sel { background: rgba(59,130,246,0.08) !important; }
 .row-sel:hover { background: rgba(59,130,246,0.14) !important; }
 
+/* Acciones de la tabla Consumo Real: dos botones chicos uno al lado del otro */
+.td-acciones-real { display: flex; gap: 0.3rem; white-space: nowrap; }
+
 /* Comparación estimado vs meta */
 .cmp-ok { color: var(--accent-green); font-weight: 600; font-size: 0.82rem; }
 .cmp-alto { color: var(--accent-red); font-weight: 600; font-size: 0.82rem; }
