@@ -1826,3 +1826,10 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
 .res-bulk .btn-res-todos { border-color: rgba(76,158,255,0.4) !important; color: var(--accent-blue, #4a9eff) !important; }
 .res-bulk .btn-res-todos:hover { background: rgba(76,158,255,0.12) !important; }
 .correc-cc-sugerido { border-color: rgba(76,158,255,0.45) !important; }
+.par-prov { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: var(--text-muted); }
+.par-prov select {
+    background: var(--bg-input); color: var(--text-secondary);
+    border: 1px solid var(--border-color); border-radius: 6px;
+    padding: 0.15rem 0.4rem; font-size: 0.72rem; cursor: pointer;
+}
+.par-prov select.par-prov-guardada { border-color: var(--accent-green, #30d158); color: var(--accent-green, #30d158); }

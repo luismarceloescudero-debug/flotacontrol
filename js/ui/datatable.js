@@ -1,12 +1,19 @@
 /**
  * Vista "Base de Datos".
  *
- * Tres vistas de tabla, todas con la misma barra de búsqueda y filtros:
+ * Cuatro vistas de tabla, todas con la misma barra de búsqueda y filtros:
  *  - MAESTRO: el padrón (Equipos + Consumos Estimados fusionados). Totalmente editable:
  *    se puede corregir cualquier celda, agregar columnas propias y dar de alta equipos.
- *    Lo que se edita a mano queda marcado para que una reimportación no lo pise.
+ *    Lo que se edita a mano queda marcado para que una reimportación no lo pise. Además de
+ *    los campos del padrón, siempre muestra el CONSUMO REAL medido y la CANTIDAD DE CARGAS
+ *    que lo respaldan (columnas calculadas, no editables): así "Base de Datos" deja de ser
+ *    solo el padrón declarado y muestra también lo que la flota realmente consume.
  *  - ESTIMADOS: misma estructura visual que el maestro, con columnas de comparación
  *    estimado vs meta actual. Acciones masivas: "Adoptar estimado como meta".
+ *  - CONSUMO REAL: la contraparte de Estimados, pero armada desde lo medido en vez de lo
+ *    declarado — un equipo por fila, con su consumo real, cantidad de cargas, confiabilidad
+ *    del dato y comparación contra la meta vigente. Pensada para investigar metas más fino
+ *    de lo que permite mirar tarjeta por tarjeta en el Panel.
  *  - MOVIMIENTOS: cargas, GPS y cualquier planilla genérica (cubiertas, insumos, filtros…).
  *    Se muestran en solo lectura, con INTERNO + DOMINIO siempre visibles y filtros de
  *    año/mes, porque son el registro histórico de lo que pasó.
@@ -26,6 +33,7 @@ import {
 } from '../data/database.js';
 import { periodosDisponibles, filtrarPorPeriodo } from '../data/analyzer.js';
 import { esDiaHabil } from '../data/feriados.js';
+import { confiabilidad } from '../data/diagnostico.js';
 import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR } from '../data/normalizer.js';
 
 const PAGINA = 300;
@@ -81,6 +89,7 @@ export async function renderDataTable(tipo) {
 
         if (estado.tipo === 'maestro') await renderMaestro();
         else if (estado.tipo === 'estimados') await renderEstimados();
+        else if (estado.tipo === 'real') await renderConsumoReal();
         else await renderMovimientos(estado.tipo);
     } catch (e) {
         console.error('Error al renderizar la tabla:', e);
@@ -129,9 +138,11 @@ async function renderTabs() {
     const equipos = await getAllEquipos();
 
     const estimados = await getAllEstimados();
+    const nConsumoReal = (window.ultimoAnalisis?.filas || []).filter(f => f.metrics.cantidad_cargas > 0).length;
     const tabs = [
         { tipo: 'maestro', etiqueta: 'Maestro de Equipos', n: equipos.length },
         { tipo: 'estimados', etiqueta: 'Consumos Estimados', n: estimados.length },
+        { tipo: 'real', etiqueta: 'Consumo Real', n: nConsumoReal },
         ...tipos
     ];
     cont.innerHTML = tabs.map(t => `
@@ -165,12 +176,22 @@ async function renderMaestro() {
     const equipos = await getAllEquipos();
     document.getElementById('table-title').textContent = 'Maestro de Equipos';
     document.getElementById('table-desc').innerHTML =
-        'Padrón + metas de consumo en una sola tabla. <strong>Todas las celdas son editables</strong> y lo que corrijas a mano queda protegido: si volvés a importar la planilla, no se pisa. La llave es <strong>interno + dominio</strong>.';
+        'Padrón + metas de consumo en una sola tabla. <strong>Todas las celdas son editables</strong> y lo que corrijas a mano queda protegido: si volvés a importar la planilla, no se pisa. La llave es <strong>interno + dominio</strong>. ' +
+        'Las columnas <strong>Consumo real</strong> y <strong>Cargas</strong> se calculan solas (no son editables acá): siempre muestran lo realmente medido junto con cuántas cargas lo respaldan — usá <strong>"Ajustar metas"</strong> para llevar ese real a la meta, o la pestaña <strong>Consumo Real</strong> para investigarlo equipo por equipo.';
     mostrarBotonesMaestro(true);
-    mostrarBotonesEstimados(false);
+    mostrarBotonAjustarMetas(true);
     mostrarFiltrosFecha(false);
     mostrarFiltrosMaestro(true);
     mostrarBulkBar(true);
+
+    // Consumo real + cantidad de cargas: no vive en el equipo (es calculado sobre el período
+    // vigente), así que se saca del último análisis del Panel — la misma fuente que usan las
+    // tarjetas, para que el número acá y el del Panel nunca diverjan.
+    const analisisFilas = window.ultimoAnalisis?.filas || [];
+    const periodoAnalisis = window.ultimoAnalisis?.totales
+        ? { desde: window.ultimoAnalisis.totales.periodo_desde, hasta: window.ultimoAnalisis.totales.periodo_hasta } : null;
+    const porInternoAnalisis = new Map();
+    analisisFilas.forEach(f => porInternoAnalisis.set(f.equipo.interno_key || normalizeEquipoKey(f.equipo.interno), f));
 
     // Poblar filtro de denominación
     const denos = [...new Set(equipos.map(e => e.denominacion || getDenominacion(e.interno, e.tipo)).filter(Boolean))].sort();
@@ -204,6 +225,9 @@ async function renderMaestro() {
     document.getElementById('table-header').innerHTML =
         '<th class="th-sel"><input type="checkbox" id="th-sel-all" title="Seleccionar todos"></th>' +
         CAMPOS_MAESTRO.map(c => `<th>${esc(c.label)}</th>`).join('') +
+        '<th title="Calculado: litros/hora o litros/100km realmente medidos en el período vigente">Consumo real</th>' +
+        '<th title="Cantidad de cargas que respaldan el Consumo real de esa fila">Cargas</th>' +
+        '<th title="Diferencia entre el Consumo real y la Meta">vs Meta</th>' +
         columnasExtra.map(c => `<th class="th-extra">${esc(c.label)}
             <button class="th-rename" data-col="${esc(c.id)}" title="Renombrar columna"><i class="fa-solid fa-pen"></i></button>
             <button class="th-del" data-col="${esc(c.id)}" title="Eliminar columna"><i class="fa-solid fa-xmark"></i></button></th>`).join('') +
@@ -214,6 +238,26 @@ async function renderMaestro() {
         const editados = e.editado_manual || [];
         const tieneAsociado = e.equipo_asociado ? 'row-asociado' : '';
         const sel = seleccionMasiva.has(e.interno);
+        const key = e.interno_key || normalizeEquipoKey(e.interno);
+        const fa = porInternoAnalisis.get(key);
+        const tieneReal = fa && fa.metrics.cantidad_cargas > 0;
+        let consumoRealTd, vsMetaTd;
+        if (tieneReal) {
+            const conf = confiabilidad(fa, periodoAnalisis);
+            const unidadCorta = fa.metrics.tipo_calculo === 'L/Hora' ? 'L/h' : (fa.metrics.tipo_calculo === 'L/100Km' ? 'L/100km' : '');
+            consumoRealTd = `<td class="cell-num"${conf.confiable ? '' : ` title="${esc('Poco confiable: ' + conf.avisos.join(', '))}"`}><strong>${nf(fa.metrics.consumo_real, 2)}</strong> <small>${esc(unidadCorta)}</small>${conf.confiable ? '' : ' <i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-yellow,#e0a000)"></i>'}</td>`;
+            if (e.meta_valor > 0) {
+                const diff = (fa.metrics.consumo_real - e.meta_valor) / e.meta_valor * 100;
+                const cls = Math.abs(diff) < 5 ? 'cmp-ok' : (diff > 0 ? 'cmp-alto' : 'cmp-bajo');
+                vsMetaTd = `<td class="cell-num"><span class="${cls}">${diff > 0 ? '+' : ''}${nf(diff, 0)}%</span></td>`;
+            } else {
+                vsMetaTd = `<td class="cell-num"><span class="cmp-nuevo">sin meta</span></td>`;
+            }
+        } else {
+            consumoRealTd = '<td class="cell-num cell-muted">—</td>';
+            vsMetaTd = '<td class="cell-num cell-muted">—</td>';
+        }
+        const cargasTd = `<td class="cell-num">${tieneReal ? nf(fa.metrics.cantidad_cargas) : 0}</td>`;
         return `<tr data-interno="${esc(e.interno)}" class="${tieneAsociado} ${sel ? 'row-sel' : ''}" ${e.equipo_asociado ? `title="Asociado a ${esc(e.equipo_asociado)}"` : ''}>
             <td class="td-sel"><input type="checkbox" class="chk-fila" data-interno="${esc(e.interno)}" ${sel ? 'checked' : ''}></td>
             ${CAMPOS_MAESTRO.map(c => {
@@ -227,10 +271,11 @@ async function renderMaestro() {
                 }
                 return `<td class="cell-edit${marca}" contenteditable="true" data-campo="${c.k}" data-num="${c.num ? 1 : 0}">${esc(v)}</td>`;
             }).join('')}
+            ${consumoRealTd}${cargasTd}${vsMetaTd}
             ${columnasExtra.map(c => `<td class="cell-edit" contenteditable="true" data-extra="${esc(c.id)}">${esc((e.extra || {})[c.id] ?? '')}</td>`).join('')}
             <td class="th-acciones"><button class="btn-icon btn-del-row" title="Eliminar equipo"><i class="fa-solid fa-trash"></i></button></td>
         </tr>`;
-    }).join('') || '<tr><td colspan="14">No hay equipos en el maestro. Subí la planilla de Equipos o agregá uno con el botón "Equipo".</td></tr>';
+    }).join('') || '<tr><td colspan="17">No hay equipos en el maestro. Subí la planilla de Equipos o agregá uno con el botón "Equipo".</td></tr>';
 
     actualizarContador(filas.length, pagina.length);
     actualizarSelCount();
@@ -344,7 +389,7 @@ async function renderEstimados() {
         'Metas de consumo: las importadas de la planilla y las ajustadas a mano (ej. desde "Ajustar metas" en el Panel), aunque no hayan venido en la planilla original — esas quedan marcadas como <strong>"Ajustado a mano"</strong>. La columna <strong>"vs Meta"</strong> muestra la diferencia entre el estimado de la planilla y la meta actual del maestro. ' +
         'Usá <strong>"Adoptar estimado como meta"</strong> en la barra de acciones para trasladar el estimado al maestro de un grupo de equipos.';
     mostrarBotonesMaestro(false);
-    mostrarBotonesEstimados(true);
+    mostrarBotonAjustarMetas(true);
     mostrarFiltrosFecha(false);
     mostrarFiltrosMaestro(true);
     mostrarBulkBar(true);
@@ -474,6 +519,89 @@ async function renderEstimados() {
     conectarCheckboxes();
 }
 
+// ============================================================ CONSUMO REAL
+
+/**
+ * "Consumo Real": la contraparte de Consumos Estimados, pero armada desde lo medido en vez de
+ * lo declarado — un equipo por fila con su consumo real, cuántas cargas lo respaldan, qué tan
+ * confiable es ese dato y cómo queda contra la meta vigente. Es lo que permite normalizar el
+ * consumo real "como si fuera estimado" y desde ahí investigar metas más fino de lo que
+ * alcanza a mostrar una tarjeta del Panel.
+ *
+ * A propósito de solo lectura (nada se edita acá): la acción es "Investigar meta" (por equipo)
+ * o "Ajustar metas" (en bloque) — ambas ya validan y guardan del lado del maestro.
+ */
+async function renderConsumoReal() {
+    const analisis = window.ultimoAnalisis;
+    document.getElementById('table-title').textContent = 'Consumo Real';
+    document.getElementById('table-desc').innerHTML = analisis
+        ? 'Un equipo por fila, con el <strong>consumo real medido</strong> en el período vigente del Panel y la <strong>cantidad de cargas</strong> que lo respaldan — la misma estructura que "Consumos Estimados", pero desde lo medido. Usá <strong>"Investigar meta"</strong> para ver de dónde podría salir la meta de un equipo puntual, o <strong>"Ajustar metas"</strong> para aplicar en bloque.'
+        : 'Todavía no hay datos procesados. Subí las planillas y procesalas para ver el consumo real por equipo.';
+    mostrarBotonesMaestro(false);
+    mostrarBotonAjustarMetas(true);
+    mostrarFiltrosFecha(false);
+    mostrarFiltrosMaestro(true);
+    mostrarBulkBar(false);
+
+    let filas = (analisis?.filas || []).filter(f => f.metrics.cantidad_cargas > 0);
+    const periodo = analisis?.totales ? { desde: analisis.totales.periodo_desde, hasta: analisis.totales.periodo_hasta } : null;
+
+    // Poblar filtro de denominación
+    const denos = [...new Set(filas.map(f => f.equipo.denominacion).filter(Boolean))].sort();
+    const selDeno = document.getElementById('tabla-filtro-deno');
+    if (selDeno) {
+        const actual = selDeno.value || 'ALL';
+        selDeno.innerHTML = '<option value="ALL">Todas las denom.</option>' + denos.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+        selDeno.value = denos.includes(actual) ? actual : 'ALL';
+    }
+
+    if (estado.buscar) filas = filas.filter(f => matchBusqueda({ interno: f.equipo.interno, dominio: f.equipo.dominio }, estado.buscar));
+    if (estado.filtroDeno !== 'ALL') filas = filas.filter(f => f.equipo.denominacion === estado.filtroDeno);
+    if (estado.filtroEstado === 'con_meta') filas = filas.filter(f => f.confirmed && f.confirmed.valor > 0);
+    else if (estado.filtroEstado === 'sin_meta') filas = filas.filter(f => !f.confirmed || !f.confirmed.valor);
+
+    filas = filas.slice().sort((a, b) => b.metrics.total_litros - a.metrics.total_litros);
+    filasActuales = filas;
+
+    document.getElementById('table-header').innerHTML =
+        '<th>Interno</th><th>Dominio</th><th>Denominación</th>' +
+        '<th>Consumo real</th><th>Cargas</th><th>Confiabilidad</th>' +
+        '<th>Meta actual</th><th>vs Meta</th><th></th>';
+
+    const pagina = filas.slice(estado.pagina * PAGINA, (estado.pagina + 1) * PAGINA);
+    document.getElementById('table-body').innerHTML = pagina.map(f => {
+        const conf = confiabilidad(f, periodo);
+        const unidadCorta = f.metrics.tipo_calculo === 'L/Hora' ? 'L/h' : (f.metrics.tipo_calculo === 'L/100Km' ? 'L/100km' : '');
+        let vsMeta = '<span class="cell-muted">—</span>';
+        if (f.confirmed && f.confirmed.valor > 0) {
+            const diff = (f.metrics.consumo_real - f.confirmed.valor) / f.confirmed.valor * 100;
+            const cls = Math.abs(diff) < 5 ? 'cmp-ok' : (diff > 0 ? 'cmp-alto' : 'cmp-bajo');
+            vsMeta = `<span class="${cls}">${diff > 0 ? '+' : ''}${nf(diff, 0)}%</span>`;
+        }
+        return `<tr data-interno="${esc(f.equipo.interno)}">
+            <td class="cell-key">${esc(f.equipo.interno)}</td>
+            <td>${esc(f.equipo.dominio || '')}</td>
+            <td>${esc(f.equipo.denominacion || '')}</td>
+            <td class="cell-num"><strong>${nf(f.metrics.consumo_real, 2)}</strong> <small>${esc(unidadCorta)}</small></td>
+            <td class="cell-num">${nf(f.metrics.cantidad_cargas)}</td>
+            <td>${conf.confiable ? '<span class="badge-ok">Confiable</span>' : `<span class="badge-warn" title="${esc(conf.avisos.join(', '))}">⚠ ${esc(conf.avisos[0] || 'poca base')}</span>`}</td>
+            <td class="cell-num" ${f.confirmed?.source ? `title="${esc(f.confirmed.source)}"` : ''}>${f.confirmed && f.confirmed.valor ? nf(f.confirmed.valor, 2) : '<span class="cell-muted">sin meta</span>'}</td>
+            <td class="cell-num">${vsMeta}</td>
+            <td><button class="btn-xs btn-real-investigar" data-interno="${esc(f.equipo.interno)}"><i class="fa-solid fa-magnifying-glass-chart"></i> Investigar meta</button></td>
+        </tr>`;
+    }).join('') || '<tr><td colspan="9">Ningún equipo con cargas coincide con el filtro. Si no procesaste ninguna planilla todavía, hacelo desde "Carga de Datos".</td></tr>';
+
+    document.querySelectorAll('.btn-real-investigar').forEach(b => {
+        b.addEventListener('click', () => {
+            if (typeof window.abrirInvestigacionMeta === 'function') window.abrirInvestigacionMeta(b.dataset.interno);
+        });
+    });
+
+    actualizarContador(filas.length, pagina.length,
+        `${filas.filter(f => !confiabilidad(f, periodo).confiable).length} con poca base · ${filas.filter(f => !f.confirmed || !f.confirmed.valor).length} sin meta`);
+    renderPaginacion(filas.length);
+}
+
 // ============================================================ MOVIMIENTOS
 
 /** Columnas fijas por tipo conocido; el resto se arma con las columnas del propio Excel. */
@@ -502,7 +630,7 @@ async function renderMovimientos(tipo) {
         ? 'Registro histórico de cargas. Las filas marcadas en naranja tienen un interno desconocido — hacé clic en <strong>Corregir</strong> para asignarlas a un equipo o eliminarlas. Cualquier otra celda (fecha, litros, importe, lugar, centro de costo, chofer…) se edita haciendo click directo encima. La corrección se guarda y se re-aplica automáticamente al reimportar el mismo archivo.'
         : 'Registro histórico. Se muestra <strong>interno + dominio</strong> de cada fila: es la llave con la que se cruza contra el maestro. Cualquier celda se puede corregir haciendo click encima.';
     mostrarBotonesMaestro(false);
-    mostrarBotonesEstimados(false);
+    mostrarBotonAjustarMetas(false);
     mostrarFiltrosFecha(true);
     mostrarFiltrosMaestro(false);
     mostrarFiltrosCarga(esCarga);
@@ -1386,7 +1514,9 @@ function mostrarBotonesMaestro(v) {
     });
 }
 
-function mostrarBotonesEstimados(v) {
+/** Botón "Ajustar metas": visible en Maestro, Consumos Estimados y Consumo Real — donde tiene
+ * sentido tocar la meta de un equipo —, oculto en Movimientos. */
+function mostrarBotonAjustarMetas(v) {
     const b = document.getElementById('btn-ajustar-metas-estimados');
     if (b) b.style.display = v ? '' : 'none';
 }
@@ -1654,9 +1784,13 @@ export function initDataTableControls() {
     document.getElementById('btn-historial-ediciones')?.addEventListener('click', () => abrirHistorialEdiciones());
 
     document.getElementById('btn-ajustar-metas-estimados')?.addEventListener('click', () => {
-        if (typeof window.abrirAjusteMetasDesdeTabla === 'function') {
-            window.abrirAjusteMetasDesdeTabla('sin_meta');
+        if (typeof window.abrirAjusteMetasDesdeTabla !== 'function') {
+            alert('Todavía no hay datos procesados: subí las planillas y volvé a esta pantalla.');
+            return;
         }
+        // En Estimados el foco natural es completar lo que falta; en Maestro y Consumo Real,
+        // partir desde "todos" tiene más sentido (ahí es donde se ve el consumo real de cada uno).
+        window.abrirAjusteMetasDesdeTabla(estado.tipo === 'estimados' ? 'sin_meta' : 'todos');
     });
 
     document.getElementById('btn-add-col')?.addEventListener('click', async () => {

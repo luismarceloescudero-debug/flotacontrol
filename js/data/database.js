@@ -29,7 +29,10 @@ const DB_NAME = 'FlotaControlDB';
 // v8: equipos apartados del análisis a mano (ej. una unidad que pasó a San Juan y por eso deja
 // de aparecer en el Resumen de Flota de estos archivos): siguen en el maestro y en las tablas,
 // pero no generan hallazgos ni ensucian los promedios.
-const DB_VERSION = 8;
+// v9: registro de prefijos "fuera de flota" oficializados (ej. CA = CALDERA, LM = LIMPIEZA):
+// códigos que no son equipos con km/horas pero sí gasto real, dados de alta a propósito desde
+// el hallazgo "códigos nuevos de Mendoza" para que dejen de figurar como consumo sin identificar.
+const DB_VERSION = 9;
 
 let dbInstance = null;
 
@@ -101,6 +104,10 @@ export function initDB() {
             // v8 — equipos apartados del análisis a mano
             if (!db.objectStoreNames.contains('equiposExcluidos')) {
                 db.createObjectStore('equiposExcluidos', { keyPath: 'interno' });
+            }
+            // v9 — prefijos "fuera de flota" oficializados (CA, LM, y los que se vayan sumando)
+            if (!db.objectStoreNames.contains('prefijosNoFlota')) {
+                db.createObjectStore('prefijosNoFlota', { keyPath: 'prefijo' });
             }
         };
     });
@@ -291,6 +298,27 @@ export async function insertRawRecords(arr) {
         const corr = mapa.get(h);
         if (!corr) { finales.push(r); continue; }
         if (corr.accion === 'eliminar') continue;               // descartado por el usuario
+
+        // Correcciones que NO reasignan el equipo pero igual hay que volver a aplicar cuando se
+        // reimporta el archivo: si no, el usuario completa un precio o un centro de costo, sube
+        // la planilla del mes siguiente y su trabajo desaparece sin aviso.
+        if (corr.accion === 'valorizar' || corr.accion === 'enriquecer') {
+            const ov = {};
+            if (corr.precio_unitario_correcto > 0) ov.precio_unitario = corr.precio_unitario_correcto;
+            if (corr.importe_correcto > 0) ov.importe = corr.importe_correcto;
+            if (corr.dominio_correcto) { ov.dominio = corr.dominio_correcto; ov.dominio_key = normalizeEquipoKey(corr.dominio_correcto); }
+            if (corr.centro_costo_correcto) ov.centro_costo = corr.centro_costo_correcto;
+            if (corr.lugar_carga_correcto) ov.lugar_carga = corr.lugar_carga_correcto;
+            if (corr.sector_correcto) ov.sector = corr.sector_correcto;
+            // "Unificar variantes" (panel.js): mismo mecanismo, para los campos de texto libre
+            // que se normalizan a mano después de revisar el grupo (combustible, chofer — el
+            // resto de los campos de texto ya se cubre arriba).
+            if (corr.combustible_correcto) ov.combustible = corr.combustible_correcto;
+            if (corr.chofer_correcto) ov.chofer = corr.chofer_correcto;
+            finales.push({ ...r, ...ov, _corregido: true, _precio_completado: corr.accion === 'valorizar' || undefined });
+            continue;
+        }
+
         if (corr.accion === 'asignar') {
             // Misma normalización que usa el resto del sistema para cruzar Cargas/GPS/Equipos
             // (normalizeEquipoKey saca ceros a la izquierda: BM07 y BM7 quedan con la misma
@@ -525,6 +553,26 @@ export function quitarEquipoExcluido(interno) {
     return writeTx(['equiposExcluidos'], ([store]) => { store.delete(interno); });
 }
 
+// ============================ PREFIJOS "FUERA DE FLOTA" OFICIALIZADOS ============================
+
+/**
+ * Código sin km ni horas (caldera, limpieza, caloventor…) que se decidió dar de alta "en serio"
+ * en vez de dejarlo como huérfano sin clasificar. Distinto de `noFlotaAceptados` (que solo oculta
+ * un código puntual sin nombrarlo): esto registra el PREFIJO completo con su denominación, así
+ * que cubre a todos los internos de ese prefijo, presentes y futuros (CA01, CA02… bajo "CALDERA").
+ * Restringido a Mendoza por decisión explícita: ver detectarPrefijosNuevos() en diagnostico.js.
+ * { prefijo, denominacion, provincia, fecha }
+ */
+export function getPrefijosNoFlota() { return readAll('prefijosNoFlota'); }
+export function agregarPrefijoNoFlota(prefijo, denominacion, provincia = 'MENDOZA') {
+    return writeTx(['prefijosNoFlota'], ([store]) => {
+        store.put({ prefijo, denominacion, provincia, fecha: new Date().toISOString() });
+    });
+}
+export function quitarPrefijoNoFlota(prefijo) {
+    return writeTx(['prefijosNoFlota'], ([store]) => { store.delete(prefijo); });
+}
+
 // ============================ RECLAMOS DE REVISIÓN DE GPS ============================
 
 /**
@@ -562,7 +610,7 @@ export function clearAllData() {
     return writeTx(
         ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
          'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS', 'noFlotaAceptados',
-         'equiposExcluidos'],
+         'equiposExcluidos', 'prefijosNoFlota'],
         (stores) => { stores.forEach(s => s.clear()); }
     );
 }

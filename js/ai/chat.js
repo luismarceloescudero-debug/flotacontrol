@@ -58,14 +58,17 @@ export function initAIChat() {
         history.scrollTop = history.scrollHeight;
     };
 
-    const sendMessage = async () => {
-        const text = input.value.trim();
+    // `presetText`: permite mandar un mensaje armado desde afuera (ver preguntarAsistente() más
+    // abajo) sin que el usuario tenga que escribirlo — se sigue mostrando en el historial igual
+    // que si lo hubiera tipeado, para que quede claro qué se le pidió.
+    const sendMessage = async (presetText) => {
+        const text = (presetText != null ? presetText : input.value).trim();
         if (!text || btnSend.disabled) return;
 
         appendMsg('user', escapeHtml(text));
         conversation.push({ role: 'user', content: text });
         conversation = conversation.slice(-MAX_TURNS);
-        input.value = '';
+        if (presetText == null) input.value = '';
 
         const status = appendMsg('system', '<i class="fa-solid fa-spinner fa-spin"></i> Pensando...');
         btnSend.disabled = true;
@@ -153,10 +156,24 @@ export function initAIChat() {
         }
     };
 
-    btnSend.addEventListener('click', sendMessage);
+    btnSend.addEventListener('click', () => sendMessage());
     input.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendMessage();
     });
+
+    /**
+     * Investigación profunda desde afuera del chat: expande el panel del Asistente y le manda
+     * un pedido ya armado (ver abrirInvestigacionMeta() en panel.js), usando la tool real
+     * "web_search" para ir a buscar el dato afuera — no a resumir lo que la app ya muestra.
+     */
+    window.preguntarAsistente = (texto) => {
+        if (!texto) return;
+        const panel = document.getElementById('ai-panel');
+        if (panel) panel.classList.remove('collapsed');
+        const icon = document.querySelector('#btn-toggle-ai i');
+        if (icon) { icon.classList.remove('fa-chevron-up'); icon.classList.add('fa-chevron-down'); }
+        sendMessage(texto);
+    };
 }
 
 function escapeHtml(str) {

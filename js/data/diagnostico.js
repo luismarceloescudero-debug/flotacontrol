@@ -9,7 +9,7 @@
  *  - Un consumo calculado sobre pocas cargas o un solo período no es confiable y se avisa.
  */
 
-import { getPrefijo, clasificarIdentificador, MESES } from './normalizer.js';
+import { getPrefijo, clasificarIdentificador, MESES, normalizeEquipoKey, TIPO_POR_PREFIJO, provinciaDeCentroCosto } from './normalizer.js';
 import { diasHabiles, esDiaHabil } from './feriados.js';
 
 const TOLERANCIA = 0.15;
@@ -234,7 +234,13 @@ export function clasificarNoFlota(huerfanos = [], rawRecords = [], codigosAcepta
     const PALABRAS_PLANTA = /CALDERA|CALOVENTOR|LIMPIEZA|JARDIN|PLANTA|TALLER|SURTIDOR|CANALETA|BOMBEO|HERRAMIENT/;
 
     huerfanos.forEach(h => {
-        const cargas = cargasPorClave.get(h.interno_key || h.interno) || cargasPorClave.get(h.interno) || [];
+        // Bug real, no cosmético: `h` (huérfano) nunca trae `interno_key` — analizarFlota() solo
+        // guarda el interno "crudo" tal como vino del Excel (ver huerfanosMap en analyzer.js).
+        // Buscarlo tal cual contra cargasPorClave (que sí está indexado por la clave normalizada)
+        // fallaba en silencio para cualquier código con cero a la izquierda — "GR01"/"CL03" no
+        // encontraban sus propias cargas, así que quedaban con costo, centro de costo y sector
+        // vacíos aunque sí tuvieran cargas. Se normaliza acá mismo antes de buscar.
+        const cargas = cargasPorClave.get(normalizeEquipoKey(h.interno)) || cargasPorClave.get(h.interno) || [];
         const costo = cargas.reduce((s, c) => s + (parseFloat(c.importe) || 0), 0);
         const centros = {};
         const sectores = {};
@@ -265,6 +271,66 @@ export function clasificarNoFlota(huerfanos = [], rawRecords = [], codigosAcepta
 
     Object.values(grupos).forEach(g => g.items.sort((a, b) => b.litros - a.litros));
     return Object.values(grupos).filter(g => g.items.length);
+}
+
+/**
+ * Prefijos nuevos, agrupados: códigos huérfanos (sin fila en el maestro) cuyo prefijo de letras
+ * todavía no está reconocido ni en TIPO_POR_PREFIJO (la lista fija) ni en `prefijosOficiales`
+ * (lo que se fue dando de alta a mano). No es lo mismo que "consumo fuera de la flota" en
+ * general — clasificarNoFlota() ya agrupa TODO lo huérfano; esto filtra específicamente los
+ * prefijos que la app directamente no sabe nombrar, para ofrecer sumarlos a la base oficial.
+ *
+ * A propósito restringido a evidencia de Mendoza (centro de costo del grupo): agregar un código
+ * como "oficial" le pone nombre y lo saca de las listas de "sin identificar" en TODA la app, así
+ * que antes de ofrecerlo hace falta la certeza de qué operación es — y esa certeza hoy solo la
+ * tenemos armada para Mendoza (ver provinciaDeCentroCosto). Un prefijo nuevo de San Juan sigue
+ * viéndose igual que antes, agrupado dentro de "Otros consumos sin identificar".
+ */
+export function detectarPrefijosNuevos(huerfanos = [], rawRecords = [], prefijosOficiales = []) {
+    const prefijosConocidos = new Set([...Object.keys(TIPO_POR_PREFIJO), ...prefijosOficiales.map(p => p.prefijo)]);
+
+    const cargasPorClave = new Map();
+    rawRecords.filter(r => r.type === 'carga').forEach(r => {
+        const k = r.interno_key || r.dominio_key;
+        if (!cargasPorClave.has(k)) cargasPorClave.set(k, []);
+        cargasPorClave.get(k).push(r);
+    });
+
+    const porPrefijo = new Map();
+    huerfanos.forEach(h => {
+        if (clasificarIdentificador(h.interno).tipo === 'dominio') return; // es patente, no un código con prefijo
+        const prefijo = getPrefijo(h.interno);
+        if (!prefijo || prefijo.length > 4 || prefijosConocidos.has(prefijo)) return;
+
+        // Bug real, no cosmético: `h` (huérfano) nunca trae `interno_key` — analizarFlota() solo
+        // guarda el interno "crudo" tal como vino del Excel (ver huerfanosMap en analyzer.js).
+        // Buscarlo tal cual contra cargasPorClave (que sí está indexado por la clave normalizada)
+        // fallaba en silencio para cualquier código con cero a la izquierda — "GR01"/"CL03" no
+        // encontraban sus propias cargas, así que quedaban con costo, centro de costo y sector
+        // vacíos aunque sí tuvieran cargas. Se normaliza acá mismo antes de buscar.
+        const cargas = cargasPorClave.get(normalizeEquipoKey(h.interno)) || cargasPorClave.get(h.interno) || [];
+        const centros = {};
+        cargas.forEach(c => { if (c.centro_costo) centros[c.centro_costo] = (centros[c.centro_costo] || 0) + 1; });
+        const topCentro = Object.keys(centros).sort((a, b) => centros[b] - centros[a])[0] || '';
+
+        if (!porPrefijo.has(prefijo)) porPrefijo.set(prefijo, { prefijo, codigos: new Set(), litros: 0, costo: 0, cargas: 0, centros: {} });
+        const g = porPrefijo.get(prefijo);
+        g.codigos.add(h.interno);
+        g.litros += h.litros || 0;
+        g.costo += cargas.reduce((s, c) => s + (parseFloat(c.importe) || 0), 0);
+        g.cargas += cargas.length;
+        if (topCentro) g.centros[topCentro] = (g.centros[topCentro] || 0) + 1;
+    });
+
+    return [...porPrefijo.values()].map(g => {
+        const topCentro = Object.keys(g.centros).sort((a, b) => g.centros[b] - g.centros[a])[0] || '';
+        const provincia = provinciaDeCentroCosto(topCentro);
+        return {
+            prefijo: g.prefijo, codigos: [...g.codigos].sort(),
+            litros: g.litros, costo: g.costo, cargas: g.cargas,
+            centro_costo: topCentro, provincia, esMendoza: provincia === 'MENDOZA'
+        };
+    }).sort((a, b) => b.litros - a.litros);
 }
 
 /**
@@ -383,6 +449,18 @@ export function causaMetaRara(fila, todas = []) {
         }
     }
     // 3. La rara es la meta, no el equipo: está lejos de lo que miden sus pares.
+    const potM = potenciaEquipo(fila.equipo);
+    const rpM = potM ? ratioPotenciaFlota(todas, potM.unidad) : null;
+    if (rpM && potM) {
+        const esperado = rpM.ratio * potM.valor;
+        if (esperado > 0 && meta / esperado >= 0.6 && meta / esperado <= 1.7) {
+            return {
+                causa: 'meta_ok_equipo_grande', etiqueta: 'la meta está bien: el equipo es más grande',
+                resumen: `${potM.valor} ${potM.unidad} · lo esperable para esa potencia es ${fmt(esperado, 1)} y la meta es ${fmt(meta, 1)}`,
+                consejo: `No toques esta meta. Para un equipo de ${potM.valor} ${potM.unidad}, ${fmt(meta, 1)} ${fila.metrics.tipo_calculo} es lo que corresponde según lo que la propia flota tiene cargado (${fmt(rpM.ratio, 3)} por ${potM.unidad} sobre ${rpM.n} equipos). Lo que hay que revisar es por qué midió tan distinto: lo más probable es que haya trabajado a carga parcial o muy pocas horas.`
+            };
+        }
+    }
     if (sug && sug.valor > 0) {
         const r = meta / sug.valor;
         if (r >= 3 || r <= 1 / 3) {
@@ -422,20 +500,37 @@ export function estimacionCreible(fila, todas = []) {
     const motivos = [];
     let factorPares = null;
 
-    if (sug && sug.valor > 0) {
+    // Antes de acusar a la meta, hay que ver si el equipo es simplemente MÁS GRANDE que sus
+    // pares. Un grupo electrógeno de 440 KVA consume ~85 L/hora y uno de 120 KVA ~25: comparar
+    // los dos en L/hora crudo marca como error una meta perfectamente correcta. Si la meta es
+    // coherente con la potencia declarada según lo que la propia flota tiene cargado, se acepta.
+    const pot = potenciaEquipo(fila.equipo);
+    const rp = pot ? ratioPotenciaFlota(todas, pot.unidad) : null;
+    let respaldadaPorPotencia = false;
+    if (rp && pot) {
+        const esperado = rp.ratio * pot.valor;
+        if (esperado > 0 && meta / esperado >= 0.6 && meta / esperado <= 1.7) respaldadaPorPotencia = true;
+    }
+
+    if (sug && sug.valor > 0 && !respaldadaPorPotencia) {
         factorPares = meta / sug.valor;
         if (factorPares >= 3) motivos.push(`la meta cargada (${fmt(meta, 2)}) es ${fmt(factorPares, 1)}× la mediana de sus pares medidos (${fmt(sug.valor, 2)})`);
         else if (factorPares <= 1 / 3) motivos.push(`la meta cargada (${fmt(meta, 2)}) es la ${fmt(1 / factorPares, 1)}ª parte de la mediana de sus pares medidos (${fmt(sug.valor, 2)})`);
     }
     // Actividad implícita absurda para la cantidad de cargas: si hubiera trabajado tan poco,
     // no habría hecho falta ir al surtidor tantas veces.
-    const cargas = fila.metrics.cantidad_cargas || 0;
+    //
+    // OJO: esta regla vale para equipos que se desplazan hasta un surtidor. Un grupo electrógeno
+    // de 440 KVA quema 85 L/hora, así que 135 litros SON una hora y media de trabajo — y eso es
+    // perfectamente normal, no un error. Si la meta está respaldada por la potencia declarada,
+    // la actividad implícita también lo está y no hay nada que objetar.
+    const cargas = respaldadaPorPotencia ? 0 : (fila.metrics.cantidad_cargas || 0);
     if (cargas > 0) {
         if (imp.unidad === 'horas' && imp.valor < cargas * 2) motivos.push(`daría ${fmt(imp.valor, 1)} horas para ${cargas} carga${cargas === 1 ? '' : 's'}: menos de 2 horas de trabajo por carga`);
         if (imp.unidad === 'km' && imp.valor < cargas * 20) motivos.push(`daría ${fmt(imp.valor)} km para ${cargas} carga${cargas === 1 ? '' : 's'}: menos de 20 km por carga`);
     }
 
-    return { implicita: imp, meta, creible: motivos.length === 0, motivos, sugerida: sug, factorPares, completitud: comp };
+    return { implicita: imp, meta, creible: motivos.length === 0, motivos, sugerida: sug, factorPares, completitud: comp, respaldadaPorPotencia, potencia: pot };
 }
 
 /**
@@ -613,7 +708,41 @@ export function auditarCalidadCargas(rawRecords = []) {
         else vistos.set(k, c);
     });
 
-    return { mesesSinGps, sinValor, variantes, duplicados, totalCargas: cargas.length, mesesGps: [...mesesGps].sort() };
+    // 5. La misma normalización del punto 3 (espacio/guion/mayúsculas de más), pero aplicada a
+    // TODO texto libre de la carga, no solo el combustible: lugar de carga, centro de costo y
+    // chofer. A esta altura del sistema una variante de escritura no debería pasar inadvertida
+    // — pero unificarla es una decisión del usuario, no algo que la app resuelva sola: acá solo
+    // se detecta y se agrupa, la corrección se ofrece (y se aplica) desde "Unificar variantes"
+    // en el Panel, nunca de manera automática.
+    const CAMPOS_VARIANTES_TEXTO = [
+        { campo: 'lugar_carga', etiqueta: 'Lugar de carga' },
+        { campo: 'centro_costo', etiqueta: 'Centro de costo' },
+        { campo: 'chofer', etiqueta: 'Chofer' }
+    ];
+    const variantesCampos = [];
+    CAMPOS_VARIANTES_TEXTO.forEach(({ campo, etiqueta }) => {
+        const porClave = new Map();
+        cargas.forEach(c => {
+            const valor = String(c[campo] || '').trim();
+            if (valor.length < 3) return; // "S/D", "-", etc: ruido, no una variante real
+            const k = soloLetras(valor);
+            if (!k) return;
+            if (!porClave.has(k)) porClave.set(k, new Map());
+            const m = porClave.get(k);
+            m.set(valor, (m.get(valor) || 0) + 1);
+        });
+        porClave.forEach((m, clave) => {
+            if (m.size < 2) return;
+            const formas = [...m.entries()].sort((a, b) => b[1] - a[1]);
+            variantesCampos.push({
+                campo, etiqueta, clave, formas,
+                total: formas.reduce((s, [, n]) => s + n, 0)
+            });
+        });
+    });
+    variantesCampos.sort((a, b) => b.total - a.total);
+
+    return { mesesSinGps, sinValor, variantes, variantesCampos, duplicados, totalCargas: cargas.length, mesesGps: [...mesesGps].sort() };
 }
 
 
@@ -670,9 +799,129 @@ export function cruzarIgnicion(filas = [], rawRecords = []) {
     return { comparados, inflados, totalIgnicion: comparados.reduce((s, c) => s + c.ignicion, 0), totalGps: comparados.reduce((s, c) => s + c.gps, 0) };
 }
 
+
+/**
+ * Potencia declarada del equipo, normalizada. El maestro la trae como "440 KVA" o "180 HP".
+ * Sirve para comparar equipos de distinto tamaño: 85 L/hora es altísimo para un grupo de 120 KVA
+ * y perfectamente normal para uno de 440. Sin normalizar por potencia, la comparación contra
+ * "pares" mezcla peras con manzanas y marca como error una meta que está bien.
+ */
+export function potenciaEquipo(eq) {
+    const t = String(eq?.potencia || '').toUpperCase().replace(',', '.');
+    const m = t.match(/([\d.]+)\s*(KVA|KW|HP|CV)/);
+    if (!m) return null;
+    const valor = parseFloat(m[1]);
+    if (!valor || valor <= 0) return null;
+    return { valor, unidad: m[2] === 'CV' ? 'HP' : m[2] };
+}
+
+/**
+ * Ratio litros/hora por unidad de potencia, calculado sobre los ESTIMADOS OFICIALES de la flota
+ * que sí tienen potencia declarada. Es el dato que permite decir "para un equipo de esta
+ * potencia, lo esperable es tanto" sin inventar coeficientes de manual.
+ */
+export function ratioPotenciaFlota(filas = [], unidad = 'KVA') {
+    const puntos = [];
+    filas.forEach(f => {
+        const p = potenciaEquipo(f.equipo);
+        const meta = f.confirmed && f.confirmed.valor > 0 && f.metrics.tipo_calculo === 'L/Hora' ? f.confirmed.valor : 0;
+        if (p && p.unidad === unidad && meta > 0) puntos.push({ interno: f.equipo.interno, potencia: p.valor, meta, ratio: meta / p.valor });
+    });
+    if (puntos.length < 2) return null;
+    const rs = puntos.map(p => p.ratio).sort((a, b) => a - b);
+    return { ratio: rs[Math.floor(rs.length / 2)], n: puntos.length, unidad, puntos: puntos.sort((a, b) => a.potencia - b.potencia) };
+}
+
+/**
+ * Investigación real de la meta de un equipo: no muestra lo que la app ya sabe, va a buscar el
+ * dato a las fuentes que existen, en orden de autoridad, y dice de dónde salió cada candidato y
+ * cuánto se le puede creer. Devuelve una lista de fuentes, no un número suelto: el usuario decide
+ * viendo de dónde viene cada una.
+ */
+export function investigarMeta(fila, todas = [], estimadosCrudos = []) {
+    const eq = fila.equipo;
+    const m = fila.metrics;
+    const fuentes = [];
+    const claveEq = (x) => normalizeEquipoKey(x || '');
+
+    // 1. El estimado oficial del propio equipo (la fuente de mayor autoridad que existe).
+    const propio = estimadosCrudos.find(e => claveEq(e.interno) === claveEq(eq.interno));
+    if (propio && propio.consumo_estimado_valor > 0) {
+        fuentes.push({
+            orden: 1, fuente: 'Consumos Estimados (dato oficial del equipo)', confianza: 'alta',
+            valor: propio.consumo_estimado_valor, unidad: propio.consumo_estimado_unidad || m.tipo_calculo,
+            detalle: `Figura en la planilla "Consumos Estimados" como ${propio.consumo_estimado || propio.consumo_estimado_valor}.`
+        });
+    }
+
+    // 2. Un equipo idéntico (misma marca y modelo) con estimado oficial: para gemelos, es el
+    //    mismo número por definición.
+    if (eq.marca && eq.modelo) {
+        const gemelo = todas.find(f => f.equipo.interno !== eq.interno &&
+            f.equipo.marca === eq.marca && f.equipo.modelo === eq.modelo &&
+            f.confirmed && f.confirmed.valor > 0 && f.confirmed.source !== 'Maestro');
+        if (gemelo) {
+            fuentes.push({
+                orden: 2, fuente: `Equipo idéntico: ${gemelo.equipo.interno}`, confianza: 'alta',
+                valor: gemelo.confirmed.valor, unidad: gemelo.metrics.tipo_calculo,
+                detalle: `${gemelo.equipo.interno} es un ${eq.marca} ${eq.modelo}, el mismo modelo que este, y tiene esa meta cargada.`
+            });
+        }
+    }
+
+    // 3. Lo que el propio equipo viene consumiendo, si hay con qué medirlo.
+    if (m.consumo_real > 0) {
+        const c = confiabilidad(fila);
+        fuentes.push({
+            orden: 3, fuente: 'Consumo real medido de este equipo', confianza: c.confiable ? 'alta' : 'baja',
+            valor: Math.round(m.consumo_real * 100) / 100, unidad: m.tipo_calculo,
+            detalle: `Medido sobre ${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'} y ${fmt(m.total_horas || m.total_km, 1)} ${m.tipo_calculo === 'L/Hora' ? 'horas' : 'km'} del período` +
+                (c.confiable ? '.' : ` — poco confiable: ${c.avisos.join(', ')}.`)
+        });
+    }
+
+    // 4. Proporcional a su potencia, según lo que la propia flota tiene cargado. Esto es lo que
+    //    distingue "consume mucho" de "es un equipo grande".
+    const pot = potenciaEquipo(eq);
+    if (pot) {
+        const r = ratioPotenciaFlota(todas, pot.unidad);
+        if (r) {
+            const valor = Math.round(r.ratio * pot.valor * 100) / 100;
+            fuentes.push({
+                orden: 4, fuente: `Proporcional a su potencia (${pot.valor} ${pot.unidad})`, confianza: 'media',
+                valor, unidad: 'L/Hora',
+                detalle: `La flota promedia ${fmt(r.ratio, 3)} L/hora por ${pot.unidad} sobre ${r.n} equipos con potencia declarada ` +
+                    `(${r.puntos.slice(0, 4).map(p => `${p.interno} ${p.potencia}${p.unidad || pot.unidad}→${fmt(p.meta, 0)}`).join(', ')}). ` +
+                    `Para ${pot.valor} ${pot.unidad} da ${fmt(valor, 1)} L/hora.`
+            });
+        }
+    }
+
+    // 5. La mediana de pares medidos: último recurso, y con la advertencia de que ignora el tamaño.
+    const sug = sugerirMeta(fila, todas);
+    if (sug) {
+        fuentes.push({
+            orden: 5, fuente: 'Mediana de pares medidos', confianza: pot ? 'baja' : 'media',
+            valor: sug.valor, unidad: sug.unidad,
+            detalle: sug.base + (pot ? ` — ojo: compara contra equipos que pueden ser de otra potencia, así que para un ${pot.valor} ${pot.unidad} puede quedar muy corto.` : '')
+        });
+    }
+
+    fuentes.sort((a, b) => a.orden - b.orden);
+    const metaActual = fila.confirmed && fila.confirmed.valor > 0 ? fila.confirmed.valor : null;
+    const recomendada = fuentes[0] || null;
+    // ¿La meta que ya tiene coincide con alguna fuente confiable? Entonces está bien y no hay
+    // que tocarla, aunque otras comparaciones digan lo contrario.
+    const respaldo = metaActual
+        ? fuentes.find(f => f.confianza !== 'baja' && Math.abs(f.valor - metaActual) / metaActual <= 0.25)
+        : null;
+    return { fuentes, metaActual, recomendada, respaldo, potencia: pot, faltanDatos: !fuentes.length };
+}
+
 // ============================================================ HALLAZGOS
 
-export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = [], noFlotaAceptados = [], equiposExcluidos = []) {
+export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = [], noFlotaAceptados = [], equiposExcluidos = [], extra = {}) {
+    const { prefijosOficiales = [], prefijosIgnorados = [] } = extra;
     const hallazgos = [];
     // Equipos apartados a mano (ej. pasaron a San Juan y dejaron de reportar acá): siguen en el
     // maestro y en las tablas, pero no generan hallazgos ni ensucian promedios ni medianas.
@@ -1062,6 +1311,31 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     });
 
+    // ---------- 8b. Prefijos nuevos de Mendoza, para dar de alta en la base oficial ----------
+    // Distinto del hallazgo anterior: ese agrupa TODO lo huérfano (incluidos vehículos con
+    // patente y prefijos ya conocidos como CL o MT que solo faltan en el padrón); este filtra
+    // los prefijos que la app todavía no sabe nombrar en absoluto, y ofrece resolverlo una vez
+    // por prefijo (no equipo por equipo) — restringido a Mendoza a propósito, ver el comentario
+    // de detectarPrefijosNuevos().
+    const prefijosIgnoradosSet = new Set(prefijosIgnorados);
+    const prefijosNuevos = detectarPrefijosNuevos(totales.huerfanos || [], rawRecords, prefijosOficiales)
+        .filter(g => g.esMendoza && !prefijosIgnoradosSet.has(g.prefijo));
+
+    if (prefijosNuevos.length) {
+        const litros = prefijosNuevos.reduce((s, g) => s + g.litros, 0);
+        hallazgos.push({
+            id: 'prefijos_nuevos', severidad: 'baja', icono: 'fa-shield-halved',
+            titulo: `${prefijosNuevos.length} prefijo${prefijosNuevos.length === 1 ? '' : 's'} nuevo${prefijosNuevos.length === 1 ? '' : 's'} de Mendoza sin dar de alta (${fmt(litros)} L)`,
+            detalle: `Aparecen en las cargas con un código que no sigue ningún prefijo conocido (ni de la flota, ni ya dado de alta antes), y sus cargas se imputan a centros de costo de Mendoza. No van a tener km ni horas — no son flota rodante — pero sí son gasto real y conviene nombrarlos en vez de dejarlos como "sin identificar". Restringido a Mendoza a propósito: un prefijo nuevo de San Juan sigue viéndose en "Consumo fuera de la flota" hasta confirmarlo con más certeza.`,
+            impacto_costo: prefijosNuevos.reduce((s, g) => s + g.costo, 0),
+            equipos: prefijosNuevos.slice(0, 12).map(g => ({
+                interno: g.prefijo, denominacion: 'sin nombre todavía',
+                texto: `${g.codigos.length} código${g.codigos.length === 1 ? '' : 's'}: ${g.codigos.slice(0, 4).join(', ')}${g.codigos.length > 4 ? '…' : ''}`,
+                sub: `${fmt(g.litros)} L · $${fmt(g.costo)} · ${g.cargas} carga${g.cargas === 1 ? '' : 's'} · centro de costo ${g.centro_costo || '—'}`
+            }))
+        });
+    }
+
     // ---------- 9. Cargas anómalas ----------
     const anomalas = [];
     activos.forEach(f => {
@@ -1317,19 +1591,27 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             detalle: `El combustible salió del surtidor pero la planilla lo registra con <strong>precio unitario o costo total en cero</strong>. No es que hayan sido gratis: falta el dato. Todo lo que la app muestra en pesos — el gasto del período, el costo del sobreconsumo, el ahorro — está subestimado en esa cantidad hasta que se completen. ${meses.length ? `Se concentran en ${meses.join(', ')}.` : ''}` +
                 (causaRaiz
                     ? ` <strong>Y ya sabemos por qué:</strong> las ${cal.sinValor.length} están escritas <strong>"${causaRaiz.forma}"</strong> mientras que el resto de la flota usa <strong>"${causaRaiz.mayoritaria}"</strong>. El nombre no coincide con la tabla de precios del sistema que emite la planilla, así que el precio vuelve en cero. No es un olvido: es una diferencia de escritura. Corregir el nombre en el origen completa los precios solo.`
-                    : ''),
+                    : '') +
+                (() => {
+                    const fl = cal.sinValor.map(c => c.fila_excel).filter(Boolean);
+                    if (!fl.length) return '';
+                    const muestra = fl.slice(0, 15).join(', ');
+                    return ` <strong>En tu planilla están en las filas ${muestra}${fl.length > 15 ? ` y ${fl.length - 15} más` : ''}.</strong> No son contiguas: para encontrarlas en Excel conviene filtrar la columna de precio por 0, o la del combustible por esa escritura.`;
+                })(),
             causa_raiz: causaRaiz,
+            filas_excel: cal.sinValor.map(c => c.fila_excel).filter(Boolean),
             equipos: cal.sinValor.slice(0, 12).map(c => ({
                 interno: c.interno || c.dominio || '—', denominacion: c.combustible || '',
                 texto: `${fmt(parseFloat(c.litros) || 0, 1)} L sin valorizar`,
-                sub: `${c.fecha || 'sin fecha'}${c.lugar_carga ? ` · ${c.lugar_carga}` : ''}${c.chofer ? ` · ${c.chofer}` : ''}`
+                sub: `${c.fila_excel ? `fila ${c.fila_excel} de la planilla · ` : ''}${c.fecha || 'sin fecha'}${c.lugar_carga ? ` · ${c.lugar_carga}` : ''}${c.chofer ? ` · ${c.chofer}` : ''}`
             }))
         });
     }
 
-    if (cal.variantes.length || cal.duplicados.length) {
+    if (cal.variantes.length || cal.variantesCampos.length || cal.duplicados.length) {
         const partes = [];
         if (cal.variantes.length) partes.push(`${cal.variantes.length} combustible${cal.variantes.length === 1 ? '' : 's'} escrito${cal.variantes.length === 1 ? '' : 's'} de más de una forma`);
+        if (cal.variantesCampos.length) partes.push(`${cal.variantesCampos.length} valor${cal.variantesCampos.length === 1 ? '' : 'es'} de texto con variantes (${[...new Set(cal.variantesCampos.map(v => v.etiqueta))].join(', ')})`);
         if (cal.duplicados.length) partes.push(`${cal.duplicados.length} carga${cal.duplicados.length === 1 ? '' : 's'} repetida${cal.duplicados.length === 1 ? '' : 's'}`);
         const ejemplos = cal.variantes.map(v =>
             `<strong>${v.formas.map(([f, n]) => `"${f}" (${n})`).join(' y ')}</strong>`).join('; ');
@@ -1338,14 +1620,22 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             no_comparar: true,
             titulo: `Inconsistencias en la planilla de cargas: ${partes.join(' y ')}`,
             detalle: (cal.variantes.length
-                ? `El mismo producto escrito de dos maneras se cuenta como dos productos distintos y rompe cualquier total por tipo de combustible: ${ejemplos}. Se arregla unificando la escritura en la planilla de origen. `
+                ? `El mismo producto escrito de dos maneras se cuenta como dos productos distintos y rompe cualquier total por tipo de combustible: ${ejemplos}. `
                 : '') +
+                (cal.variantesCampos.length
+                    ? `El mismo valor de ${[...new Set(cal.variantesCampos.map(v => v.etiqueta))].join(', ')} aparece escrito de más de una forma (espacio, guion, mayúscula de más). No se unifica solo — es una decisión, no una corrección automática — pero desde <strong>"Unificar variantes"</strong> se revisa cada grupo y se elige a mano bajo qué forma quedan todas las cargas. `
+                    : '') +
                 (cal.duplicados.length
                     ? `Además hay ${cal.duplicados.length} fila${cal.duplicados.length === 1 ? '' : 's'} con el mismo equipo, la misma fecha y los mismos litros que otra: casi siempre es la misma carga cargada dos veces. Confirmá contra el comprobante antes de borrar.`
                     : ''),
             equipos: [
                 ...cal.variantes.map(v => ({
                     interno: v.formas[0][0], denominacion: 'tipo de combustible',
+                    texto: `${v.formas.length} formas de escribirlo`,
+                    sub: v.formas.map(([f, n]) => `"${f}": ${n} cargas`).join(' · ')
+                })),
+                ...cal.variantesCampos.slice(0, 10).map(v => ({
+                    interno: v.formas[0][0], denominacion: v.etiqueta,
                     texto: `${v.formas.length} formas de escribirlo`,
                     sub: v.formas.map(([f, n]) => `"${f}": ${n} cargas`).join(' · ')
                 })),

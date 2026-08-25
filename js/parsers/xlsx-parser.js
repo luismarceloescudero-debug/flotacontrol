@@ -164,7 +164,10 @@ function filasComoObjetos(rawRows, headerRowIdx, headers) {
             obj[headers[j]] = rawRows[i][j];
             if (rawRows[i][j] !== '' && rawRows[i][j] !== null) hayDatos = true;
         }
-        if (hayDatos) out.push(obj);
+        // Número de fila tal como se ve en Excel (1-based, contando el encabezado). Sirve para
+        // que un hallazgo pueda decir "está en la fila 3600 de tu planilla" en vez de dejar al
+        // usuario buscando 38 filas sueltas entre cuatro mil.
+        if (hayDatos) { obj.__fila_excel = i + 1; out.push(obj); }
     }
     return out;
 }
@@ -203,6 +206,7 @@ function identidadDeFila(row, mapeo) {
 function baseMovimiento(row, id, fecha, filename) {
     const p = partesFecha(fecha);
     return {
+        fila_excel: row.__fila_excel || null,
         interno: id.interno,
         dominio: id.dominio,
         interno_key: id.interno_key,

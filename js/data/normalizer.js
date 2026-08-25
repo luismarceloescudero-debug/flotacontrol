@@ -16,11 +16,13 @@ export const TIPO_POR_PREFIJO = {
     AU: 'AUTOMÓVIL',
     BA: 'BATEA',
     BM: 'BOMBA',
+    CA: 'CALDERA',
     CF: 'CARGADORA FRONTAL',
     CH: 'CAMIÓN HIDROGRÚA',
     CL: 'CALOVENTOR',
     CM: 'CAMIONETA',
     CR: 'CARRETÓN',
+    LM: 'LIMPIEZA',
     EX: 'EXCAVADORA',
     FG: 'FURGÓN',
     GE: 'GRUPO ELECTRÓGENO',
@@ -81,6 +83,28 @@ export function getNombreCentroCosto(centroCosto) {
     const c = normalizeString(centroCosto).replace(/\s+/g, '');
     if (!c) return '';
     return NOMBRE_POR_CENTRO_COSTO[c] || c;
+}
+
+/**
+ * Provincia real de cada centro de costo. No alcanza con "termina en MZA" (PTY = Tunuyán y
+ * PSM = San Martín son Mendoza igual, y ALT = Altamira es San Juan pese al nombre) — se usa
+ * un mapeo explícito, verificado contra "Equipos HSV SJ-MZA 2026.xlsx": el único equipo real
+ * que carga con centro de costo ALT (CF37) figura con UBICACIÓN "SAN JUAN" en el padrón.
+ *
+ * Sirve para restringir a Mendoza funciones que no deben aplicarse a San Juan sin revisar
+ * (ej. el alta automática de códigos nuevos como "oficiales" — ver detectarPrefijosNuevos en
+ * diagnostico.js).
+ */
+export const PROVINCIA_POR_CENTRO_COSTO = {
+    PMZA: 'MENDOZA', AMZA: 'MENDOZA', PTY: 'MENDOZA', PSM: 'MENDOZA',
+    TMZA: 'MENDOZA', VMZA: 'MENDOZA', LMZA: 'MENDOZA', CMZA: 'MENDOZA', GMZA: 'MENDOZA',
+    SJ: 'SAN JUAN', ALT: 'SAN JUAN'
+};
+
+export function provinciaDeCentroCosto(centroCosto) {
+    const c = normalizeString(centroCosto).replace(/\s+/g, '');
+    if (!c) return null;
+    return PROVINCIA_POR_CENTRO_COSTO[c] || null;
 }
 
 /**
