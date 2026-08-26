@@ -1737,6 +1737,11 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
     background: transparent; color: var(--text-muted); border: 1px solid transparent;
     border-radius: 6px; padding: 0.15rem 0.45rem; font-size: 0.7rem; cursor: pointer;
 }
+.diag-estado-badge {
+    display: inline-block; margin-left: 0.4rem; font-size: 0.7rem; font-weight: 700;
+    padding: 0.12rem 0.45rem; border-radius: 6px;
+    background: rgba(224,160,0,0.13); color: var(--accent-yellow, #e0a000); white-space: nowrap;
+}
 .btn-diag-desatender:hover { color: var(--accent-amber); border-color: var(--accent-amber); }
 
 /* ---------- Pasos de consejo accionables ---------- */

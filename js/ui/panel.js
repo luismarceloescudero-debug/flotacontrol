@@ -4,7 +4,7 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota } from '../data/database.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, quitarSeguimientoEquipo } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio } from '../data/analyzer.js';
 import { generarDiagnostico, cruzarIgnicion, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR } from '../data/normalizer.js';
@@ -47,6 +47,22 @@ let prefijosIgnoradosCache = [];
 // Grupos de variantes de texto ("Unificar variantes") marcados como "son distintos, no juntar"
 // — también solo de sesión, por el mismo motivo. Clave: "campo|claveNormalizada".
 const variantesIgnoradasCache = new Set();
+
+// "Estado del equipo": mismo store persistente que usa Base de Datos / Consumo Real
+// (seguimientoEquipos) para anotar por qué un equipo tiene poca base o datos raros, sin
+// excluirlo del análisis — acá se reutiliza desde las tarjetas de hallazgos (ralentí, GPS vs
+// ignición, sin actividad, estimación no creíble) para no tener un mecanismo aparte por cada uno.
+let seguimientoEquiposCache = new Map();
+const CATEGORIAS_SEGUIMIENTO = [
+    { id: 'fuera_servicio', label: 'Fuera de servicio' },
+    { id: 'taller_ext', label: 'Taller externo' },
+    { id: 'taller_int', label: 'Taller interno' },
+    { id: 'temporada_baja', label: 'Temporada baja' },
+    { id: 'sin_chofer', label: 'Sin chofer asignado' },
+    { id: 'backup', label: 'Backup / uso esporádico (ej. grupo electrógeno solo sin energía de red)' },
+    { id: 'otro', label: 'Otro (detallar)' }
+];
+const CATEGORIA_SEGUIMIENTO_LABEL = Object.fromEntries(CATEGORIAS_SEGUIMIENTO.map(c => [c.id, c.label]));
 
 /** El 7° parámetro opcional de generarDiagnostico(): siempre las mismas cachés de sesión. */
 function extraDiag() {
@@ -248,14 +264,15 @@ export async function renderPanel() {
     kpiEl.innerHTML = '<p style="color:var(--text-muted)">Analizando datos...</p>';
 
     try {
-        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales] = await Promise.all([
-            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota()
+        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos] = await Promise.all([
+            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos()
         ]);
         datosCrudos = { equipos, rawRecords, estimados };
         ralentiEstadosCache = ralentiEstados;
         noFlotaAceptadosCache = noFlotaAceptados;
         equiposExcluidosCache = equiposExcluidos;
         prefijosOficialesCache = prefijosOficiales;
+        seguimientoEquiposCache = new Map(seguimientoEquipos.map(s => [s.interno, s]));
 
         const fuentes = {
             equipos: equipos.length,
@@ -754,6 +771,18 @@ function renderDiagnostico(analisis, rawRecords = []) {
         const seguidos = diagSeguimiento.get(h.id) || new Set();
         const acciones = ACCIONES_PROPUESTAS[h.id] || [];
         const esRalenti = esHallazgoRalenti(h.id);
+        // Ralentí y "GPS vs Ignición" son el mismo tipo de problema (el GPS reportando algo que
+        // no cierra) y comparten la misma resolución real: aceptar el dato tal cual, o reclamar
+        // el equipo GPS con el número en la mano. gps_vs_ignicion no tiene "ralentí aceptable"
+        // (no aplica el concepto), pero sí necesita poder generar el reclamo fila por fila, no
+        // solo en bloque desde el botón de la barra superior.
+        const puedeReclamarGPS = esRalenti || h.id === 'gps_vs_ignicion';
+        // En ralentí, "Aceptable"/"Reclamo GPS" (por fila o en selección) YA SON las dos
+        // resoluciones reales — "Cómo lo resuelvo" era un tercer botón que solo repetía la
+        // explicación sin resolver nada, e "Ignorar"/"Ignorar todos" esconden el hallazgo sin
+        // que el problema real (posible falla de GPS) quede investigado. Se ocultan acá para
+        // que la barra no ofrezca más opciones que las que de verdad cierran el caso.
+        const ocultarResolverEIgnorar = esRalenti;
         const esNoflCard = h.id.startsWith('nofl_');
         // Los equipos ya atendidos en esta sesión salen de la lista principal: el hallazgo se va
         // vaciando a medida que se trabaja en vez de quedar siempre igual de largo.
@@ -782,19 +811,19 @@ function renderDiagnostico(analisis, rawRecords = []) {
                 <p class="diag-detalle">${h.detalle}</p>
                 <div class="diag-acciones-bar">
                     ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
-                    ${acciones.map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
+                    ${acciones.filter(a => !(ocultarResolverEIgnorar && a.accion === 'resolver')).map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
                     ${h.equipos && h.equipos.length >= 2 && !h.no_comparar ? `<button class="btn-sm btn-diag-comparar-lista" data-hallazgo="${esc(h.id)}" title="Abrir comparativa con estos equipos"><i class="fa-solid fa-code-compare"></i> Comparar estos equipos</button>` : ''}
                     ${esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.length ? `<button class="btn-sm btn-ralenti-promediar" data-hallazgo="${esc(h.id)}" title="Marca como aceptable a los equipos tildados de la lista de abajo (por defecto, los ${h.internos_bajo_promedio.length} que están en la media de ${nf(h.promedio_ralenti)} hs para abajo)"><i class="fa-solid fa-check-double"></i> Marcar aceptable (selección)</button>` : ''}
                     ${esRalenti && h.equipos && h.equipos.length ? `<button class="btn-sm btn-ralenti-reclamo-lote" data-hallazgo="${esc(h.id)}" title="Genera un reclamo de revisión de GPS para cada equipo tildado en la lista de abajo"><i class="fa-solid fa-satellite-dish"></i> Reclamo GPS (selección)</button>` : ''}
-                    ${esRalenti ? `<button class="btn-sm btn-ver-reclamos-gps" title="Ver los reclamos de revisión de GPS generados"><i class="fa-solid fa-list-check"></i> Reclamos GPS</button>` : ''}
+                    ${puedeReclamarGPS ? `<button class="btn-sm btn-ver-reclamos-gps" title="Ver los reclamos de revisión de GPS generados"><i class="fa-solid fa-list-check"></i> Reclamos GPS</button>` : ''}
                     ${esRalenti && ralentiEstadosCache.some(r => r.estado === 'aceptable') ? `<button class="btn-sm btn-ver-ralenti-aceptados" title="Ver y desmarcar equipos con ralentí aceptable"><i class="fa-solid fa-list-check"></i> Ralentí aceptable (${ralentiEstadosCache.filter(r => r.estado === 'aceptable').length})</button>` : ''}
                     ${esNoflCard && noFlotaAceptadosCache.length ? `<button class="btn-sm btn-ver-nofl-aceptados" title="Ver y desmarcar códigos marcados como 'así está bien'"><i class="fa-solid fa-list-check"></i> Códigos válidos así (${noFlotaAceptadosCache.length})</button>` : ''}
                     <span class="diag-acciones-sep"></span>
                     ${esIgnorado
                         ? `<button class="btn-sm btn-diag-restaurar" data-hallazgo="${esc(h.id)}" title="Volver a mostrar este hallazgo"><i class="fa-solid fa-eye"></i> Restaurar</button>`
-                        : `<button class="btn-sm btn-diag-ignorar" data-hallazgo="${esc(h.id)}" title="Ocultar este hallazgo hasta que cambien los datos"><i class="fa-solid fa-eye-slash"></i> Ignorar</button>`
+                        : (ocultarResolverEIgnorar ? '' : `<button class="btn-sm btn-diag-ignorar" data-hallazgo="${esc(h.id)}" title="Ocultar este hallazgo hasta que cambien los datos"><i class="fa-solid fa-eye-slash"></i> Ignorar</button>`)
                     }
-                    ${!esIgnorado && visibles.length > 1 ? `<button class="btn-sm btn-diag-ignorar-todos" title="Ocultar todos los hallazgos"><i class="fa-solid fa-eye-slash"></i> Ignorar todos</button>` : ''}
+                    ${!ocultarResolverEIgnorar && !esIgnorado && visibles.length > 1 ? `<button class="btn-sm btn-diag-ignorar-todos" title="Ocultar todos los hallazgos"><i class="fa-solid fa-eye-slash"></i> Ignorar todos</button>` : ''}
                 </div>
                 ${h.comparaciones ? h.comparaciones.map(c => `
                     <div class="comparativa">
@@ -846,11 +875,12 @@ function renderDiagnostico(analisis, rawRecords = []) {
                         const esNofl = h.id.startsWith('nofl_');
                         const esCargasExceso = h.id === 'cargas_exceden_dias_habiles';
                         const esBajoPromedio = esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.includes(e.interno);
+                        const estadoEq = seguimientoEquiposCache.get(e.interno);
                         return `
                         <li data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" class="${enSeg ? 'diag-li-seguimiento' : ''}${esNofl ? ' diag-li-nofl' : ''}${e.completitud ? ' diag-comp-' + esc(e.completitud) : ''}">
-                            ${esRalenti ? `<input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(e.interno)}" ${esBajoPromedio ? 'checked' : ''} title="Incluir en las acciones en bloque de este hallazgo (Marcar aceptable / Reclamo GPS)">` : ''}
+                            ${puedeReclamarGPS ? `<input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(e.interno)}" ${esBajoPromedio ? 'checked' : ''} title="Incluir en las acciones en bloque de este hallazgo">` : ''}
                             <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
-                            <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small></span>
+                            <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small>${estadoEq ? `<span class="diag-estado-badge" title="${esc(estadoEq.motivo || '')}"><i class="fa-solid fa-clipboard-list"></i> ${esc(CATEGORIA_SEGUIMIENTO_LABEL[estadoEq.categoria] || 'anotado')}</span>` : ''}</span>
                             ${esNofl ? `
                             <button class="btn-xs btn-ver-cargas" data-interno="${esc(e.interno)}" title="Ver en tabla de cargas"><i class="fa-solid fa-table-list"></i> Ver cargas</button>
                             <button class="btn-xs btn-nofl-valido" data-codigo="${esc(e.interno)}" title="Marcar que este código está bien así (ej. un vehículo de préstamo/demo sin interno propio): sale de este hallazgo de ahora en más">
@@ -861,12 +891,16 @@ function renderDiagnostico(analisis, rawRecords = []) {
                                 <i class="fa-solid fa-table-list"></i> Ver cargas de ese mes
                             </button>` : ''}
                             ${esRalenti ? `
-                            <button class="btn-xs btn-ralenti-aceptable" data-interno="${esc(e.interno)}" title="Marcar este ralentí como aceptable: sale de este hallazgo de ahora en más">
-                                <i class="fa-solid fa-check"></i> Aceptable
-                            </button>
-                            <button class="btn-xs btn-ralenti-reclamo" data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" title="Generar un reclamo interno para pedir revisión del equipo GPS de este equipo">
-                                <i class="fa-solid fa-satellite-dish"></i> Reclamo GPS
+                            <button class="btn-xs btn-ralenti-aceptable" data-interno="${esc(e.interno)}" title="Investigado: el ralentí de este equipo es normal. Sale de este hallazgo de ahora en más">
+                                <i class="fa-solid fa-check"></i> Investigar y marcar aceptable
                             </button>` : ''}
+                            ${puedeReclamarGPS ? `
+                            <button class="btn-xs btn-ralenti-reclamo" data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" title="Investigado: los datos no cierran. Generar un reclamo interno para pedir revisión del equipo GPS">
+                                <i class="fa-solid fa-satellite-dish"></i> Investigar y reclamar GPS
+                            </button>` : ''}
+                            <button class="btn-xs btn-estado-equipo" data-interno="${esc(e.interno)}" title="${estadoEq ? 'Editar el estado anotado de este equipo' : 'Anotar el estado del equipo: fuera de servicio, taller, temporada baja, sin chofer, backup...'}">
+                                <i class="fa-solid fa-clipboard-list"></i> ${estadoEq ? 'Editar estado' : 'Estado'}
+                            </button>
                             <button class="btn-xs btn-diag-seguir ${enSeg ? 'active' : ''}" data-hallazgo="${esc(h.id)}" data-interno="${esc(e.interno)}" title="${enSeg ? 'Quitar seguimiento' : 'Marcar para seguimiento'}">
                                 <i class="fa-solid ${enSeg ? 'fa-eye-slash' : 'fa-eye'}"></i>
                             </button>
@@ -918,7 +952,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
     // --- Event listeners ---
     el.querySelectorAll('.diag-lista li[data-interno]').forEach(li => {
         li.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ver-mes-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo, .chk-ralenti-promedio, .btn-nofl-valido')) return;
+            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ver-mes-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo, .chk-ralenti-promedio, .btn-nofl-valido, .btn-estado-equipo')) return;
             const hallazgoId = li.dataset.hallazgo || '';
             if (hallazgoId.startsWith('nofl_')) {
                 // Para hallazgos nofl_*, navegar a tabla de cargas y buscar el valor
@@ -1027,6 +1061,15 @@ function renderDiagnostico(analisis, rawRecords = []) {
             e.stopPropagation();
             diagIgnorados.clear();
             renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
+    // Botón "Estado" / "Editar estado" por equipo — abre el modal de estado (fuera de servicio,
+    // taller, temporada baja, sin chofer, backup...), respaldado en el store seguimientoEquipos.
+    el.querySelectorAll('.btn-estado-equipo').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            abrirEstadoEquipo(b.dataset.interno);
         });
     });
 
@@ -2730,6 +2773,65 @@ function abrirRevisionPrefijosNuevos(analisis, rawRecords) {
         await renderPanel();
         abrirRevisionPrefijosNuevos(ultimoAnalisis, datosCrudos?.rawRecords || []);
     }));
+}
+
+/**
+ * "Estado del equipo": modal chico para anotar por qué un equipo tiene poca base o datos raros
+ * (fuera de servicio, taller, temporada baja, sin chofer, backup) sin excluirlo del análisis —
+ * mismo store `seguimientoEquipos` que usa Consumo Real en Base de Datos, para no duplicar el
+ * mecanismo. Se abre desde cualquier tarjeta de hallazgo (ralentí, GPS vs ignición, sin
+ * actividad, estimación no creíble): es la manera de "investigar y dejar constancia" en un
+ * solo lugar, en vez de tener un botón distinto por cada tipo de problema.
+ */
+function abrirEstadoEquipo(interno) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const actual = seguimientoEquiposCache.get(interno);
+    const modalId = 'modal-estado-equipo';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div><h2>Estado de ${esc(interno)}</h2>
+                    <p class="modal-sub">No excluye al equipo del análisis — solo queda anotado por qué tiene poca base o datos raros, para no reinvestigarlo la próxima vez.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Categoría</label>
+                    <select class="estado-eq-categoria" style="width:100%;margin-bottom:0.75rem">
+                        <option value="">— Sin anotar —</option>
+                        ${CATEGORIAS_SEGUIMIENTO.map(c => `<option value="${c.id}" ${actual?.categoria === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+                    </select>
+                    <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Detalle (opcional)</label>
+                    <textarea class="estado-eq-motivo" rows="3" placeholder="Ej: en taller marzo-abril, cambio de sucursal a San Juan en mayo...">${esc(actual?.motivo || '')}</textarea>
+                    <div class="modal-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:0.75rem">
+                        <button class="btn-secondary btn-sm" data-close>Cancelar</button>
+                        ${actual ? '<button class="btn-secondary btn-sm" id="btn-estado-eq-quitar"><i class="fa-solid fa-trash"></i> Quitar anotación</button>' : ''}
+                        <button class="btn-primary btn-sm" id="btn-estado-eq-guardar"><i class="fa-solid fa-floppy-disk"></i> Guardar</button>
+                    </div>
+                </div>
+            </div>
+        </div>`);
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+    modal.querySelector('#btn-estado-eq-guardar').addEventListener('click', async () => {
+        const categoria = modal.querySelector('.estado-eq-categoria').value;
+        const motivo = modal.querySelector('.estado-eq-motivo').value.trim();
+        if (!categoria && !motivo) { alert('Elegí una categoría o escribí un detalle.'); return; }
+        await setSeguimientoEquipo(interno, motivo, categoria || 'otro');
+        seguimientoEquiposCache.set(interno, { interno, motivo, categoria: categoria || 'otro', fecha: new Date().toISOString() });
+        cerrar();
+        renderDiagnostico(ultimoAnalisis, datosCrudos?.rawRecords || []);
+    });
+    modal.querySelector('#btn-estado-eq-quitar')?.addEventListener('click', async () => {
+        await quitarSeguimientoEquipo(interno);
+        seguimientoEquiposCache.delete(interno);
+        cerrar();
+        renderDiagnostico(ultimoAnalisis, datosCrudos?.rawRecords || []);
+    });
 }
 
 /** Ejecuta la acción propuesta para un hallazgo: abrir comparativa, ajustar metas, etc. */

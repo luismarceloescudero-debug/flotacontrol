@@ -17,11 +17,11 @@ git diff --stat
 
 ```powershell
 git add -A
-git commit -m "Consumos Estimados con consumo real, Confiabilidad partida en Confiable/Cobertura, estimado por grupo y seguimiento de equipos"
+git commit -m "Ralenti: botones consolidados en Aceptable/Reclamo GPS, reclamo por fila en GPS vs Ignicion, y Estado del equipo"
 git push origin main
 ```
 
-(El commit anterior de esta lista, "Base de Datos: Consumo Real, Ajustar metas en Maestro...", ya se hizo — no hace falta repetirlo.)
+(Los commits anteriores de esta lista ya se hicieron — no hace falta repetirlos.)
 
 `git add -A` toma todos los archivos modificados sin tener que listarlos uno por uno (así no
 falla si alguno de la lista no cambió).
@@ -44,6 +44,12 @@ git commit -m "Base de Datos - Maestro: nuevas columnas Consumo real, Cargas y v
 
 ```powershell
 git commit -m "Consumos Estimados: se agregaron las columnas Consumo real y vs real (lo medido en el periodo vigente del Panel), que antes solo estaban en Maestro. Encabezados renombrados a Estimado (planilla) y Meta actual (maestro) para que quede claro que son dos valores distintos a proposito." -m "Consumo Real: la columna Confiabilidad se partio en Confiable (Si/No) y Cobertura (la proporcion exacta, ej. 42/120 dias habiles = 35%), con el umbral explicado en el tooltip del encabezado." -m "Estimado por grupo: cuando un equipo tiene pocas cargas propias (ej. CM30 con 1 carga/mes) pero hay pares comparables confiables por marca+modelo o denominacion, se muestra la mediana de esos pares al lado del consumo medido, en vez de dejarlo en 0." -m "Marcar para seguimiento: nuevo boton por equipo y accion masiva por grupo en Consumo Real. Anota el motivo de la poca base (fuera de servicio, cambio de sucursal, baja de produccion, carga fuera de la empresa) sin excluir al equipo del analisis. No lo vuelve confiable por si solo: la cobertura real sigue siendo la que manda." -m "Acciones masivas en Consumo Real: seleccionar por filtro de denominacion + Todos permite marcar/quitar seguimiento o adoptar el estimado por grupo como meta a un grupo entero de una." -m "FIX: el selector de accion masiva quedaba con las opciones de la ultima pestana visitada (Cargas o Consumo Real) al volver a Maestro/Estimados. Ahora cada pestana restaura sus propias opciones." -m "DB version 10: nuevo store seguimientoEquipos."
+```
+
+### Detalle de esta tanda (Ralentí consolidado, reclamo GPS en GPS vs Ignición, Estado del equipo)
+
+```powershell
+git commit -m "Ralenti (inverosimil, camionetas, general): se sacaron los botones Como lo resuelvo, Ignorar e Ignorar todos de estas tarjetas. Marcar aceptable y Reclamo GPS (por fila y en seleccion) ya eran las dos resoluciones reales; ahora son los unicos botones, renombrados Investigar y marcar aceptable / Investigar y reclamar GPS." -m "GPS vs Ignicion: ahora tiene boton de reclamo GPS por fila (antes solo existia el de seleccion en bloque), y boton Reclamos GPS para ver los generados. El texto del hallazgo nombra las fuentes explicitamente: Informe de Ignicion (Loop, via API de Wara) y Resumen de Flota (Wara, directo) - antes decia 'el Informe de Ignicion' y 'el Resumen de Flota' sin aclarar el origen. El reclamo por mail ya citaba las fuentes correctamente desde antes; esto corrige el texto que se ve en la tarjeta." -m "Nuevo boton Estado por equipo en las tarjetas de ralenti, GPS vs ignicion, sin actividad y estimacion no creible: anota Fuera de servicio, Taller externo, Taller interno, Temporada baja, Sin chofer asignado, Backup o motivo libre, sin excluir al equipo del analisis. Reutiliza el store seguimientoEquipos (el mismo de Marcar para seguimiento en Consumo Real) para no duplicar el mecanismo. Queda visible como insignia en la fila una vez guardado."
 ```
 
 ## Sobre las advertencias de CRLF
