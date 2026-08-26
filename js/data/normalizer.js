@@ -462,27 +462,46 @@ export function parseDate(val) {
 export function parseNumber(val) {
     if (val === null || val === undefined || val === '') return 0;
     if (typeof val === 'number') return val;
-    
-    let clean = String(val)
-        .replace(/[$€]/g, '')
-        .replace(/\./g, '') // miles (asumiendo formato hispano)
-        .replace(/,/g, '.') // decimales
-        .trim();
-        
-    let num = parseFloat(clean);
+
+    let clean = String(val).replace(/[$€\s]/g, '').trim();
+    if (!clean) return 0;
+
+    // El punto es ambiguo: en formato hispano separa miles ("1.234" = mil doscientos treinta y
+    // cuatro), pero un archivo exportado con locale inglés lo usa como decimal ("9.5" = nueve y
+    // medio). Borrarlo siempre — como se hacía antes — convertía "9.5" en 95: un error de diez
+    // veces, silencioso, en litros, importes o precios. Ahora se decide por la forma:
+    //   - Si hay coma, la coma manda como decimal y los puntos son miles (hispano puro).
+    //   - Si solo hay puntos y la forma es exactamente de miles (1 a 3 dígitos y después grupos
+    //     de 3: "1.234", "12.345.678"), se tratan como miles.
+    //   - Cualquier otra forma con punto ("9.5", "0.75", "1234.56") es decimal y se respeta.
+    if (clean.includes(',')) {
+        clean = clean.replace(/\./g, '').replace(/,/g, '.');
+    } else if (/^-?\d{1,3}(\.\d{3})+$/.test(clean)) {
+        clean = clean.replace(/\./g, '');
+    }
+
+    const num = parseFloat(clean);
     return isNaN(num) ? 0 : num;
 }
 
+/**
+ * Duración a horas decimales. Acepta "HH:MM:SS" y también "HH:MM".
+ *
+ * Antes solo se contemplaba el formato de tres partes; "07:30" caía al parseNumber del final y
+ * devolvía 7 — los minutos se perdían sin aviso, que en un total de horas de motor es el tipo de
+ * error que nadie nota hasta que las cuentas no cierran. Hoy los archivos reales traen estas
+ * columnas como número (ver parseExcelHours), así que esto es defensa para un export futuro.
+ */
 export function parseDuration(val) {
     if (!val) return 0;
     if (typeof val === 'number') return val;
-    let str = String(val).trim();
+    const str = String(val).trim();
     if (str.includes(':')) {
-        let parts = str.split(':');
-        if (parts.length === 3) {
-            let h = parseNumber(parts[0]) || 0;
-            let m = parseNumber(parts[1]) || 0;
-            let s = parseNumber(parts[2]) || 0;
+        const parts = str.split(':');
+        if (parts.length === 3 || parts.length === 2) {
+            const h = parseNumber(parts[0]) || 0;
+            const m = parseNumber(parts[1]) || 0;
+            const s = parts.length === 3 ? (parseNumber(parts[2]) || 0) : 0;
             return h + (m / 60) + (s / 3600);
         }
     }

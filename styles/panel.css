@@ -1841,3 +1841,15 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
     padding: 0.15rem 0.4rem; font-size: 0.72rem; cursor: pointer;
 }
 .par-prov select.par-prov-guardada { border-color: var(--accent-green, #30d158); color: var(--accent-green, #30d158); }
+
+/* Consumo estimado a partir de actividad declarada a mano (no medida por GPS): se distingue
+   del estimado por grupo porque es MÁS fuerte — son los litros del propio equipo. */
+.cell-est-declarada { color: var(--accent-blue, #3b82f6); }
+.btn-xs.active { border-color: var(--accent-blue, #3b82f6); color: var(--accent-blue, #3b82f6); }
+
+/* Formulario de actividad estimada */
+.act-form { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 0.75rem; align-items: center; }
+.act-form select, .act-form input[type="text"] { width: 100%; }
+.act-rango { display: flex; align-items: center; gap: 0.4rem; }
+.act-rango input { width: 110px; }
+.act-por { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }

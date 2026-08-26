@@ -32,7 +32,7 @@ const DB_NAME = 'FlotaControlDB';
 // v9: registro de prefijos "fuera de flota" oficializados (ej. CA = CALDERA, LM = LIMPIEZA):
 // códigos que no son equipos con km/horas pero sí gasto real, dados de alta a propósito desde
 // el hallazgo "códigos nuevos de Mendoza" para que dejen de figurar como consumo sin identificar.
-const DB_VERSION = 10;
+const DB_VERSION = 11;
 
 let dbInstance = null;
 
@@ -114,6 +114,12 @@ export function initDB() {
             // para no repreguntar por ellos cada vez que aparecen con poca base de datos.
             if (!db.objectStoreNames.contains('seguimientoEquipos')) {
                 db.createObjectStore('seguimientoEquipos', { keyPath: 'interno' });
+            }
+            // v11 — actividad (km u horas) declarada a mano para equipos que no reportan GPS,
+            // por equipo y por período, con rango y temporada. Ver consumoDesdeActividadDeclarada().
+            if (!db.objectStoreNames.contains('actividadEstimada')) {
+                const s = db.createObjectStore('actividadEstimada', { keyPath: 'id' });
+                s.createIndex('interno', 'interno', { unique: false });
             }
         };
     });
@@ -296,14 +302,27 @@ export function saveMapeo(tipo, columnas) {
 export async function insertRawRecords(arr) {
     const correcciones = await getCorreccionesCargas();
     const mapa = new Map(correcciones.map(c => [c.huella, c]));
+    // Cuántas veces vimos ya cada huella en ESTA importación. Lo necesita 'dedupe': un duplicado
+    // exacto produce, por definición, la misma huella en las dos filas, así que no se puede
+    // resolver con 'eliminar' (saltearía las dos y se perdería también la carga buena). 'dedupe'
+    // conserva las primeras N apariciones y descarta el resto.
+    const vistasPorHuella = new Map();
 
     const finales = [];
     for (const r of arr) {
         if (r.type !== 'carga') { finales.push(r); continue; }
         const h = huellaCarga(r);
         const corr = mapa.get(h);
+        const nVista = (vistasPorHuella.get(h) || 0) + 1;
+        vistasPorHuella.set(h, nVista);
         if (!corr) { finales.push(r); continue; }
         if (corr.accion === 'eliminar') continue;               // descartado por el usuario
+        if (corr.accion === 'dedupe') {
+            // Se conservan las primeras `conservar` (1 por defecto) y se descartan las copias.
+            if (nVista > (corr.conservar || 1)) continue;
+            finales.push(r);
+            continue;
+        }
 
         // Correcciones que NO reasignan el equipo pero igual hay que volver a aplicar cuando se
         // reimporta el archivo: si no, el usuario completa un precio o un centro de costo, sube
@@ -601,6 +620,32 @@ export function quitarSeguimientoEquipo(interno) {
     return writeTx(['seguimientoEquipos'], ([store]) => { store.delete(interno); });
 }
 
+// ============================ ACTIVIDAD DECLARADA ============================
+
+/**
+ * Km u horas declarados a mano para un equipo que no reporta GPS. Sin esto, un equipo con
+ * cargas pero sin actividad medida no tiene forma de tener un consumo: los litros se conocen,
+ * la actividad no. Declararla — aunque sea como rango aproximado — cierra el cálculo.
+ *
+ * `periodo` es 'TODO' (todo el rango analizado) o 'YYYY-MM' (un mes puntual). Lo mensual gana
+ * sobre lo global cuando existe: permite decir "enero-febrero temporada baja 400 km, el resto
+ * 1.200" sin tener que promediar a mano.
+ * { id: 'INTERNO|PERIODO', interno, periodo, unidad: 'km'|'horas', valor_min, valor_max,
+ *   temporada: 'normal'|'baja'|'alta', nota, fecha }
+ */
+export function getActividadEstimada() { return readAll('actividadEstimada'); }
+
+export function setActividadEstimada(a) {
+    const id = `${a.interno}|${a.periodo || 'TODO'}`;
+    return writeTx(['actividadEstimada'], ([store]) => {
+        store.put({ ...a, id, periodo: a.periodo || 'TODO', fecha: new Date().toISOString() });
+    });
+}
+
+export function quitarActividadEstimada(interno, periodo = 'TODO') {
+    return writeTx(['actividadEstimada'], ([store]) => { store.delete(`${interno}|${periodo}`); });
+}
+
 // ============================ RECLAMOS DE REVISIÓN DE GPS ============================
 
 /**
@@ -638,7 +683,7 @@ export function clearAllData() {
     return writeTx(
         ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
          'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS', 'noFlotaAceptados',
-         'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos'],
+         'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos', 'actividadEstimada'],
         (stores) => { stores.forEach(s => s.clear()); }
     );
 }

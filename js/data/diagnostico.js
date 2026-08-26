@@ -19,6 +19,21 @@ export const MIN_CARGAS_CONFIABLE = 3;
 export const COBERTURA_MINIMA_PCT = 40; // % de días hábiles del período con al menos una carga
 
 /**
+ * Clases de equipo "fuera de flota" que igual se dan de alta en el maestro para que su gasto
+ * quede imputado a un centro de costo. Ver abrirAltaNoFlota() en panel.js.
+ *  - prestamo:    unidad ajena a la empresa que igual carga con nuestra cuenta (préstamo, demo,
+ *                 alquiler). Tiene patente y es un vehículo real, pero no es del parque propio.
+ *  - herramienta: motocompresor, caloventor, grupo portátil… gasta gasoil pero no recorre ni
+ *                 reporta horas por GPS.
+ *  - servicio:    caldera, limpieza, calefacción de planta: consumo fijo de instalación.
+ */
+export const CLASES_NO_FLOTA = {
+    prestamo: 'PRÉSTAMO / ALQUILER',
+    herramienta: 'HERRAMIENTA / MANTENIMIENTO',
+    servicio: 'SERVICIO DE PLANTA'
+};
+
+/**
  * Equipos que trabajan ESTACIONARIOS: el motor encendido sin desplazarse es exactamente
  * su función. Contarles el ralentí como desperdicio sería un error de lectura.
  * EX (excavadoras): son equipos de trabajo estacionario, NO de desplazamiento.
@@ -71,10 +86,161 @@ export function esCamioneta(interno) {
  * feriados.js (la misma cuenta que ya se muestra en el KPI de período del panel) para no
  * duplicar el calendario de feriados en dos lugares.
  */
+/**
+ * El RITMO real con el que carga un equipo, contra los meses del período.
+ *
+ * Existe porque la cobertura sobre días hábiles es la medida equivocada para un equipo que
+ * carga poco pero regularmente. Una camioneta que carga una vez por mes, todos los meses,
+ * tiene 6 cargas en 120 días hábiles (5% de cobertura) y el umbral la marca como dato flojo —
+ * cuando en realidad su patrón es perfectamente estable y lo que gasta por mes SÍ se conoce.
+ * Al revés, un equipo con 6 cargas todas en la misma semana de marzo tiene la misma cobertura
+ * y no se sabe nada de él fuera de esa semana. Son casos opuestos que el porcentaje solo no
+ * distingue; la cadencia sí.
+ *
+ * Lo que SÍ vuelve confiable una cadencia regular son los LITROS POR MES, no el consumo
+ * específico: saber que carga 70 L todos los meses no dice cuántos km hizo. Por eso
+ * `regular` habilita a confiar en el gasto, y el consumo en L/100km o L/hora sigue
+ * necesitando actividad medida (GPS) o declarada (ver consumoDesdeActividadDeclarada).
+ */
+export function cadenciaCargas(fila, periodo = null) {
+    const cargas = (fila.cargas || []).filter(c => c.fecha);
+    if (!cargas.length) return null;
+    const meses = new Set(cargas.map(c => String(c.fecha).slice(0, 7)));
+    let mesesPeriodo = meses.size;
+    if (periodo && periodo.desde && periodo.hasta) {
+        const [a1, m1] = periodo.desde.slice(0, 7).split('-').map(Number);
+        const [a2, m2] = periodo.hasta.slice(0, 7).split('-').map(Number);
+        const n = (a2 - a1) * 12 + (m2 - m1) + 1;
+        if (n > 0) mesesPeriodo = n;
+    }
+    const litros = cargas.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0);
+    const mesesConCarga = meses.size;
+    const cargasPorMes = mesesConCarga ? cargas.length / mesesConCarga : 0;
+    // "Regular" = cargó en al menos 3 meses y en la gran mayoría de los meses del período.
+    // Con menos de 3 meses no hay patrón que sostener, es una racha.
+    const cobMeses = mesesPeriodo ? mesesConCarga / mesesPeriodo : 0;
+    const regular = mesesConCarga >= 3 && cobMeses >= 0.75;
+    return {
+        cargas: cargas.length, mesesConCarga, mesesPeriodo,
+        cargasPorMes: Math.round(cargasPorMes * 10) / 10,
+        litrosPorMes: mesesConCarga ? litros / mesesConCarga : 0,
+        regular,
+        texto: `${Math.round(cargasPorMes * 10) / 10} carga${cargasPorMes === 1 ? '' : 's'}/mes en ${mesesConCarga} de ${mesesPeriodo} mes${mesesPeriodo === 1 ? '' : 'es'}`
+    };
+}
+
+/**
+ * Consumo calculado a partir de la actividad DECLARADA a mano, para los equipos que no reportan
+ * GPS. Es el cálculo inverso que pedía el caso "carga afuera de la empresa y el dato se pierde":
+ * los litros sí los tenemos (están en la planilla de cargas); lo que falta son los km o las horas.
+ * Si alguien los declara — aunque sea como rango aproximado — el consumo sale de ahí.
+ *
+ * Se usa el punto medio del rango. A propósito NO pisa el consumo medido: solo aplica cuando no
+ * hay actividad de GPS, y siempre queda marcado como estimado con su base a la vista.
+ */
+export function consumoDesdeActividadDeclarada(fila, actividades = [], periodo = null) {
+    const m = fila.metrics;
+    const key = normalizeEquipoKey(fila.equipo.interno);
+    const propias = actividades.filter(a => normalizeEquipoKey(a.interno) === key);
+    if (!propias.length) return null;
+
+    // Si hay una declaración para todo el período y otras por mes, se usan las mensuales (más
+    // específicas); la de 'TODO' se usa solo si no hay ninguna mensual.
+    const mensuales = propias.filter(a => a.periodo && a.periodo !== 'TODO');
+    const usadas = mensuales.length ? mensuales : propias.filter(a => a.periodo === 'TODO');
+    if (!usadas.length) return null;
+
+    // Cuánto vale "1" de la base elegida dentro de cada declaración. Declarar "10 a 12 horas por
+    // día" o "1 carga de 70 L por mes" es la forma natural de decirlo — nadie sabe el total del
+    // semestre de memoria — así que la app expande esa base contra el período que le toca a cada
+    // declaración: la de un mes puntual vale 1 mes; la de 'TODO', todos los meses del período.
+    const factores = (a) => {
+        const esMes = a.periodo && a.periodo !== 'TODO';
+        let meses = 1, dias = 22;
+        if (esMes) {
+            const [an, mm] = a.periodo.split('-').map(Number);
+            const desde = `${a.periodo}-01`;
+            const ult = new Date(Date.UTC(an, mm, 0)).getUTCDate();
+            const dh = diasHabiles(desde, `${a.periodo}-${String(ult).padStart(2, '0')}`);
+            dias = dh.dias || 22;
+        } else if (periodo && periodo.desde && periodo.hasta) {
+            const [a1, m1] = periodo.desde.slice(0, 7).split('-').map(Number);
+            const [a2, m2] = periodo.hasta.slice(0, 7).split('-').map(Number);
+            meses = Math.max(1, (a2 - a1) * 12 + (m2 - m1) + 1);
+            const dh = diasHabiles(periodo.desde, periodo.hasta);
+            dias = dh.dias || meses * 22;
+        }
+        return { meses, dias };
+    };
+    const expandir = (a, min, max) => {
+        const medio = (min + (max || min)) / 2;
+        const f = factores(a);
+        if (a.base === 'mes') return medio * f.meses;
+        if (a.base === 'dia') return medio * f.dias;
+        return medio; // 'total' (o declaraciones viejas sin base)
+    };
+
+    // LITROS: cuando la empresa solo ve algunas de las cargas (el equipo carga afuera y ese
+    // ticket no entra a la planilla), los litros registrados subestiman el consumo real. Si
+    // alguien declara el promedio mensual, se usa ese — pero los registrados NO se pisan: se
+    // devuelven los dos para poder mostrar la diferencia, que es justamente el dato que faltaba.
+    const conLitros = usadas.filter(a => (parseFloat(a.litros_min) || 0) > 0 || (parseFloat(a.litros_max) || 0) > 0);
+    let litros = m.total_litros;
+    let litrosDeclarados = null;
+    if (conLitros.length) {
+        litrosDeclarados = conLitros.reduce((s, a) =>
+            s + expandir(a, parseFloat(a.litros_min) || 0, parseFloat(a.litros_max) || 0), 0);
+        if (litrosDeclarados > 0) litros = litrosDeclarados;
+    }
+    if (litros <= 0) return null;
+
+    // ACTIVIDAD: si ya hay medición real de GPS no se estima nada — salvo que lo único declarado
+    // sean litros, en cuyo caso el aporte es el consumo corregido sobre la actividad medida.
+    const conActividad = usadas.filter(a => (parseFloat(a.valor_min) || 0) > 0 || (parseFloat(a.valor_max) || 0) > 0);
+    const hayMedicion = m.total_km > 0 || m.total_horas > 0;
+
+    let total = 0, unidad = null, fuenteAct = '';
+    if (hayMedicion) {
+        if (!litrosDeclarados) return null; // nada nuevo que aportar
+        if (m.total_horas > 0) { total = m.total_horas; unidad = 'horas'; fuenteAct = 'hs medidas por GPS'; }
+        else { total = m.total_km; unidad = 'km'; fuenteAct = 'km medidos por GPS'; }
+    } else {
+        if (!conActividad.length) return null;
+        unidad = conActividad[0].unidad;
+        total = conActividad.reduce((s, a) =>
+            s + expandir(a, parseFloat(a.valor_min) || 0, parseFloat(a.valor_max) || 0), 0);
+        fuenteAct = unidad === 'horas' ? 'hs declaradas' : 'km declarados';
+    }
+    if (total <= 0) return null;
+
+    const notaLitros = litrosDeclarados
+        ? `${fmt(litros, 1)} L estimados (declarados; registrados ${fmt(m.total_litros, 1)} L)`
+        : `${fmt(litros, 1)} L`;
+
+    if (unidad === 'horas') {
+        return {
+            valor: litros / total, unidad: 'L/Hora', actividad: total, unidad_actividad: 'hs',
+            litros, litros_registrados: m.total_litros, litros_declarados: litrosDeclarados,
+            base: `${notaLitros} ÷ ${fmt(total, 1)} ${fuenteAct}`,
+            declaraciones: usadas.length
+        };
+    }
+    return {
+        valor: (litros / total) * 100, unidad: 'L/100Km', actividad: total, unidad_actividad: 'km',
+        litros, litros_registrados: m.total_litros, litros_declarados: litrosDeclarados,
+        base: `${notaLitros} ÷ ${fmt(total)} ${fuenteAct} × 100`,
+        declaraciones: usadas.length
+    };
+}
+
 export function confiabilidad(fila, periodo = null) {
     const m = fila.metrics;
     const avisos = [];
-    if (m.cantidad_cargas > 0 && m.cantidad_cargas < MIN_CARGAS_CONFIABLE) avisos.push(`solo ${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'}`);
+    const cadencia = cadenciaCargas(fila, periodo);
+    // Una cadencia regular (cargó en casi todos los meses del período) explica por sí sola que
+    // haya pocas cargas: no es un dato faltante, es un equipo de uso liviano. Se deja de avisar
+    // por "pocas cargas" y por cobertura baja, y se dice cuál es el patrón.
+    if (m.cantidad_cargas > 0 && m.cantidad_cargas < MIN_CARGAS_CONFIABLE && !(cadencia && cadencia.regular)) avisos.push(`solo ${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'}`);
     if (m.cantidad_gps === 1) avisos.push('un solo período de GPS');
     if (m.total_horas > 0 && m.total_horas < 20) avisos.push(`solo ${fmt(m.total_horas, 1)} hs registradas`);
     if (m.total_km > 0 && m.total_km < 200 && m.tipo_calculo === 'L/100Km') avisos.push(`solo ${fmt(m.total_km)} km`);
@@ -86,11 +252,19 @@ export function confiabilidad(fila, periodo = null) {
         if (dh.dias > 0) {
             const pct = Math.round((diasConCarga / dh.dias) * 100);
             cobertura = { diasConCarga, diasHabiles: dh.dias, pct };
-            if (pct < COBERTURA_MINIMA_PCT) avisos.push(`cargó ${diasConCarga} de ${dh.dias} días hábiles del período (${pct}%)`);
+            if (pct < COBERTURA_MINIMA_PCT && !(cadencia && cadencia.regular)) {
+                avisos.push(`cargó ${diasConCarga} de ${dh.dias} días hábiles del período (${pct}%)`);
+            }
         }
     }
 
-    return { confiable: avisos.length === 0, avisos, cobertura };
+    // Sin actividad medida no hay consumo específico posible, por más cargas que haya: es la
+    // diferencia entre "consume 0" y "no sabemos cuánto consume". Antes esto salía como
+    // "0,00 L/100km" con cara de medición, que es peor que no mostrar nada.
+    const sinActividad = m.total_km <= 0 && m.total_horas <= 0 && m.total_litros > 0;
+    if (sinActividad) avisos.push('sin actividad medida (0 km y 0 hs de GPS): no se puede calcular consumo');
+
+    return { confiable: avisos.length === 0, avisos, cobertura, cadencia, sinActividad };
 }
 
 /**
@@ -264,7 +438,11 @@ export function clasificarNoFlota(huerfanos = [], rawRecords = [], codigosAcepta
             return;
         }
 
-        g.items.push({ codigo: h.interno, litros: h.litros, costo, cargas: h.cargas, centro_costo: topCentro, sector: topSector });
+        // `dominio` se arrastra para que el alta como no-flota pueda crear la ficha con interno
+        // Y patente cuando el huérfano trae las dos cosas (ej. "DEMO SCANIA" + AH685WR): si se
+        // diera de alta solo por una de las dos claves, las cargas indexadas por la otra
+        // seguirían sin resolver y el código volvería a aparecer como huérfano.
+        g.items.push({ codigo: h.interno, dominio: h.dominio || '', litros: h.litros, costo, cargas: h.cargas, centro_costo: topCentro, sector: topSector });
         g.litros += h.litros;
         g.costo += costo;
     });
@@ -699,14 +877,36 @@ export function auditarCalidadCargas(rawRecords = []) {
         .filter(([, m]) => m.size > 1)
         .map(([clave, m]) => ({ clave, formas: [...m.entries()].sort((a, b) => b[1] - a[1]) }));
 
-    // 4. Filas repetidas: mismo equipo, misma fecha y los mismos litros.
+    // 4. Filas repetidas, separadas en dos categorías que NO se resuelven igual.
+    //
+    // EXACTO: coincide absolutamente todo — equipo, fecha, litros, importe, precio unitario,
+    // combustible, lugar, centro de costo y chofer. Dos cargas reales del mismo equipo el mismo
+    // día jamás dan idénticos hasta el centavo y el litro con un decimal; eso es la misma fila
+    // entrada dos veces. Se puede corregir sola con seguridad, dejando una y descartando la copia.
+    //
+    // POSIBLE: coincide equipo + fecha + litros, pero alguno de los otros campos difiere (otro
+    // importe, otro lugar de carga, otro chofer). Ahí sí puede ser legítimo — dos cargas del
+    // mismo día en surtidores distintos, o un precio corregido a mano. Eso NO se toca solo: se
+    // muestra el detalle de qué campos difieren para poder decidir contra el comprobante.
+    const CAMPOS_IDENTIDAD = ['importe', 'precio_unitario', 'combustible', 'lugar_carga', 'centro_costo', 'chofer'];
+    const normCampo = (v) => String(v == null ? '' : v).trim().toUpperCase();
     const vistos = new Map();
     const duplicados = [];
     cargas.forEach(c => {
         const k = `${c.interno_key || c.interno}|${c.fecha}|${Math.round((parseFloat(c.litros) || 0) * 10)}`;
-        if (vistos.has(k)) duplicados.push({ original: vistos.get(k), repetida: c });
-        else vistos.set(k, c);
+        if (vistos.has(k)) {
+            const original = vistos.get(k);
+            const difieren = CAMPOS_IDENTIDAD.filter(campo => {
+                if (campo === 'importe' || campo === 'precio_unitario') {
+                    return Math.round((parseFloat(original[campo]) || 0) * 100) !== Math.round((parseFloat(c[campo]) || 0) * 100);
+                }
+                return normCampo(original[campo]) !== normCampo(c[campo]);
+            });
+            duplicados.push({ original, repetida: c, exacto: difieren.length === 0, difieren });
+        } else vistos.set(k, c);
     });
+    const duplicadosExactos = duplicados.filter(d => d.exacto);
+    const duplicadosPosibles = duplicados.filter(d => !d.exacto);
 
     // 5. La misma normalización del punto 3 (espacio/guion/mayúsculas de más), pero aplicada a
     // TODO texto libre de la carga, no solo el combustible: lugar de carga, centro de costo y
@@ -742,7 +942,7 @@ export function auditarCalidadCargas(rawRecords = []) {
     });
     variantesCampos.sort((a, b) => b.total - a.total);
 
-    return { mesesSinGps, sinValor, variantes, variantesCampos, duplicados, totalCargas: cargas.length, mesesGps: [...mesesGps].sort() };
+    return { mesesSinGps, sinValor, variantes, variantesCampos, duplicados, duplicadosExactos, duplicadosPosibles, totalCargas: cargas.length, mesesGps: [...mesesGps].sort() };
 }
 
 
@@ -927,6 +1127,15 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // maestro y en las tablas, pero no generan hallazgos ni ensucian promedios ni medianas.
     const excluidosMap = new Map(equiposExcluidos.map(e => [e.interno, e]));
     filas = filas.filter(f => !excluidosMap.has(f.equipo.interno));
+
+    // Equipos dados de alta como NO FLOTA (préstamo/alquiler tipo "DEMO SCANIA", o herramienta
+    // y servicio de planta: limpieza, caldera, caloventor, motocompresor). Están en el maestro
+    // a propósito — es lo que hace que dejen de contar como "código sin padrón" y que su gasto
+    // se impute al centro de costo — pero no son flota: no tienen meta de L/100km ni de L/hora,
+    // no reportan GPS, y no tiene sentido medirles consumo ni compararlos contra pares. Salen de
+    // todos los hallazgos de consumo por acá, y su gasto se reporta aparte (hallazgo no_flota_alta).
+    const noFlotaAlta = filas.filter(f => f.equipo.no_flota);
+    filas = filas.filter(f => !f.equipo.no_flota);
 
     // Estado que el usuario le asignó al ralentí de un equipo puntual (aceptable/seguimiento):
     // "aceptable" saca al equipo de los hallazgos de ralentí de ahora en más (sin borrar el
@@ -1303,6 +1512,10 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             titulo: `${g.etiqueta}: ${fmt(g.litros)} L${g.costo ? ` · $${fmt(g.costo)}` : ''}`,
             detalle: g.detalle + notaExcluidos,
             impacto_costo: g.costo,
+            // La lista COMPLETA (no la recortada a 10 de `equipos`) para que "Dar de alta como
+            // fuera de flota" pueda ofrecer todos los códigos del grupo, no solo los visibles.
+            nofl_grupo: g.id,
+            nofl_items: g.items,
             equipos: g.items.slice(0, 10).map(i => ({
                 interno: i.codigo, denominacion: i.centro_costo !== '—' ? `centro de costo ${i.centro_costo}` : 'sin centro de costo',
                 texto: `${fmt(i.litros)} L${i.costo ? ` · $${fmt(i.costo)}` : ''}`,
@@ -1612,7 +1825,8 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         const partes = [];
         if (cal.variantes.length) partes.push(`${cal.variantes.length} combustible${cal.variantes.length === 1 ? '' : 's'} escrito${cal.variantes.length === 1 ? '' : 's'} de más de una forma`);
         if (cal.variantesCampos.length) partes.push(`${cal.variantesCampos.length} valor${cal.variantesCampos.length === 1 ? '' : 'es'} de texto con variantes (${[...new Set(cal.variantesCampos.map(v => v.etiqueta))].join(', ')})`);
-        if (cal.duplicados.length) partes.push(`${cal.duplicados.length} carga${cal.duplicados.length === 1 ? '' : 's'} repetida${cal.duplicados.length === 1 ? '' : 's'}`);
+        if (cal.duplicadosExactos.length) partes.push(`${cal.duplicadosExactos.length} carga${cal.duplicadosExactos.length === 1 ? '' : 's'} duplicada${cal.duplicadosExactos.length === 1 ? '' : 's'} exacta${cal.duplicadosExactos.length === 1 ? '' : 's'}`);
+        if (cal.duplicadosPosibles.length) partes.push(`${cal.duplicadosPosibles.length} posible${cal.duplicadosPosibles.length === 1 ? '' : 's'} repetida${cal.duplicadosPosibles.length === 1 ? '' : 's'} a revisar`);
         const ejemplos = cal.variantes.map(v =>
             `<strong>${v.formas.map(([f, n]) => `"${f}" (${n})`).join(' y ')}</strong>`).join('; ');
         hallazgos.push({
@@ -1625,8 +1839,11 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                 (cal.variantesCampos.length
                     ? `El mismo valor de ${[...new Set(cal.variantesCampos.map(v => v.etiqueta))].join(', ')} aparece escrito de más de una forma (espacio, guion, mayúscula de más). No se unifica solo — es una decisión, no una corrección automática — pero desde <strong>"Unificar variantes"</strong> se revisa cada grupo y se elige a mano bajo qué forma quedan todas las cargas. `
                     : '') +
-                (cal.duplicados.length
-                    ? `Además hay ${cal.duplicados.length} fila${cal.duplicados.length === 1 ? '' : 's'} con el mismo equipo, la misma fecha y los mismos litros que otra: casi siempre es la misma carga cargada dos veces. Confirmá contra el comprobante antes de borrar.`
+                (cal.duplicadosExactos.length
+                    ? `Hay ${cal.duplicadosExactos.length} fila${cal.duplicadosExactos.length === 1 ? '' : 's'} <strong>idéntica${cal.duplicadosExactos.length === 1 ? '' : 's'} a otra en todo</strong>: mismo equipo, fecha, litros, importe, precio, combustible, lugar, centro de costo y chofer. Dos cargas reales del mismo equipo el mismo día no coinciden hasta el centavo — es la misma fila entrada dos veces, y se puede corregir sola con <strong>"Corregir duplicados exactos"</strong>: queda una y se descarta la copia (reversible, y se re-aplica sola si reimportás el archivo). Son ${fmt(cal.duplicadosExactos.reduce((s, d) => s + (parseFloat(d.repetida.litros) || 0), 0), 1)} L y $${fmt(cal.duplicadosExactos.reduce((s, d) => s + (parseFloat(d.repetida.importe) || 0), 0))} contados de más. `
+                    : '') +
+                (cal.duplicadosPosibles.length
+                    ? `Otras ${cal.duplicadosPosibles.length} coinciden en equipo, fecha y litros pero difieren en algún otro campo (${[...new Set(cal.duplicadosPosibles.flatMap(d => d.difieren))].join(', ')}). <strong>Esas no se tocan solas</strong>: pueden ser dos cargas legítimas del mismo día en surtidores distintos. Se listan abajo con el campo que difiere, para decidir contra el comprobante.`
                     : ''),
             equipos: [
                 ...cal.variantes.map(v => ({
@@ -1639,10 +1856,15 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                     texto: `${v.formas.length} formas de escribirlo`,
                     sub: v.formas.map(([f, n]) => `"${f}": ${n} cargas`).join(' · ')
                 })),
-                ...cal.duplicados.slice(0, 8).map(d => ({
-                    interno: d.repetida.interno || d.repetida.dominio || '—', denominacion: 'carga repetida',
+                ...cal.duplicadosExactos.slice(0, 6).map(d => ({
+                    interno: d.repetida.interno || d.repetida.dominio || '—', denominacion: 'duplicado EXACTO',
                     texto: `${fmt(parseFloat(d.repetida.litros) || 0, 1)} L el ${d.repetida.fecha || '—'}`,
-                    sub: `aparece dos veces con los mismos litros${d.repetida.importe ? ` · $${fmt(parseFloat(d.repetida.importe) || 0)} cada una` : ''}`
+                    sub: `idéntica en todos los campos${d.repetida.importe ? ` · $${fmt(parseFloat(d.repetida.importe) || 0)} cada una` : ''} — se corrige sola`
+                })),
+                ...cal.duplicadosPosibles.slice(0, 6).map(d => ({
+                    interno: d.repetida.interno || d.repetida.dominio || '—', denominacion: 'posible repetida',
+                    texto: `${fmt(parseFloat(d.repetida.litros) || 0, 1)} L el ${d.repetida.fecha || '—'}`,
+                    sub: `difiere en ${d.difieren.join(', ')} — hay que decidir a mano`
                 }))
             ]
         });
@@ -1662,6 +1884,126 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                 interno: c.interno, denominacion: c.denominacion,
                 texto: `GPS ${fmt(c.gps)} hs vs ignición ${fmt(c.ignicion)} hs`,
                 sub: `el GPS reporta ${fmt(Math.abs(c.pct))}% de más (${fmt(-c.dif)} hs que no existieron) · de ellas ${fmt(c.ralenti)} hs figuran como ralentí · ${c.dias} días con ignición en ${c.meses} meses comparados`
+            }))
+        });
+    }
+
+    // ---------- 17. Gasto de los equipos dados de alta como NO FLOTA ----------
+    // No es un problema: es la contracara de haberlos normalizado. Antes estos litros vivían en
+    // "códigos sin padrón" (un hallazgo de severidad media que nunca se cerraba); una vez dados
+    // de alta salen de ahí, y este bloque confirma que el gasto no se perdió — dice cuánto es y
+    // a qué centro de costo se imputa, que es exactamente para lo que se los da de alta.
+    const noFlotaConCargas = noFlotaAlta.filter(f => f.metrics.cantidad_cargas > 0);
+    if (noFlotaConCargas.length) {
+        const litros = noFlotaConCargas.reduce((s, f) => s + f.metrics.total_litros, 0);
+        const costo = noFlotaConCargas.reduce((s, f) => s + f.metrics.total_costo, 0);
+        const porCC = {};
+        noFlotaConCargas.forEach(f => {
+            const cc = f.equipo.centro_costo || '(sin centro de costo)';
+            porCC[cc] = (porCC[cc] || 0) + f.metrics.total_costo;
+        });
+        const sinCC = noFlotaConCargas.filter(f => !f.equipo.centro_costo).length;
+        const resumenCC = Object.entries(porCC).sort((a, b) => b[1] - a[1])
+            .map(([cc, v]) => `${cc}: $${fmt(v)}`).join(' · ');
+        hallazgos.push({
+            id: 'no_flota_alta', severidad: sinCC ? 'baja' : 'ok', icono: 'fa-boxes-stacked',
+            no_comparar: true,
+            titulo: `${noFlotaConCargas.length} equipo${noFlotaConCargas.length === 1 ? '' : 's'} fuera de flota dado${noFlotaConCargas.length === 1 ? '' : 's'} de alta: ${fmt(litros)} L · $${fmt(costo)} imputados`,
+            detalle: `Préstamos, alquileres, herramientas y servicios de planta que se dieron de alta en el maestro para que su gasto quede imputado. <strong>No son flota</strong>: no se les calcula consumo ni se los compara contra pares — a propósito. Reparto por centro de costo: ${resumenCC}.` +
+                (sinCC ? ` <strong>${sinCC} de ellos todavía no tienen centro de costo</strong>: ese gasto no se le imputa a nadie. Completalo desde el maestro.` : ''),
+            impacto_costo: costo,
+            equipos: noFlotaConCargas.sort((a, b) => b.metrics.total_costo - a.metrics.total_costo).slice(0, 12).map(f => ({
+                interno: f.equipo.interno,
+                denominacion: f.equipo.denominacion || CLASES_NO_FLOTA[f.equipo.clase_no_flota] || 'fuera de flota',
+                texto: `${fmt(f.metrics.total_litros)} L · $${fmt(f.metrics.total_costo)}`,
+                sub: `${f.equipo.centro_costo ? `centro de costo ${f.equipo.centro_costo}` : '⚠ sin centro de costo'} · ${f.metrics.cantidad_cargas} carga${f.metrics.cantidad_cargas === 1 ? '' : 's'}` +
+                    (f.equipo.vigencia_desde || f.equipo.vigencia_hasta ? ` · vigencia ${f.equipo.vigencia_desde || '—'} a ${f.equipo.vigencia_hasta || '—'}` : '')
+            }))
+        });
+    }
+
+    // ---------- 18. Lo que YA se normalizó solo ----------
+    // El diagnóstico es una lista de problemas, y eso da una impresión sesgada: parece que los
+    // datos están peor de lo que están, porque todo lo que la app arregla sola es invisible.
+    // Este bloque lo hace visible, con el conteo real sobre estos archivos y diciendo de dónde
+    // sale cada dato. Solo se listan normalizaciones que efectivamente se APLICAN (no las que
+    // apenas se detectan): esas siguen apareciendo como hallazgo pendiente, que es lo correcto.
+    const normalizaciones = [];
+    const cargasN = rawRecords.filter(r => r.type === 'carga');
+    const gpsN = rawRecords.filter(r => r.type === 'gps');
+
+    const conAmbos = rawRecords.filter(r => r.interno && r.dominio).length;
+    if (conAmbos) normalizaciones.push({
+        titulo: 'Interno y dominio separados de una sola celda',
+        detalle: `${fmt(conAmbos)} registros venían con el interno y la patente juntos en la columna "INTERNO-DOMINIO". Se parten y se guardan por separado, clasificando cada parte por su forma (patente vieja tipo JNU923, Mercosur tipo AF809IC, o interno tipo TR20).`,
+        fuente: 'extraerIdentidad() · normalizer.js'
+    });
+
+    // Un registro cuenta como "normalizado para el cruce" cuando lo que se muestra difiere de la
+    // clave con la que efectivamente se cruza: espacio, guion o cero a la izquierda de por medio.
+    const conCeroIzq = rawRecords.filter(r => r.interno && r.interno_key && String(r.interno).toUpperCase() !== r.interno_key).length;
+    if (conCeroIzq) normalizaciones.push({
+        titulo: 'Espacios, guiones y ceros a la izquierda unificados para el cruce',
+        detalle: `${fmt(conCeroIzq)} registros cruzan igual aunque estén escritos distinto: "CL03", "CL 03", "CL-3" y "CL3" son el mismo equipo. La clave de cruce se genera sin espacios, sin guiones, sin guiones bajos y sin ceros a la izquierda — el código original se sigue mostrando tal como vino.`,
+        fuente: 'normalizeEquipoKey() · normalizer.js'
+    });
+
+    normalizaciones.push({
+        titulo: 'Todo el texto a mayúsculas y sin acentos',
+        detalle: 'Combustible, chofer, sector, centro de costo, lugar de carga, marca y modelo se guardan normalizados, así "Godoy Cruz" y "GODOY CRUZ" no cuentan como dos lugares distintos. Ojo: esto NO unifica formas realmente distintas como "YPF 500" y "YPF500" — esas se detectan y se ofrecen en "Unificar variantes", porque juntarlas es una decisión, no una corrección automática.',
+        fuente: 'normalizeString() · normalizer.js'
+    });
+
+    if (gpsN.length) normalizaciones.push({
+        titulo: 'Horas de GPS convertidas a decimal para poder calcular',
+        detalle: `Excel guarda las horas como fracción de día (0,5 = 12 horas). Los ${fmt(gpsN.length)} registros de GPS se convierten a horas decimales y se suman ralentí + movimiento + parado, redondeando a 2 decimales. Los formatos de texto "HH:MM:SS" y "HH:MM" también se soportan.`,
+        fuente: 'parseExcelHours() / parseDuration() · normalizer.js'
+    });
+
+    const conFecha = rawRecords.filter(r => r.fecha).length;
+    if (conFecha) normalizaciones.push({
+        titulo: 'Fechas unificadas a un solo formato',
+        detalle: `${fmt(conFecha)} registros con fecha: se acepta el número serial de Excel, "DD/MM/AAAA", el año de dos dígitos ("05/03/26") y el encabezado del GPS con coma ("1/1/2026, 0:00"). Todo se guarda en un formato único para poder ordenar y comparar, y se muestra siempre como DD/MM/AAAA.`,
+        fuente: 'parseDate() · normalizer.js'
+    });
+
+    normalizaciones.push({
+        titulo: 'Números con separador de miles y coma decimal',
+        detalle: 'Litros, importes y precios se leen bien vengan como "1.234,56", "$ 1.500" o "9.5". El punto se interpreta según la forma del número: separador de miles cuando corresponde, decimal cuando no.',
+        fuente: 'parseNumber() · normalizer.js'
+    });
+
+    const descNorm = totales.registros_descartados || {};
+    const totalDesc = (descNorm.cargas || 0) + (descNorm.gps || 0);
+    if (totalDesc) normalizaciones.push({
+        titulo: `${fmt(totalDesc)} registros en cero apartados del cálculo`,
+        detalle: `Filas de GPS con 0 km y 0 horas, o cargas con 0 litros y 0 importe. No significan "consumió cero": significan que ese mes no hay dato. Contarlos estiraría el período hacia meses vacíos y diluiría todos los promedios. Se apartan del análisis pero se siguen viendo en Base de Datos, porque ahí lo que importa es el registro tal como llegó.`,
+        fuente: 'registroVacio() · analyzer.js'
+    });
+
+    normalizaciones.push({
+        titulo: 'Denominación corregida desde el prefijo del interno',
+        detalle: 'La columna TIPO de la planilla de equipos no es confiable (los tractores figuran como "CAMION"). La denominación se deduce del prefijo del interno: TR = tractor, CM = camioneta, MX = mixer, y así. Es lo que permite comparar equipos contra sus verdaderos pares.',
+        fuente: 'getDenominacion() · normalizer.js'
+    });
+
+    normalizaciones.push({
+        titulo: 'Correcciones a mano que sobreviven a la reimportación',
+        detalle: 'Cada corrección se guarda con una huella estable de la carga (fecha + litros + importe + interno original). Si volvés a subir el mismo archivo, la corrección se re-aplica sola. Lo mismo con los campos del maestro editados a mano: una reimportación no los pisa.',
+        fuente: 'huellaCarga() + upsertEquipos() · database.js'
+    });
+
+    if (normalizaciones.length) {
+        hallazgos.push({
+            id: 'normalizaciones', severidad: 'ok', icono: 'fa-wand-magic-sparkles',
+            no_comparar: true,
+            titulo: `${normalizaciones.length} normalizaciones aplicadas automáticamente al importar`,
+            detalle: 'Esto <strong>ya está resuelto</strong>: son las correcciones que la app hace sola cada vez que procesa las planillas, con el conteo real sobre estos archivos y la función que lo hace. Se listan acá porque el resto del diagnóstico solo muestra problemas, y eso hace parecer que los datos están peor de lo que están. ' +
+                'Los <strong>duplicados exactos</strong> (idénticos en todos los campos) se corrigen con un botón desde el hallazgo de calidad de planilla, y esa corrección se re-aplica sola al reimportar. ' +
+                'Lo que se <strong>detecta pero no se corrige solo</strong> — posibles repetidas que difieren en algún campo, variantes de escritura, cargas sin valorizar — sigue apareciendo como hallazgo pendiente más arriba: ahí sí hay una decisión que tomar contra el comprobante, y no es algo que la app deba resolver por su cuenta.',
+            equipos: normalizaciones.map(n => ({
+                interno: '✓', denominacion: n.fuente,
+                texto: n.titulo, sub: n.detalle
             }))
         });
     }

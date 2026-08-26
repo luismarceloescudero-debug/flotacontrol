@@ -4,10 +4,10 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, quitarSeguimientoEquipo } from '../data/database.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio } from '../data/analyzer.js';
-import { generarDiagnostico, cruzarIgnicion, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos } from '../data/diagnostico.js';
-import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR } from '../data/normalizer.js';
+import { generarDiagnostico, cruzarIgnicion, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada } from '../data/diagnostico.js';
+import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
@@ -53,6 +53,8 @@ const variantesIgnoradasCache = new Set();
 // excluirlo del análisis — acá se reutiliza desde las tarjetas de hallazgos (ralentí, GPS vs
 // ignición, sin actividad, estimación no creíble) para no tener un mecanismo aparte por cada uno.
 let seguimientoEquiposCache = new Map();
+// Actividad (km/horas) declarada a mano, para equipos sin GPS. Ver database.js v11.
+let actividadEstimadaCache = [];
 const CATEGORIAS_SEGUIMIENTO = [
     { id: 'fuera_servicio', label: 'Fuera de servicio' },
     { id: 'taller_ext', label: 'Taller externo' },
@@ -168,12 +170,14 @@ const ACCIONES_PROPUESTAS = {
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     estimacion_inverosimil: [
+        { texto: 'Declarar km/horas estimados', icono: 'fa-gauge-high', accion: 'declarar_actividad' },
         { texto: 'Investigar consumos estimados', icono: 'fa-magnifying-glass-chart', accion: 'investigar_meta' },
         { texto: 'Investigar estas estimaciones', icono: 'fa-magnifying-glass-chart', accion: 'revisar_estimaciones' },
         { texto: 'Chequear período fuera de servicio', icono: 'fa-calendar-xmark', accion: 'chequear_fuera_servicio' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     sin_gps_estimado: [
+        { texto: 'Declarar km/horas estimados', icono: 'fa-gauge-high', accion: 'declarar_actividad' },
         { texto: 'Revisar las estimaciones', icono: 'fa-magnifying-glass-chart', accion: 'revisar_estimaciones' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
@@ -195,6 +199,7 @@ const ACCIONES_PROPUESTAS = {
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     calidad_planilla: [
+        { texto: 'Corregir duplicados exactos', icono: 'fa-check-double', accion: 'corregir_duplicados' },
         { texto: 'Unificar variantes', icono: 'fa-clone', accion: 'unificar_variantes' },
         { texto: 'Ver las cargas repetidas', icono: 'fa-table-list', accion: 'ver_cargas_repetidas' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
@@ -228,16 +233,25 @@ const ACCIONES_PROPUESTAS = {
         { texto: 'Comparar espera mes a mes', icono: 'fa-chart-line', accion: 'comparar_espera' }
     ],
     sin_medicion: [
+        { texto: 'Declarar km/horas estimados', icono: 'fa-gauge-high', accion: 'declarar_actividad' },
         { texto: 'Investigar consumos estimados', icono: 'fa-magnifying-glass-chart', accion: 'investigar_meta' },
         { texto: 'Cómo lo resuelvo', icono: 'fa-wand-magic-sparkles', accion: 'resolver' },
         { texto: 'Cargar metas para estimar actividad', icono: 'fa-bullseye', accion: 'ajustar_sin_medicion' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
     ],
     nofl_vehiculo_sin_interno: [
+        { texto: 'Dar de alta como fuera de flota', icono: 'fa-boxes-stacked', accion: 'alta_no_flota' },
         { texto: 'Dar de alta en maestro de equipos', icono: 'fa-plus', accion: 'alta_equipo' }
     ],
     nofl_otros: [
+        { texto: 'Dar de alta como fuera de flota', icono: 'fa-boxes-stacked', accion: 'alta_no_flota' },
         { texto: 'Asignar centro de costo', icono: 'fa-building', accion: 'asignar_cc' }
+    ],
+    nofl_planta: [
+        { texto: 'Dar de alta como fuera de flota', icono: 'fa-boxes-stacked', accion: 'alta_no_flota' }
+    ],
+    no_flota_alta: [
+        { texto: 'Ver en el maestro', icono: 'fa-table-list', accion: 'ver_maestro_no_flota' }
     ],
     anomalas: [
         { texto: 'Revisar cargas en detalle', icono: 'fa-magnifying-glass-chart', accion: 'revisar_anomalas' }
@@ -264,8 +278,8 @@ export async function renderPanel() {
     kpiEl.innerHTML = '<p style="color:var(--text-muted)">Analizando datos...</p>';
 
     try {
-        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos] = await Promise.all([
-            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos()
+        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos, actividadEstimada] = await Promise.all([
+            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos(), getActividadEstimada()
         ]);
         datosCrudos = { equipos, rawRecords, estimados };
         ralentiEstadosCache = ralentiEstados;
@@ -273,6 +287,8 @@ export async function renderPanel() {
         equiposExcluidosCache = equiposExcluidos;
         prefijosOficialesCache = prefijosOficiales;
         seguimientoEquiposCache = new Map(seguimientoEquipos.map(s => [s.interno, s]));
+        actividadEstimadaCache = actividadEstimada;
+        window.actividadEstimadaCache = actividadEstimada;
 
         const fuentes = {
             equipos: equipos.length,
@@ -306,6 +322,7 @@ export async function renderPanel() {
         // Expuesta para que Base de Datos (pestaña "Consumo Real") pueda abrir la misma
         // investigación de meta que usan las tarjetas del Panel, sin duplicar el modal.
         window.abrirInvestigacionMeta = abrirInvestigacionMeta;
+window.abrirActividadEstimada = (internos) => abrirActividadEstimada(internos, ultimoAnalisis);
 
         renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes);
         renderDiagnostico(ultimoAnalisis, rawRecords);
@@ -2605,6 +2622,134 @@ function abrirInvestigacionMeta(interno) {
  * nada solo: cada grupo se aplica con un click explícito, y "Dejar como están" existe para el
  * caso legítimo de dos valores parecidos que en realidad son distintos.
  */
+/**
+ * Resolver cargas repetidas, separando lo que se puede corregir solo de lo que no.
+ *
+ * EXACTO significa exacto: mismo equipo, fecha, litros, importe, precio unitario, combustible,
+ * lugar de carga, centro de costo y chofer. Dos cargas reales del mismo equipo el mismo día no
+ * coinciden hasta el centavo y el décimo de litro — eso es la misma fila entrada dos veces, y
+ * corregirlo no es una decisión de criterio: es sacar una copia. Por eso acá SÍ se corrige, en
+ * bloque, con un botón.
+ *
+ * POSIBLE es otra cosa: coincide equipo + fecha + litros pero difiere algún otro campo. Puede ser
+ * legítimo (dos cargas del mismo día en surtidores distintos, un precio corregido a mano). Eso
+ * se muestra con el campo que difiere y se decide fila por fila.
+ *
+ * La corrección se guarda como acción 'dedupe' y NO como 'eliminar', a propósito: las dos filas
+ * de un duplicado exacto tienen la MISMA huella, así que un 'eliminar' saltearía las dos al
+ * reimportar y se perdería también la carga buena. 'dedupe' conserva la primera y descarta las
+ * copias, y se vuelve a aplicar solo cada vez que se reimporta el archivo.
+ */
+function abrirCorregirDuplicados(rawRecords) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const cal = auditarCalidadCargas(rawRecords);
+    const exactos = cal.duplicadosExactos || [];
+    const posibles = cal.duplicadosPosibles || [];
+    if (!exactos.length && !posibles.length) { alert('No hay cargas repetidas para resolver.'); return; }
+
+    const litrosEx = exactos.reduce((s, d) => s + (parseFloat(d.repetida.litros) || 0), 0);
+    const costoEx = exactos.reduce((s, d) => s + (parseFloat(d.repetida.importe) || 0), 0);
+
+    const modalId = 'modal-duplicados';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Cargas repetidas</h2>
+                    <p class="modal-sub">${exactos.length} duplicado${exactos.length === 1 ? '' : 's'} exacto${exactos.length === 1 ? '' : 's'} (se corrigen solos) · ${posibles.length} posible${posibles.length === 1 ? '' : 's'} a decidir a mano.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    ${exactos.length ? `
+                    <h4 class="consejo-sub"><i class="fa-solid fa-check-double"></i> Duplicados exactos — ${nf(litrosEx, 1)} L y $${nf(costoEx)} contados de más</h4>
+                    <p class="modal-note">Coinciden en <strong>todos</strong> los campos: equipo, fecha, litros, importe, precio, combustible, lugar, centro de costo y chofer. Se conserva una de cada par y se descarta la copia. Es reversible desde el historial de correcciones, y se vuelve a aplicar solo si reimportás el archivo.</p>
+                    <div style="margin:0.5rem 0 1rem">
+                        <button class="btn-primary btn-sm" id="btn-dup-corregir-todos"><i class="fa-solid fa-check-double"></i> Corregir los ${exactos.length} duplicados exactos</button>
+                    </div>
+                    <table class="data-table">
+                        <thead><tr><th>Equipo</th><th>Fecha</th><th>Litros</th><th>Importe</th><th>Lugar</th><th></th></tr></thead>
+                        <tbody>
+                            ${exactos.slice(0, 40).map((d, i) => `<tr data-idx="${i}">
+                                <td class="cell-key">${esc(d.repetida.interno || d.repetida.dominio || '—')}</td>
+                                <td>${esc(formatFechaAR(d.repetida.fecha))}</td>
+                                <td class="cell-num">${nf(parseFloat(d.repetida.litros) || 0, 2)}</td>
+                                <td class="cell-num">$${nf(parseFloat(d.repetida.importe) || 0)}</td>
+                                <td>${esc(d.repetida.lugar_carga || '—')}</td>
+                                <td><button class="btn-xs btn-dup-una" data-idx="${i}"><i class="fa-solid fa-check"></i> Corregir esta</button></td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    ${exactos.length > 40 ? `<p class="modal-note">Se muestran 40 de ${exactos.length}; el botón de arriba las corrige todas.</p>` : ''}
+                    ` : '<p class="modal-note">No hay duplicados exactos.</p>'}
+
+                    ${posibles.length ? `
+                    <h4 class="consejo-sub" style="margin-top:1.5rem"><i class="fa-solid fa-circle-question"></i> Posibles repetidas — a decidir a mano</h4>
+                    <p class="modal-note">Coinciden en equipo, fecha y litros, pero difieren en algún otro campo. Puede ser una carga repetida con un dato mal tipeado, o dos cargas legítimas del mismo día. <strong>La app no las toca:</strong> mirá el campo que difiere y resolvé desde la tabla de cargas si corresponde.</p>
+                    <table class="data-table">
+                        <thead><tr><th>Equipo</th><th>Fecha</th><th>Litros</th><th>Difiere en</th><th>Original</th><th>Repetida</th><th></th></tr></thead>
+                        <tbody>
+                            ${posibles.slice(0, 30).map(d => `<tr>
+                                <td class="cell-key">${esc(d.repetida.interno || d.repetida.dominio || '—')}</td>
+                                <td>${esc(formatFechaAR(d.repetida.fecha))}</td>
+                                <td class="cell-num">${nf(parseFloat(d.repetida.litros) || 0, 2)}</td>
+                                <td><strong>${esc(d.difieren.join(', '))}</strong></td>
+                                <td><small>${esc(d.difieren.map(c => String(d.original[c] ?? '—')).join(' · '))}</small></td>
+                                <td><small>${esc(d.difieren.map(c => String(d.repetida[c] ?? '—')).join(' · '))}</small></td>
+                                <td><button class="btn-xs btn-dup-ver" data-interno="${esc(d.repetida.interno || d.repetida.dominio || '')}"><i class="fa-solid fa-table-list"></i> Ver</button></td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>` : ''}
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    const corregirUno = async (d) => {
+        // Se borra la COPIA (d.repetida) y se conserva d.original. La corrección persistente va
+        // por huella con acción 'dedupe' + cuántas conservar, porque las dos filas comparten huella.
+        await deleteRawRecord(d.repetida.id);
+        await saveCorreccionCarga({
+            huella: huellaCarga(d.repetida), accion: 'dedupe', conservar: 1,
+            interno_original: (d.repetida._interno_original ?? d.repetida.interno) || '',
+            fecha: d.repetida.fecha, litros: d.repetida.litros, importe: d.repetida.importe,
+            nota: 'duplicado exacto: se conserva una y se descarta la copia'
+        });
+        await registrarEdicion({
+            tabla: 'carga', registroId: d.repetida.id,
+            etiqueta: `${formatFechaAR(d.repetida.fecha)} · ${d.repetida.interno || d.repetida.dominio || ''}`,
+            campo: 'Duplicado exacto', valorAnterior: `${d.repetida.litros} L duplicados`, valorNuevo: 'copia descartada'
+        });
+    };
+
+    modal.querySelector('#btn-dup-corregir-todos')?.addEventListener('click', async () => {
+        if (!confirm(`Se van a descartar ${exactos.length} copias exactas (${nf(litrosEx, 1)} L, $${nf(costoEx)}). Queda una carga de cada par. ¿Confirmás?`)) return;
+        for (const d of exactos) await corregirUno(d);
+        cerrar();
+        alert(`Listo: ${exactos.length} duplicados exactos corregidos.`);
+        await renderPanel();
+    });
+
+    modal.querySelectorAll('.btn-dup-una').forEach(b => b.addEventListener('click', async () => {
+        const d = exactos[parseInt(b.dataset.idx, 10)];
+        if (!d) return;
+        await corregirUno(d);
+        cerrar();
+        await renderPanel();
+        abrirCorregirDuplicados(datosCrudos?.rawRecords || []);
+    }));
+
+    modal.querySelectorAll('.btn-dup-ver').forEach(b => b.addEventListener('click', () => {
+        cerrar();
+        if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', b.dataset.interno);
+    }));
+}
+
 function abrirUnificarVariantes(rawRecords) {
     const container = document.getElementById('modals-container');
     if (!container) return;
@@ -2776,6 +2921,325 @@ function abrirRevisionPrefijosNuevos(analisis, rawRecords) {
 }
 
 /**
+ * Declarar a mano los km u horas de un equipo que no reporta GPS.
+ *
+ * Es la pieza que faltaba para cerrar el cálculo de los equipos "sin actividad medida": los
+ * litros ya los tenemos (están en la planilla de cargas), lo que no tenemos es contra qué
+ * dividirlos. Sin esto, un equipo con cargas y sin GPS mostraba "0,00 L/100km", que no es un
+ * consumo bajo: es la ausencia de dato haciéndose pasar por una medición.
+ *
+ * Tres decisiones a propósito:
+ *  - Se declara un RANGO (mínimo–máximo), no un número exacto. Nadie sabe los km de memoria; un
+ *    rango honesto es más útil que una precisión inventada, y el cálculo usa el punto medio.
+ *  - Se puede declarar por MES además de para todo el período, que es como se representa
+ *    "temporada baja": enero-febrero 400 km, el resto 1.200, sin tener que promediar a mano.
+ *  - Acepta VARIOS equipos de una (por grupo), porque la actividad típica de una camioneta o de
+ *    un grupo electrógeno se estima igual para todos los de esa clase.
+ */
+function abrirActividadEstimada(internos, analisis) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const lista = (Array.isArray(internos) ? internos : [internos]).filter(Boolean);
+    if (!lista.length) { alert('No hay equipos para declarar actividad.'); return; }
+
+    const filas = lista.map(i => (analisis?.filas || []).find(f => f.equipo.interno === i)).filter(Boolean);
+    const unidadSugerida = filas.length && filas.every(f => f.metrics.tipo_calculo === 'L/Hora') ? 'horas' : 'km';
+    const meses = rangoMesesPeriodo(analisis);
+
+    const modalId = 'modal-actividad-estimada';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Declarar actividad estimada</h2>
+                    <p class="modal-sub">${lista.length === 1 ? `Equipo <strong>${esc(lista[0])}</strong>` : `<strong>${lista.length} equipos</strong>: ${lista.slice(0, 8).map(esc).join(', ')}${lista.length > 8 ? '…' : ''}`}. Los litros ya están; lo que falta son los km u horas para poder calcular el consumo.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    <div class="act-form">
+                        <label class="correc-field-label">Unidad</label>
+                        <select id="act-unidad">
+                            <option value="km" ${unidadSugerida === 'km' ? 'selected' : ''}>Kilómetros (da L/100km)</option>
+                            <option value="horas" ${unidadSugerida === 'horas' ? 'selected' : ''}>Horas de motor (da L/hora)</option>
+                        </select>
+                        <label class="correc-field-label">Período</label>
+                        <select id="act-periodo">
+                            <option value="TODO">Todo el período analizado${meses.length ? ` (${meses.length} meses)` : ''}</option>
+                            ${meses.map(m => `<option value="${m.k}">${esc(m.label)}</option>`).join('')}
+                        </select>
+                        <label class="correc-field-label">Temporada</label>
+                        <select id="act-temporada">
+                            <option value="normal">Normal</option>
+                            <option value="baja">Temporada baja / baja producción</option>
+                            <option value="alta">Temporada alta / pico</option>
+                        </select>
+                        <label class="correc-field-label" title="Declarar el total del semestre de memoria es imposible; lo natural es decir cuánto por día o por mes, y que la app lo multiplique">Cómo lo declarás</label>
+                        <select id="act-base">
+                            <option value="dia">Por día hábil (ej. trabaja 10 a 12 hs por día)</option>
+                            <option value="mes" selected>Por mes (ej. carga 1 vez por mes, ~70 L)</option>
+                            <option value="total">Total del período completo</option>
+                        </select>
+                        <label class="correc-field-label">Actividad estimada</label>
+                        <div class="act-rango">
+                            <input type="number" id="act-min" placeholder="mínimo" min="0" step="any">
+                            <span>a</span>
+                            <input type="number" id="act-max" placeholder="máximo" min="0" step="any">
+                            <span id="act-unidad-txt">${unidadSugerida === 'horas' ? 'hs' : 'km'}</span>
+                            <span class="act-por" id="act-por">por mes</span>
+                        </div>
+                        <label class="correc-field-label" title="Para equipos que cargan fuera de la empresa: la planilla solo ve algunas cargas, así que los litros registrados quedan cortos">Litros que carga <small>(opcional)</small></label>
+                        <div class="act-rango">
+                            <input type="number" id="act-lmin" placeholder="mínimo" min="0" step="any">
+                            <span>a</span>
+                            <input type="number" id="act-lmax" placeholder="máximo" min="0" step="any">
+                            <span>L</span>
+                            <span class="act-por" id="act-por-l">por mes</span>
+                        </div>
+                        <label class="correc-field-label">Nota (opcional)</label>
+                        <input type="text" id="act-nota" placeholder="ej: recorrido fijo planta-obra, ida y vuelta diario">
+                    </div>
+                    <p class="modal-note" id="act-preview"></p>
+                    <div class="modal-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:0.75rem">
+                        <button class="btn-secondary btn-sm" data-close>Cancelar</button>
+                        <button class="btn-primary btn-sm" id="btn-act-guardar"><i class="fa-solid fa-floppy-disk"></i> Guardar para ${lista.length === 1 ? 'este equipo' : `los ${lista.length} equipos`}</button>
+                    </div>
+                    ${(() => {
+                        const previas = actividadEstimadaCache.filter(a => lista.includes(a.interno));
+                        if (!previas.length) return '';
+                        return `<h4 class="consejo-sub" style="margin-top:1rem"><i class="fa-solid fa-clock-rotate-left"></i> Ya declarado</h4>
+                        <table class="data-table"><thead><tr><th>Equipo</th><th>Período</th><th>Rango</th><th>Base</th><th></th></tr></thead><tbody>
+                        ${previas.map(a => `<tr><td class="cell-key">${esc(a.interno)}</td><td>${esc(a.periodo)}</td>
+                            <td class="cell-num">${a.valor_min > 0 ? `${nf(a.valor_min)}-${nf(a.valor_max)} ${esc(a.unidad === 'horas' ? 'hs' : 'km')}` : '—'}${a.litros_min > 0 ? `<br><small>${nf(a.litros_min)}-${nf(a.litros_max)} L</small>` : ''}</td>
+                            <td>${esc(a.base === 'dia' ? 'por día hábil' : (a.base === 'mes' ? 'por mes' : 'total'))}<br><small>${esc(a.temporada || 'normal')}</small></td>
+                            <td><button class="btn-xs btn-act-quitar" data-interno="${esc(a.interno)}" data-periodo="${esc(a.periodo)}"><i class="fa-solid fa-trash"></i></button></td></tr>`).join('')}
+                        </tbody></table>`;
+                    })()}
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    // Vista previa en vivo: muestra qué consumo daría con lo tecleado, para un equipo concreto.
+    // Sirve de control de cordura antes de guardar — si da 45 L/100km en una camioneta, el
+    // rango está mal y se ve en el momento, no tres pantallas después.
+    const leerForm = () => ({
+        unidad: modal.querySelector('#act-unidad').value,
+        base: modal.querySelector('#act-base').value,
+        periodo: modal.querySelector('#act-periodo').value,
+        temporada: modal.querySelector('#act-temporada').value,
+        valor_min: parseFloat(modal.querySelector('#act-min').value) || 0,
+        valor_max: parseFloat(modal.querySelector('#act-max').value) || 0,
+        litros_min: parseFloat(modal.querySelector('#act-lmin').value) || 0,
+        litros_max: parseFloat(modal.querySelector('#act-lmax').value) || 0,
+        nota: modal.querySelector('#act-nota').value.trim()
+    });
+
+    // Vista previa en vivo: corre EXACTAMENTE el mismo cálculo que después se va a guardar
+    // (consumoDesdeActividadDeclarada, con la misma expansión por día/mes), no una fórmula
+    // paralela. Si la vista previa y el resultado guardado pudieran diferir, la vista previa
+    // no serviría para nada. Es el control de cordura: si una camioneta da 45 L/100km, el
+    // rango está mal y se ve en el momento, no tres pantallas después.
+    const preview = () => {
+        const v = leerForm();
+        modal.querySelector('#act-unidad-txt').textContent = v.unidad === 'horas' ? 'hs' : 'km';
+        const porTxt = v.base === 'dia' ? 'por día hábil' : (v.base === 'mes' ? 'por mes' : 'en total');
+        modal.querySelector('#act-por').textContent = porTxt;
+        modal.querySelector('#act-por-l').textContent = porTxt;
+        const f = filas[0];
+        const el = modal.querySelector('#act-preview');
+        if (!f || (v.valor_min <= 0 && v.valor_max <= 0 && v.litros_min <= 0 && v.litros_max <= 0)) {
+            el.textContent = 'Cargá la actividad estimada (y los litros, si la planilla no ve todas las cargas) para ver qué consumo daría.';
+            return;
+        }
+        const per = analisis?.totales ? { desde: analisis.totales.periodo_desde, hasta: analisis.totales.periodo_hasta } : null;
+        const r = consumoDesdeActividadDeclarada(f, [{ interno: f.equipo.interno, ...v }], per);
+        if (!r) { el.textContent = 'Con estos valores todavía no alcanza para calcular un consumo.'; return; }
+        el.innerHTML =
+            `Con esto, <strong>${esc(f.equipo.interno)}</strong> daría <strong>${nf(r.valor, 2)} ${r.unidad === 'L/Hora' ? 'L/hora' : 'L/100km'}</strong> — ${esc(r.base)}.` +
+            (f.confirmed && f.confirmed.valor > 0
+                ? ` Su meta actual es ${nf(f.confirmed.valor, 2)}${Math.abs(r.valor - f.confirmed.valor) / f.confirmed.valor > 0.5 ? ' <strong>— la diferencia es grande, revisá el rango antes de guardar.</strong>' : '.'}`
+                : ' Todavía no tiene meta cargada.') +
+            (r.litros_declarados ? `<br><small>Los litros declarados (${nf(r.litros, 1)} L) reemplazan a los ${nf(r.litros_registrados, 1)} L que ve la planilla: es el caso del equipo que carga fuera de la empresa.</small>` : '');
+    };
+    ['#act-unidad', '#act-base', '#act-periodo', '#act-min', '#act-max', '#act-lmin', '#act-lmax'].forEach(sel => {
+        modal.querySelector(sel).addEventListener('input', preview);
+        modal.querySelector(sel).addEventListener('change', preview);
+    });
+    preview();
+
+    modal.querySelector('#btn-act-guardar').addEventListener('click', async () => {
+        const v = leerForm();
+        if (v.valor_min <= 0 && v.valor_max <= 0 && v.litros_min <= 0 && v.litros_max <= 0) {
+            alert('Cargá al menos la actividad estimada, o los litros que carga.'); return;
+        }
+        const reg = {
+            periodo: v.periodo, unidad: v.unidad, base: v.base, temporada: v.temporada, nota: v.nota,
+            valor_min: v.valor_min, valor_max: v.valor_max || v.valor_min,
+            litros_min: v.litros_min, litros_max: v.litros_max || v.litros_min
+        };
+        for (const interno of lista) await setActividadEstimada({ interno, ...reg });
+        const porTxt = v.base === 'dia' ? '/día hábil' : (v.base === 'mes' ? '/mes' : ' en total');
+        await registrarEdicion({
+            tabla: 'equipo', registroId: lista.join(','), etiqueta: `actividad declarada · ${v.periodo}`,
+            campo: v.unidad === 'horas' ? 'Horas estimadas' : 'Km estimados', valorAnterior: '',
+            valorNuevo: `${v.valor_min}-${v.valor_max || v.valor_min}${porTxt}` +
+                (v.litros_min > 0 ? ` · ${v.litros_min}-${v.litros_max || v.litros_min} L${porTxt}` : '') + ` (${v.temporada})`
+        });
+        cerrar();
+        await renderPanel();
+    });
+
+    modal.querySelectorAll('.btn-act-quitar').forEach(b => b.addEventListener('click', async () => {
+        await quitarActividadEstimada(b.dataset.interno, b.dataset.periodo);
+        cerrar();
+        await renderPanel();
+        abrirActividadEstimada(lista, ultimoAnalisis);
+    }));
+}
+
+/** Los meses del período analizado, como opciones para declarar actividad mes a mes. */
+function rangoMesesPeriodo(analisis) {
+    const d = analisis?.totales?.periodo_desde, h = analisis?.totales?.periodo_hasta;
+    if (!d || !h) return [];
+    const [a1, m1] = d.slice(0, 7).split('-').map(Number);
+    const [a2, m2] = h.slice(0, 7).split('-').map(Number);
+    const out = [];
+    let a = a1, m = m1;
+    while (a < a2 || (a === a2 && m <= m2)) {
+        out.push({ k: `${a}-${String(m).padStart(2, '0')}`, label: `${MESES[m - 1]} ${a}` });
+        m++; if (m > 12) { m = 1; a++; }
+        if (out.length > 36) break;
+    }
+    return out;
+}
+
+/**
+ * Alta REAL de códigos huérfanos como equipos "fuera de flota".
+ *
+ * El bug que resuelve: hasta ahora "Dar de alta en maestro" solo navegaba a la tabla con el
+ * código buscado, y asignar un interno a una carga desde la tabla de Cargas escribía el interno
+ * en el registro pero NO creaba la ficha en el maestro. Como analizarFlota() resuelve cada
+ * registro contra el maestro (ver resolverEquipo/indexarMaestro en analyzer.js), un interno que
+ * no existe como equipo no resuelve nunca: el código seguía contando como huérfano por más veces
+ * que se lo asignara. Eso es lo que se veía como "no se normaliza aunque asignemos interno".
+ *
+ * Acá se crea la ficha de verdad, en el mismo store `equipos`, con las dos claves (interno y
+ * dominio) cuando el huérfano trae las dos — que es el caso de un préstamo como "DEMO SCANIA"
+ * con patente AH685WR: si se diera de alta por una sola, las cargas indexadas por la otra
+ * seguirían huérfanas.
+ *
+ * Se marcan `no_flota: true`, lo que hace tres cosas a propósito (ver generarDiagnostico):
+ *  - salen de todos los hallazgos de consumo (no tienen ni pueden tener meta de L/100km o L/hora),
+ *  - su gasto se reporta aparte, agrupado por centro de costo, que es para lo que se los da de alta,
+ *  - dejan de figurar como "código sin padrón".
+ */
+function abrirAltaNoFlota(hallazgoId, analisis, rawRecords) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const h = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache, extraDiag())
+        .find(x => x.id === hallazgoId);
+    const items = h?.nofl_items || [];
+    if (!items.length) { alert('No quedan códigos para dar de alta en este grupo.'); return; }
+
+    // Clase sugerida según de qué grupo viene: un huérfano con patente es casi siempre una unidad
+    // ajena que carga con nuestra cuenta (préstamo/demo/alquiler); uno del grupo "planta" es
+    // caldera/limpieza/caloventor. Es solo el valor por defecto del desplegable: se cambia por fila.
+    const claveSugerida = h.nofl_grupo === 'vehiculo_sin_interno' ? 'prestamo'
+        : (h.nofl_grupo === 'planta' ? 'servicio' : 'herramienta');
+
+    const modalId = 'modal-alta-noflota';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Dar de alta como equipo fuera de flota</h2>
+                    <p class="modal-sub">${items.length} código${items.length === 1 ? '' : 's'} de "${esc(h.titulo.split(':')[0])}". Al darlos de alta dejan de contar como código sin padrón y su gasto se imputa al centro de costo — <strong>no</strong> se les calcula consumo ni meta.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    <table class="data-table">
+                        <thead><tr>
+                            <th>Código</th><th>Gasto</th><th>Qué es</th><th>Denominación</th>
+                            <th title="Obligatorio: es a quién se le imputa el gasto">Centro de costo</th>
+                            <th title="Opcional: para préstamos y alquileres con fecha de fin">Vigencia</th>
+                            <th></th>
+                        </tr></thead>
+                        <tbody>
+                            ${items.map(i => `<tr data-codigo="${esc(i.codigo)}" data-dominio="${esc(i.dominio || '')}">
+                                <td class="cell-key">${esc(i.codigo)}${i.dominio && i.dominio !== i.codigo ? `<br><small>${esc(i.dominio)}</small>` : ''}</td>
+                                <td class="cell-num">${nf(i.litros)} L<br><small>$${nf(i.costo)} · ${i.cargas} cargas</small></td>
+                                <td><select class="nofl-clase">
+                                    ${Object.entries(CLASES_NO_FLOTA).map(([k, v]) => `<option value="${k}" ${k === claveSugerida ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+                                </select></td>
+                                <td><input type="text" class="nofl-denom" placeholder="${esc(CLASES_NO_FLOTA[claveSugerida])}" style="width:100%"></td>
+                                <td><input type="text" class="nofl-cc" value="${esc(i.centro_costo === '—' ? '' : i.centro_costo)}" placeholder="ej. PMZA" style="width:90px"></td>
+                                <td style="white-space:nowrap">
+                                    <input type="date" class="nofl-desde" style="width:130px" title="Vigente desde">
+                                    <input type="date" class="nofl-hasta" style="width:130px" title="Vigente hasta">
+                                </td>
+                                <td><button class="btn-xs btn-nofl-alta"><i class="fa-solid fa-plus"></i> Dar de alta</button></td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    <p class="modal-note">El centro de costo viene propuesto desde el que más aparece en las cargas de ese código; corregilo si no corresponde. Si dejás la denominación vacía se usa la de la categoría elegida. La vigencia es opcional y solo informativa: sirve para saber después por qué un préstamo dejó de cargar.</p>
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    modal.querySelectorAll('.btn-nofl-alta').forEach(b => b.addEventListener('click', async () => {
+        const tr = b.closest('tr');
+        const codigo = tr.dataset.codigo;
+        const dominio = tr.dataset.dominio;
+        const clase = tr.querySelector('.nofl-clase').value;
+        const denom = tr.querySelector('.nofl-denom').value.trim().toUpperCase() || CLASES_NO_FLOTA[clase];
+        const cc = tr.querySelector('.nofl-cc').value.trim().toUpperCase();
+        const desde = tr.querySelector('.nofl-desde').value;
+        const hasta = tr.querySelector('.nofl-hasta').value;
+        if (!cc && !confirm('Sin centro de costo el gasto de este equipo no se le imputa a nadie. ¿Darlo de alta igual?')) return;
+
+        // Las DOS claves cuando el huérfano trae las dos: si el código es la patente, se usa
+        // también como interno para que la ficha tenga una clave propia estable.
+        const interno = codigo;
+        const dom = dominio && dominio !== codigo ? dominio : (codigo.match(/^[A-Z]{2,3}\d{3}[A-Z]{0,2}$/) ? codigo : '');
+        await updateEquipo({
+            interno, interno_key: normalizeEquipoKey(interno),
+            dominio: dom, dominio_key: normalizeEquipoKey(dom),
+            denominacion: denom, marca: '', modelo: '',
+            no_flota: true, clase_no_flota: clase,
+            centro_costo: cc,
+            vigencia_desde: desde || '', vigencia_hasta: hasta || '',
+            // "No Aplica" a propósito: sin esto, el equipo recién dado de alta caería de inmediato
+            // en el hallazgo "sin meta" — que para una caldera o un préstamo no significa nada.
+            meta_valor: 0, meta_unidad: 'No Aplica', meta_texto: '', meta_origen: '',
+            extra: {}, origen: [`Alta como fuera de flota (${CLASES_NO_FLOTA[clase]})`],
+            editado_manual: ['interno', 'denominacion', 'no_flota', 'centro_costo', 'meta_unidad']
+        });
+        await registrarEdicion({
+            tabla: 'equipo', registroId: interno, etiqueta: `${interno} · alta fuera de flota`,
+            campo: 'Alta', valorAnterior: 'código sin padrón', valorNuevo: `${denom}${cc ? ` · CC ${cc}` : ''}`
+        });
+        tr.remove();
+        await renderPanel();
+        // El modal se rearma con lo que quedó: así se ve avanzar la lista en vez de tener que
+        // reabrirlo desde la tarjeta después de cada alta.
+        const quedan = document.querySelectorAll(`#${modalId} tbody tr`).length;
+        cerrar();
+        if (quedan) abrirAltaNoFlota(hallazgoId, ultimoAnalisis, datosCrudos?.rawRecords || []);
+    }));
+}
+
+/**
  * "Estado del equipo": modal chico para anotar por qué un equipo tiene poca base o datos raros
  * (fuera de servicio, taller, temporada baja, sin chofer, backup) sin excluirlo del análisis —
  * mismo store `seguimientoEquipos` que usa Consumo Real en Base de Datos, para no duplicar el
@@ -2866,6 +3330,18 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
             // Navegar al maestro y dejar buscado el primer equipo del hallazgo, listo para editar
             if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('maestro', internos[0] || '');
             break;
+        case 'declarar_actividad':
+            // Todos los equipos del hallazgo de una: la actividad típica de un grupo (camionetas,
+            // grupos electrógenos) se estima igual para todos, y declararla uno por uno es lo que
+            // hace que nunca se termine de completar.
+            abrirActividadEstimada(internos.length ? internos : [], ultimoAnalisis);
+            break;
+        case 'alta_no_flota':
+            abrirAltaNoFlota(hallazgoId, ultimoAnalisis, datosCrudos?.rawRecords || []);
+            break;
+        case 'ver_maestro_no_flota':
+            if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('maestro', '');
+            break;
         case 'ver_cargas':
             if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', internos[0] || '');
             break;
@@ -2913,6 +3389,9 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
             break;
         case 'ver_cargas_repetidas':
             if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', '', 'id', null, 'repetidas');
+            break;
+        case 'corregir_duplicados':
+            abrirCorregirDuplicados(datosCrudos?.rawRecords || []);
             break;
         case 'unificar_variantes':
             abrirUnificarVariantes(datosCrudos?.rawRecords || []);

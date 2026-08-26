@@ -17,7 +17,7 @@ git diff --stat
 
 ```powershell
 git add -A
-git commit -m "Ralenti: botones consolidados en Aceptable/Reclamo GPS, reclamo por fila en GPS vs Ignicion, y Estado del equipo"
+git commit -m "Duplicados exactos que se corrigen solos, y actividad declarada por dia habil o por mes con litros estimados"
 git push origin main
 ```
 
@@ -50,6 +50,18 @@ git commit -m "Consumos Estimados: se agregaron las columnas Consumo real y vs r
 
 ```powershell
 git commit -m "Ralenti (inverosimil, camionetas, general): se sacaron los botones Como lo resuelvo, Ignorar e Ignorar todos de estas tarjetas. Marcar aceptable y Reclamo GPS (por fila y en seleccion) ya eran las dos resoluciones reales; ahora son los unicos botones, renombrados Investigar y marcar aceptable / Investigar y reclamar GPS." -m "GPS vs Ignicion: ahora tiene boton de reclamo GPS por fila (antes solo existia el de seleccion en bloque), y boton Reclamos GPS para ver los generados. El texto del hallazgo nombra las fuentes explicitamente: Informe de Ignicion (Loop, via API de Wara) y Resumen de Flota (Wara, directo) - antes decia 'el Informe de Ignicion' y 'el Resumen de Flota' sin aclarar el origen. El reclamo por mail ya citaba las fuentes correctamente desde antes; esto corrige el texto que se ve en la tarjeta." -m "Nuevo boton Estado por equipo en las tarjetas de ralenti, GPS vs ignicion, sin actividad y estimacion no creible: anota Fuera de servicio, Taller externo, Taller interno, Temporada baja, Sin chofer asignado, Backup o motivo libre, sin excluir al equipo del analisis. Reutiliza el store seguimientoEquipos (el mismo de Marcar para seguimiento en Consumo Real) para no duplicar el mecanismo. Queda visible como insignia en la fila una vez guardado."
+```
+
+### Detalle de esta tanda (fuera de flota, actividad declarada, cadencia, normalizaciones)
+
+```powershell
+git commit -m "FIX del bug de fondo: asignar un interno a una carga escribia el interno en el registro pero no creaba la ficha en el maestro, y como el analisis resuelve cada registro contra el maestro, el codigo seguia contando como huerfano por mas veces que se lo asignara. Eso era el no se normaliza aunque asignemos interno." -m "Nueva alta de codigos huerfanos como equipo FUERA DE FLOTA (prestamo/alquiler tipo DEMO SCANIA, herramienta, servicio de planta): crea la ficha de verdad con las dos claves (interno y dominio) cuando el huerfano trae las dos, con centro de costo propuesto desde sus propias cargas y vigencia opcional. Dejan de figurar como codigo sin padron, salen de los hallazgos de consumo (no tienen ni pueden tener meta) y su gasto se reporta aparte agrupado por centro de costo. Verificado: los huerfanos bajaron de 15 a 14 y el equipo conservo sus 9 cargas, 1.087 L y 2.608.800 imputados a PTY." -m "Nueva actividad declarada a mano (km u horas) por equipo, por grupo y por mes, con rango minimo-maximo y temporada normal/baja/alta. Es el calculo inverso para los equipos que no reportan GPS: los litros ya estan, faltaba contra que dividirlos. Verificado con CM30: 71,64 L / 800 km x 100 = 8,96 L/100km." -m "FIX: un equipo con cargas y 0 km / 0 hs de GPS mostraba 0,00 L/100km, que no es consumo cero sino ausencia de dato haciendose pasar por medicion, y ademas daba un -100% contra la meta. Ahora dice sin medir en Consumo Real y en Consumos Estimados, y ofrece el estimado por actividad declarada o por grupo." -m "Nueva cadencia de cargas: un equipo que carga una vez por mes todos los meses tiene 5% de cobertura sobre dias habiles y sin embargo su patron es estable. La cadencia manda sobre el porcentaje cuando el ritmo es regular (cargo en al menos 3 meses y en 75% de los meses del periodo)." -m "Nuevo bloque de normalizaciones ya aplicadas, con el conteo real sobre los archivos y la funcion que lo hace: interno y dominio separados de una celda, espacios/guiones/ceros a la izquierda, mayusculas y acentos, horas de Excel a decimal, fechas, numeros, registros en cero apartados, denominacion por prefijo y correcciones que sobreviven a la reimportacion. Aclara que lo que se detecta pero no se corrige solo sigue como hallazgo pendiente." -m "FIX en parseNumber: un decimal con punto se rompia. 9.5 daba 95, un error de diez veces silencioso en litros, importes o precios. Ahora el punto se interpreta por la forma del numero. Solo afectaba valores que llegan como texto." -m "FIX en parseDuration: 07:30 devolvia 7 y se perdian los minutos. Ahora soporta HH:MM ademas de HH:MM:SS." -m "DB version 11: nuevo store actividadEstimada."
+```
+
+### Detalle de esta tanda (duplicados exactos y declaracion por dia/mes)
+
+```powershell
+git commit -m "Duplicados: se separan en EXACTOS (coinciden equipo, fecha, litros, importe, precio, combustible, lugar, centro de costo y chofer) y POSIBLES (coinciden equipo, fecha y litros pero difiere algun otro campo). Los exactos ya no son una decision: dos cargas reales del mismo equipo el mismo dia no coinciden hasta el centavo, asi que se corrigen con un boton, conservando una de cada par. Los posibles se listan con el campo que difiere y se deciden a mano." -m "IMPORTANTE: la correccion de duplicados NO usa la accion eliminar. Las dos filas de un duplicado exacto tienen la MISMA huella, asi que un eliminar habria salteado las dos al reimportar y se habria perdido tambien la carga buena. Se agrego la accion dedupe, que conserva las primeras N apariciones de esa huella y descarta las copias. Verificado con los datos reales: 3 duplicados exactos (271 L, 641.300), las cargas pasaron de 4270 a 4267, y tras reimportar siguen 4267." -m "Actividad declarada: nuevo selector de base. Se puede declarar POR DIA HABIL (ej. trabaja 10 a 12 hs por dia), POR MES (ej. carga 1 vez por mes unos 70 L) o el total del periodo. La app multiplica por los dias habiles o los meses que correspondan; declarar el total de un semestre de memoria no es realista." -m "Nuevo campo de LITROS declarados: para el equipo que carga fuera de la empresa y cuyo ticket no entra a la planilla. Los litros registrados subestiman el consumo real; si se declara el promedio, se usa ese para el calculo y se muestran los dos numeros, nunca se pisa el registrado en silencio. Caso CM30 verificado: 71,64 L/mes por 6 meses = 429,8 L estimados contra 71,6 registrados, sobre 4.800 km declarados = 8,96 L/100km contra su meta de 8,50." -m "FIX: la columna vs Meta comparaba contra el consumo real 0 de un equipo sin actividad medida y daba -100%, contradiciendo al estimado que se mostraba al lado. Ahora compara contra el estimado declarado y lo marca como est., o dice sin base cuando no hay con que comparar." -m "La vista previa del formulario corre exactamente el mismo calculo que despues se guarda, no una formula paralela, y avisa cuando el resultado se aparta mas de 50% de la meta."
 ```
 
 ## Sobre las advertencias de CRLF
@@ -89,6 +101,6 @@ python -m http.server 8080
 
 ## Nota sobre la base local del navegador
 
-Pasa a la versión 10 (store nuevo `seguimientoEquipos`, para los equipos marcados con "Marcar
-para seguimiento" en Consumo Real — la v9 había agregado `prefijosNoFlota`, para los códigos
-nuevos de Mendoza). Se actualiza sola al abrir la app; no hay que borrar nada.
+Pasa a la versión 11 (store nuevo `actividadEstimada`, para los km u horas declarados a mano;
+la v10 había agregado `seguimientoEquipos` y la v9 `prefijosNoFlota`). Se actualiza sola al
+abrir la app; no hay que borrar nada.

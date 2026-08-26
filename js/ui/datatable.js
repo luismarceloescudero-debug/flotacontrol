@@ -34,7 +34,7 @@ import {
 } from '../data/database.js';
 import { periodosDisponibles, filtrarPorPeriodo } from '../data/analyzer.js';
 import { esDiaHabil } from '../data/feriados.js';
-import { confiabilidad, sugerirMeta, MIN_CARGAS_CONFIABLE, COBERTURA_MINIMA_PCT } from '../data/diagnostico.js';
+import { confiabilidad, sugerirMeta, MIN_CARGAS_CONFIABLE, COBERTURA_MINIMA_PCT, consumoDesdeActividadDeclarada } from '../data/diagnostico.js';
 import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR } from '../data/normalizer.js';
 
 const PAGINA = 300;
@@ -516,17 +516,33 @@ async function renderEstimados() {
         }
 
         // Consumo real vigente (lo medido) vs Meta actual — lo que "actualiza con el real".
+        // Mismo criterio que en la pestaña Consumo Real: sin km ni horas de GPS no hay consumo
+        // que mostrar. "0,00 L/h" ahí no significa que no gastó nada, significa que no hay con
+        // qué dividir los litros — y compararlo contra la meta daba un "-100%" inventado.
         let consumoRealTd, vsRealTd;
         if (e.fa) {
             const conf = confiabilidad(e.fa, periodoAnalisis);
             const unidadCorta = e.fa.metrics.tipo_calculo === 'L/Hora' ? 'L/h' : (e.fa.metrics.tipo_calculo === 'L/100Km' ? 'L/100km' : '');
-            consumoRealTd = `<td class="cell-num"${conf.confiable ? '' : ` title="${esc('Poco confiable: ' + conf.avisos.join(', '))}"`}><strong>${nf(e.fa.metrics.consumo_real, 2)}</strong> <small>${esc(unidadCorta)}</small>${conf.confiable ? '' : ' <i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-yellow,#e0a000)"></i>'}</td>`;
-            if (e.meta_actual > 0) {
-                const diffR = (e.fa.metrics.consumo_real - e.meta_actual) / e.meta_actual * 100;
-                const clsR = Math.abs(diffR) < 5 ? 'cmp-ok' : (diffR > 0 ? 'cmp-alto' : 'cmp-bajo');
-                vsRealTd = `<td class="cell-num"><span class="${clsR}">${diffR > 0 ? '+' : ''}${nf(diffR, 0)}%</span></td>`;
+            const declEst = consumoDesdeActividadDeclarada(e.fa, window.actividadEstimadaCache || [], periodoAnalisis);
+            if (conf.sinActividad) {
+                consumoRealTd = `<td class="cell-num"><span class="cell-muted" title="Cargó ${nf(e.fa.metrics.total_litros, 1)} L pero el GPS no reportó ni km ni horas en el período: no hay contra qué dividir esos litros.">sin medir</span>` +
+                    (declEst ? `<br><small class="cell-est-declarada" title="${esc(declEst.base)}">≈ ${nf(declEst.valor, 2)} <i class="fa-solid fa-gauge-high"></i> declarada</small>` : '') + '</td>';
+                if (declEst && e.meta_actual > 0) {
+                    const diffD = (declEst.valor - e.meta_actual) / e.meta_actual * 100;
+                    const clsD = Math.abs(diffD) < 5 ? 'cmp-ok' : (diffD > 0 ? 'cmp-alto' : 'cmp-bajo');
+                    vsRealTd = `<td class="cell-num"><span class="${clsD}" title="Sobre el consumo estimado por actividad declarada, no sobre una medición">${diffD > 0 ? '+' : ''}${nf(diffD, 0)}% <small>est.</small></span></td>`;
+                } else {
+                    vsRealTd = '<td class="cell-num cell-muted" title="Sin consumo medido ni declarado no hay diferencia contra la meta que signifique algo">—</td>';
+                }
             } else {
-                vsRealTd = '<td class="cell-num"><span class="cmp-nuevo">sin meta</span></td>';
+                consumoRealTd = `<td class="cell-num"${conf.confiable ? '' : ` title="${esc('Poco confiable: ' + conf.avisos.join(', '))}"`}><strong>${nf(e.fa.metrics.consumo_real, 2)}</strong> <small>${esc(unidadCorta)}</small>${conf.confiable ? '' : ' <i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-yellow,#e0a000)"></i>'}</td>`;
+                if (e.meta_actual > 0) {
+                    const diffR = (e.fa.metrics.consumo_real - e.meta_actual) / e.meta_actual * 100;
+                    const clsR = Math.abs(diffR) < 5 ? 'cmp-ok' : (diffR > 0 ? 'cmp-alto' : 'cmp-bajo');
+                    vsRealTd = `<td class="cell-num"><span class="${clsR}">${diffR > 0 ? '+' : ''}${nf(diffR, 0)}%</span></td>`;
+                } else {
+                    vsRealTd = '<td class="cell-num"><span class="cmp-nuevo">sin meta</span></td>';
+                }
             }
         } else {
             consumoRealTd = '<td class="cell-num cell-muted">—</td>';
@@ -619,22 +635,50 @@ async function renderConsumoReal() {
         const sel = seleccionMasiva.has(f.interno);
         const seg = seguimientoCache.get(f.equipo.interno);
         const unidadCorta = f.metrics.tipo_calculo === 'L/Hora' ? 'L/h' : (f.metrics.tipo_calculo === 'L/100Km' ? 'L/100km' : '');
+        const decl = consumoDesdeActividadDeclarada(f, window.actividadEstimadaCache || [], periodo);
+
+        // "vs Meta" tiene que compararse contra el mismo número que muestra la columna de al
+        // lado. Cuando no hay actividad medida, el consumo real es 0 y comparar ESO contra la
+        // meta daba un -100% que además contradecía al estimado declarado que se ve al lado.
+        // Si hay una declaración, la comparación se hace contra ella y se marca como estimada;
+        // si no hay nada con qué comparar, no se inventa un porcentaje.
+        const baseComparacion = conf.sinActividad ? (decl ? decl.valor : null) : f.metrics.consumo_real;
         let vsMeta = '<span class="cell-muted">—</span>';
-        if (f.confirmed && f.confirmed.valor > 0) {
-            const diff = (f.metrics.consumo_real - f.confirmed.valor) / f.confirmed.valor * 100;
+        if (f.confirmed && f.confirmed.valor > 0 && baseComparacion !== null) {
+            const diff = (baseComparacion - f.confirmed.valor) / f.confirmed.valor * 100;
             const cls = Math.abs(diff) < 5 ? 'cmp-ok' : (diff > 0 ? 'cmp-alto' : 'cmp-bajo');
-            vsMeta = `<span class="${cls}">${diff > 0 ? '+' : ''}${nf(diff, 0)}%</span>`;
+            const esEstimado = conf.sinActividad;
+            vsMeta = `<span class="${cls}"${esEstimado ? ` title="Calculado sobre el consumo estimado por actividad declarada (${esc(decl.base)}), no sobre una medición"` : ''}>${diff > 0 ? '+' : ''}${nf(diff, 0)}%${esEstimado ? ' <small>est.</small>' : ''}</span>`;
+        } else if (f.confirmed && f.confirmed.valor > 0 && conf.sinActividad) {
+            vsMeta = '<span class="cell-muted" title="Sin actividad medida ni declarada no hay consumo con qué comparar contra la meta">sin base</span>';
         }
 
-        // Estimado inverso por grupo: cuando el propio equipo tiene poca base, buscar la
-        // mediana de pares comparables (mismo marca+modelo, o denominación) confiables —
-        // así un equipo con 1 sola carga en el período no queda con el consumo en blanco.
-        let grupoTd = '';
-        if (!conf.confiable) {
-            const sugerido = sugerirMeta(f, todasFilas);
-            if (sugerido) {
-                grupoTd = `<br><small class="cell-muted" title="Mediana de ${sugerido.n} equipos comparables confiables: ${sugerido.base}">≈ ${nf(sugerido.valor, 2)} ${esc(unidadCorta)} <i class="fa-solid fa-people-group"></i> estimado por grupo</small>`;
+        // Columna "Consumo real": la corrección más importante de esta vista. Un equipo con
+        // cargas pero 0 km y 0 hs de GPS no consume 0 — no se sabe cuánto consume. Mostrar
+        // "0,00 L/100km" con formato de medición era un dato inventado con cara de dato real
+        // (es el caso que se veía en CM30). Ahora dice "sin medir" y, en su lugar, se ofrecen
+        // los dos caminos honestos para llenar ese hueco:
+        //   1) la actividad DECLARADA a mano para ese equipo, si alguien la cargó (lo más fuerte,
+        //      porque son sus propios litros divididos por sus propios km/horas);
+        //   2) la mediana de PARES comparables, como referencia de orden de magnitud.
+        let consumoTd;
+        if (conf.sinActividad) {
+            const alt = decl
+                ? `<br><small class="cell-est-declarada" title="${esc(decl.base)} · declarado a mano">≈ ${nf(decl.valor, 2)} ${esc(decl.unidad === 'L/Hora' ? 'L/h' : 'L/100km')} <i class="fa-solid fa-gauge-high"></i> según actividad declarada</small>`
+                : (() => {
+                    const sug = sugerirMeta(f, todasFilas);
+                    return sug ? `<br><small class="cell-muted" title="Mediana de ${sug.n} equipos comparables confiables: ${sug.base}">≈ ${nf(sug.valor, 2)} ${esc(unidadCorta)} <i class="fa-solid fa-people-group"></i> estimado por grupo</small>` : '';
+                })();
+            consumoTd = `<td class="cell-num"><span class="cell-muted" title="Cargó ${nf(f.metrics.total_litros, 1)} L pero el GPS no reportó ni km ni horas en el período: no hay contra qué dividir esos litros.">sin medir</span>${alt}</td>`;
+        } else {
+            // Estimado por grupo cuando el propio equipo tiene poca base, para no dejar la
+            // referencia en blanco.
+            let grupoTd = '';
+            if (!conf.confiable) {
+                const sugerido = sugerirMeta(f, todasFilas);
+                if (sugerido) grupoTd = `<br><small class="cell-muted" title="Mediana de ${sugerido.n} equipos comparables confiables: ${sugerido.base}">≈ ${nf(sugerido.valor, 2)} ${esc(unidadCorta)} <i class="fa-solid fa-people-group"></i> estimado por grupo</small>`;
             }
+            consumoTd = `<td class="cell-num"><strong>${nf(f.metrics.consumo_real, 2)}</strong> <small>${esc(unidadCorta)}</small>${grupoTd}</td>`;
         }
 
         // Confiable / Cobertura, separados: el veredicto por un lado, la proporción exacta
@@ -643,16 +687,23 @@ async function renderConsumoReal() {
         const confiableTd = conf.confiable
             ? (seg ? `<span class="badge-ok" title="En seguimiento: ${esc(seg.motivo || seg.categoria)}">Confiable 🔎</span>` : '<span class="badge-ok">Confiable</span>')
             : (seg ? `<span class="badge-warn" title="En seguimiento: ${esc(seg.motivo || seg.categoria)} (anotado el ${esc((seg.fecha || '').slice(0, 10))})">🔎 En seguimiento</span>` : `<span class="badge-warn" title="${esc(conf.avisos.join(', '))}">⚠ ${esc(conf.avisos[0] || 'poca base')}</span>`);
-        const coberturaTd = conf.cobertura
-            ? `<span class="${conf.cobertura.pct < COBERTURA_MINIMA_PCT ? 'cmp-bajo' : 'cmp-ok'}">${nf(conf.cobertura.diasConCarga)}/${nf(conf.cobertura.diasHabiles)} días (${conf.cobertura.pct}%)</span>`
-            : '<span class="cell-muted" title="No se pudo calcular: hace falta más de una fecha de carga en el período">—</span>';
+        // La cadencia manda sobre el porcentaje de días hábiles cuando el ritmo es regular: un
+        // equipo que carga una vez por mes TODOS los meses tiene 5% de cobertura de días y aun
+        // así es un patrón estable. Decir "5%" ahí es técnicamente cierto y prácticamente
+        // engañoso; el ritmo es la lectura correcta.
+        const cad = conf.cadencia;
+        const coberturaTd = (cad && cad.regular)
+            ? `<span class="cmp-ok" title="Cargó en ${cad.mesesConCarga} de los ${cad.mesesPeriodo} meses del período: ritmo estable, no es un dato faltante. ${conf.cobertura ? `Sobre días hábiles serían ${conf.cobertura.diasConCarga}/${conf.cobertura.diasHabiles} (${conf.cobertura.pct}%), pero para un equipo de uso liviano esa no es la medida.` : ''}">${esc(cad.texto)} <i class="fa-solid fa-repeat"></i></span>`
+            : (conf.cobertura
+                ? `<span class="${conf.cobertura.pct < COBERTURA_MINIMA_PCT ? 'cmp-bajo' : 'cmp-ok'}"${cad ? ` title="Ritmo: ${esc(cad.texto)}"` : ''}>${nf(conf.cobertura.diasConCarga)}/${nf(conf.cobertura.diasHabiles)} días (${conf.cobertura.pct}%)</span>`
+                : '<span class="cell-muted" title="No se pudo calcular: hace falta más de una fecha de carga en el período">—</span>');
 
         return `<tr data-interno="${esc(f.equipo.interno)}" class="${sel ? 'row-sel' : ''}">
             <td class="td-sel"><input type="checkbox" class="chk-fila" data-interno="${esc(f.equipo.interno)}" ${sel ? 'checked' : ''}></td>
             <td class="cell-key">${esc(f.equipo.interno)}</td>
             <td>${esc(f.equipo.dominio || '')}</td>
             <td>${esc(f.equipo.denominacion || '')}</td>
-            <td class="cell-num"><strong>${nf(f.metrics.consumo_real, 2)}</strong> <small>${esc(unidadCorta)}</small>${grupoTd}</td>
+            ${consumoTd}
             <td class="cell-num">${nf(f.metrics.cantidad_cargas)}</td>
             <td>${confiableTd}</td>
             <td class="cell-num">${coberturaTd}</td>
@@ -660,6 +711,7 @@ async function renderConsumoReal() {
             <td class="cell-num">${vsMeta}</td>
             <td class="td-acciones-real">
                 <button class="btn-xs btn-real-investigar" data-interno="${esc(f.equipo.interno)}" title="Investigar de dónde podría salir la meta"><i class="fa-solid fa-magnifying-glass-chart"></i></button>
+                <button class="btn-xs btn-real-actividad${decl ? ' active' : ''}" data-interno="${esc(f.equipo.interno)}" title="${decl ? `Actividad declarada: ${esc(decl.base)}. Click para editarla.` : 'Declarar km u horas estimados: es lo que permite calcular el consumo cuando no hay GPS'}"><i class="fa-solid fa-gauge-high"></i></button>
                 <button class="btn-xs btn-real-seguimiento" data-interno="${esc(f.equipo.interno)}" title="${seg ? 'Editar/quitar seguimiento' : 'Marcar para seguimiento (anotar el motivo de la poca base, sin excluirlo)'}"><i class="fa-solid fa-magnifying-glass-location"></i></button>
             </td>
         </tr>`;
@@ -668,6 +720,11 @@ async function renderConsumoReal() {
     document.querySelectorAll('.btn-real-investigar').forEach(b => {
         b.addEventListener('click', () => {
             if (typeof window.abrirInvestigacionMeta === 'function') window.abrirInvestigacionMeta(b.dataset.interno);
+        });
+    });
+    document.querySelectorAll('.btn-real-actividad').forEach(b => {
+        b.addEventListener('click', () => {
+            if (typeof window.abrirActividadEstimada === 'function') window.abrirActividadEstimada([b.dataset.interno]);
         });
     });
     document.querySelectorAll('.btn-real-seguimiento').forEach(b => {
@@ -1683,6 +1740,7 @@ function prepararBulkBarReal() {
         <option value="">Acción masiva…</option>
         <option value="marcar_seguimiento_masivo">Marcar seleccionados para seguimiento</option>
         <option value="quitar_seguimiento_masivo">Quitar seguimiento a seleccionados</option>
+        <option value="declarar_actividad_grupo">Declarar km/horas estimados para los seleccionados</option>
         <option value="adoptar_estimado_grupo">Adoptar estimado por grupo como meta (si no tienen)</option>`;
 }
 
@@ -1696,6 +1754,15 @@ async function ejecutarAccionMasivaReal(accion) {
     const todasFilas = analisis?.filas || [];
 
     switch (accion) {
+        case 'declarar_actividad_grupo': {
+            // Un solo formulario para todo el grupo: la actividad típica de una camioneta o de un
+            // grupo electrógeno se estima igual para todos los de esa clase, y cargarla equipo por
+            // equipo es lo que hace que nunca se termine de completar.
+            if (typeof window.abrirActividadEstimada !== 'function') { alert('Todavía no hay datos procesados.'); return; }
+            window.abrirActividadEstimada(internos);
+            seleccionMasiva.clear();
+            return;
+        }
         case 'marcar_seguimiento_masivo': {
             const motivo = prompt(`Motivo de seguimiento para ${internos.length} equipos (ej: "fuera de servicio parte del período", "cambio de sucursal", "carga fuera de la empresa"):`);
             if (motivo == null) return;
