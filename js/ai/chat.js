@@ -25,6 +25,7 @@ import {
     getGPSForEquipo
 } from '../data/analyzer.js';
 import { normalizeEquipoKey } from '../data/normalizer.js';
+import { APP_SECRET_HEADER, APP_SECRET_VALUE } from '../config/appSecret.js';
 
 const API_ENDPOINT = '/api/chat';
 const MAX_TURNS = 16; // mensajes (usuario+asistente, incluye idas y vueltas de tools) en memoria
@@ -85,7 +86,7 @@ export function initAIChat() {
 
                 const response = await fetch(API_ENDPOINT, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', [APP_SECRET_HEADER]: APP_SECRET_VALUE },
                     body: JSON.stringify({ messages: conversation, context })
                 });
 

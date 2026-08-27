@@ -25,15 +25,20 @@
  * Configuración en Vercel:
  *   1. Project Settings -> Environment Variables -> agregar ANTHROPIC_API_KEY
  *      (se genera en https://console.anthropic.com -> API Keys).
- *   2. Opcional: ANTHROPIC_MODEL (default: claude-sonnet-5), ANTHROPIC_MAX_WEB_SEARCHES
+ *   2. Agregar también APP_SHARED_SECRET, con el mismo valor exacto que
+ *      APP_SECRET_VALUE en js/config/appSecret.js. Sin esto (o si no coinciden),
+ *      /api/chat responde 401 a todo pedido, incluido el del propio frontend.
+ *   3. Opcional: ANTHROPIC_MODEL (default: claude-sonnet-5), ANTHROPIC_MAX_WEB_SEARCHES
  *      (default: 3, tope de búsquedas web por mensaje para controlar el costo).
- *   3. Desplegar. Vercel detecta automáticamente cualquier archivo dentro de /api como
+ *   4. Desplegar. Vercel detecta automáticamente cualquier archivo dentro de /api como
  *      función serverless, no hace falta configuración adicional.
  *
  * IMPORTANTE: esto usa la API de Anthropic (facturada por uso, console.anthropic.com),
  * NO la suscripción de chat de claude.ai (Pro/Max) — esa suscripción no tiene una API
  * programable que una app externa pueda llamar.
  */
+
+const crypto = require('crypto');
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -84,13 +89,28 @@ const TOOLS = [
 //
 // Esto NO alcanza solo: un script o curl fuera de un navegador puede llamar a esta URL
 // directamente sin que CORS aplique en absoluto (CORS es una regla que cumplen los
-// navegadores, no el servidor). Si esta función queda pública, sigue siendo posible que
-// alguien con la URL la llame directo y consuma la cuota igual. Para cerrar eso de verdad
-// hace falta agregar autenticación real (un secreto compartido entre el frontend y esta
-// función, o protección de despliegue de Vercel) — decisión de diseño que dejamos para
-// que la tomes vos, no algo para adivinar en un fix automático.
+// navegadores, no el servidor). Por eso además exigimos el header X-App-Secret
+// (ver isAuthorized() más abajo y js/config/appSecret.js) — corta el abuso automatizado
+// y anónimo, aunque no es autenticación real de usuarios (ver ese archivo para el detalle).
 function setCors(res) {
     // Sin headers = solo se permiten pedidos same-origin (lo único que este frontend necesita).
+}
+
+// Secreto compartido con el frontend (ver js/config/appSecret.js) para que /api/chat deje
+// de responder a curl/scripts genéricos que le pegan directo sin pasar por la app. No es
+// autenticación de usuarios (todo visitante de la app comparte el mismo valor, visible en
+// el JS del navegador) — solo saca del medio el abuso automatizado y anónimo.
+function isAuthorized(req) {
+    const expected = process.env.APP_SHARED_SECRET;
+    if (!expected) return false;
+
+    const provided = req.headers['x-app-secret'];
+    if (typeof provided !== 'string') return false;
+
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
 }
 
 // Un mensaje es válido si su `content` es texto plano, o un array de bloques
@@ -116,6 +136,11 @@ module.exports = async function handler(req, res) {
 
     if (req.method !== 'POST') {
         res.status(405).json({ error: 'Método no permitido. Usá POST.' });
+        return;
+    }
+
+    if (!isAuthorized(req)) {
+        res.status(401).json({ error: 'No autorizado.' });
         return;
     }
 

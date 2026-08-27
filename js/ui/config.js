@@ -7,6 +7,8 @@
  * que ya no hace falta que cada usuario pegue ninguna key acá. Este modal ahora solo
  * informa el estado de esa integración y permite probarla.
  */
+import { APP_SECRET_HEADER, APP_SECRET_VALUE } from '../config/appSecret.js';
+
 export function openConfigModal() {
     let container = document.getElementById('modals-container');
     if (!container) return;
@@ -52,7 +54,7 @@ export function openConfigModal() {
         try {
             const res = await fetch('/api/chat', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', [APP_SECRET_HEADER]: APP_SECRET_VALUE },
                 body: JSON.stringify({
                     messages: [{ role: 'user', content: 'Responde solo con la palabra: OK' }],
                     context: ''
