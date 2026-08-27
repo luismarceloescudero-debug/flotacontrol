@@ -73,10 +73,24 @@ const TOOLS = [
     }
 ];
 
+// NOTA DE SEGURIDAD (vuln-guard-deploy, 2026-08-27): antes esta función mandaba
+// 'Access-Control-Allow-Origin: *', lo que permitía que CUALQUIER sitio web hiciera
+// fetch() a este endpoint desde el navegador de un visitante y gastara la cuota paga de
+// ANTHROPIC_API_KEY (incluida la tool "web_search", ~USD 10 cada 1000 usos) a costa del
+// dueño de este deploy. El frontend de FlotaControl llama a "/api/chat" en el MISMO
+// dominio (ver comentario arriba del archivo), así que no necesita ningún header CORS
+// para funcionar: los navegadores nunca exigen CORS en pedidos same-origin. No mandar
+// estos headers es la forma más simple de dejar de habilitar ese abuso desde el navegador.
+//
+// Esto NO alcanza solo: un script o curl fuera de un navegador puede llamar a esta URL
+// directamente sin que CORS aplique en absoluto (CORS es una regla que cumplen los
+// navegadores, no el servidor). Si esta función queda pública, sigue siendo posible que
+// alguien con la URL la llame directo y consuma la cuota igual. Para cerrar eso de verdad
+// hace falta agregar autenticación real (un secreto compartido entre el frontend y esta
+// función, o protección de despliegue de Vercel) — decisión de diseño que dejamos para
+// que la tomes vos, no algo para adivinar en un fix automático.
 function setCors(res) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    // Sin headers = solo se permiten pedidos same-origin (lo único que este frontend necesita).
 }
 
 // Un mensaje es válido si su `content` es texto plano, o un array de bloques

@@ -2,10 +2,17 @@ import { AppState, irA } from '../app.js';
 import { dispatchFileParser } from '../parsers/index.js';
 import { clearMovimientos, getDBStats, getArchivosProcesados } from '../data/database.js';
 
+// Mismo helper de escape que ya se usa en datatable.js/panel.js/modals.js/etc — acá
+// faltaba, y el nombre de archivo subido es texto 100% controlado por quien arrastra el
+// archivo (puede contener cualquier carácter, incluido HTML), así que va directo a
+// innerHTML sin pasar por esto antes.
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
 export function initUploadUI() {
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
     const btnProcess = document.getElementById('btn-process-all');
+    const fileList = document.getElementById('file-list');
 
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(ev =>
         dropZone.addEventListener(ev, preventDefaults, false));
@@ -17,6 +24,17 @@ export function initUploadUI() {
     dropZone.addEventListener('drop', (e) => handleFiles(e.dataTransfer.files), false);
     fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
     btnProcess.addEventListener('click', processAllFiles);
+
+    // Delegado en vez de onclick inline con el nombre del archivo interpolado en el HTML
+    // (eso era el punto inseguro: un nombre de archivo con comillas rompía el atributo).
+    // Con data-remove-filename + esc() el nombre nunca sale del contexto de atributo HTML,
+    // y acá lo leemos tal cual del dataset (sin necesidad de "desescaparlo" a mano).
+    if (fileList) {
+        fileList.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-remove-filename]');
+            if (btn) removeFile(btn.dataset.removeFilename);
+        });
+    }
 }
 
 function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
@@ -69,13 +87,13 @@ function renderFileList() {
             <div class="file-info">
                 <i class="fa-solid ${iconClass} file-icon ${f.type}"></i>
                 <div class="file-details">
-                    <h4>${f.file.name}</h4>
-                    <p>${(f.file.size / 1024 / 1024).toFixed(2)} MB${f.detalle ? ' · ' + f.detalle : ''}</p>
+                    <h4>${esc(f.file.name)}</h4>
+                    <p>${(f.file.size / 1024 / 1024).toFixed(2)} MB${f.detalle ? ' · ' + esc(f.detalle) : ''}</p>
                 </div>
             </div>
             <div class="file-status">
                 <span class="badge ${f.status}" id="badge-${safeId(f.file.name)}">${BADGE_LABEL[f.status] || f.status.toUpperCase()}</span>
-                <button class="btn-icon" onclick="window.removeFile('${f.file.name.replace(/'/g, "\\'")}')">
+                <button class="btn-icon" data-remove-filename="${esc(f.file.name)}">
                     <i class="fa-solid fa-trash"></i>
                 </button>
             </div>`;
@@ -111,7 +129,7 @@ export async function renderDBStatus() {
                     ${stats.equipos} equipos en el maestro (${stats.conMeta} con meta) · ${stats.movimientos} movimientos${stats.columnasExtra ? ` · ${stats.columnasExtra} columnas propias` : ''}
                 </div>
                 <div class="db-status-files">
-                    ${archivos.map(a => `<span class="chip">${a.tipo}: ${a.filename.slice(0, 34)}${a.filename.length > 34 ? '…' : ''}</span>`).join('')}
+                    ${archivos.map(a => `<span class="chip">${esc(a.tipo)}: ${esc(a.filename.slice(0, 34))}${a.filename.length > 34 ? '…' : ''}</span>`).join('')}
                 </div>
             </div>`;
     } catch (e) {
