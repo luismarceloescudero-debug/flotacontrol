@@ -61,13 +61,16 @@ function armarItems() {
     // Cobertura baja: no viene como hallazgo propio (confiabilidad() la usa como uno de varios
     // avisos posibles, mezclada con otros motivos), así que se recorre acá directamente con la
     // misma coberturaEquipo() que ya usa la tarjeta — mismo número en los dos lados.
+    const periodoFlota = analisis.totales
+        ? { desde: analisis.totales.periodo_desde, hasta: analisis.totales.periodo_hasta }
+        : null;
     (analisis.filas || []).forEach(f => {
         if (!f.metrics || f.metrics.cantidad_cargas <= 0) return;
-        const cob = coberturaEquipo(f);
+        const cob = coberturaEquipo(f, periodoFlota);
         if (cob && !cob.exceso && cob.pct < 40) {
             items.push({
                 interno: f.equipo.interno, denominacion: f.equipo.denominacion, tipo: 'cobertura_baja',
-                detalle: `${cob.cargas} cargas de ${cob.diasHabiles} días hábiles del período (${cob.pct}%)`,
+                detalle: `cargó en ${cob.diasConCarga} de ${cob.diasHabiles} días hábiles del período (${cob.pct}%)`,
                 accion: { texto: 'Ver equipo' }
             });
         }

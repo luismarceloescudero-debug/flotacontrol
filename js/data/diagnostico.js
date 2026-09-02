@@ -11,6 +11,7 @@
 
 import { getPrefijo, clasificarIdentificador, MESES, normalizeEquipoKey, TIPO_POR_PREFIJO, provinciaDeCentroCosto } from './normalizer.js';
 import { diasHabiles, esDiaHabil } from './feriados.js';
+import { jornadaEsperada } from './analyzer.js';
 
 // `hallazgo.detalle` se renderiza como HTML crudo en panel.js (para poder llevar <strong>
 // intencional alrededor de los números) — cualquier texto libre del Excel (combustible,
@@ -56,7 +57,13 @@ export const ESPERA_OPERATIVA = ['MX', 'BM'];
 
 const fmt = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 
-const mediana = (arr) => {
+/**
+ * Mediana. Se exporta para que no haya dos implementaciones dando vueltas: panel.js tenía la
+ * suya, que con una cantidad par de valores devolvía el de arriba en vez del promedio de los
+ * dos del medio — así que "mediana" significaba una cosa en la meta sugerida y otra en el
+ * precio de referencia.
+ */
+export const mediana = (arr) => {
     if (!arr.length) return 0;
     const s = arr.slice().sort((a, b) => a - b);
     const m = Math.floor(s.length / 2);
@@ -281,16 +288,98 @@ export function confiabilidad(fila, periodo = null) {
  * calculaba por su cuenta y corrían el riesgo de desalinearse. A propósito NO se recorta a 100:
  * pasarse de 100% (más cargas que días hábiles) es justamente el caso que hay que poder detectar.
  */
-export function coberturaEquipo(fila) {
-    const fechasC = (fila.cargas || []).map(c => c.fecha).filter(Boolean);
-    const fechasG = (fila.gps || []).map(g => g.fecha).filter(Boolean);
-    const todas = [...fechasC, ...fechasG].sort();
-    if (todas.length < 2) return null;
-    const dh = diasHabiles(todas[0], todas[todas.length - 1]);
+/**
+ * Utilización: horas de GPS por día hábil del período, contra la jornada de referencia que
+ * informa la operación (ver JORNADA_REFERENCIA en analyzer.js).
+ *
+ * Es la pieza que faltaba para leer bien un consumo bajo. Hoy un equipo que consume menos que
+ * su meta aparece como "eficiente" sin más, pero hay dos causas muy distintas detrás:
+ *   - trabajó lo esperado y rindió mejor → eso sí es eficiencia;
+ *   - trabajó mucho menos de lo esperado → el consumo bajo solo dice que estuvo parado, y su
+ *     L/hora ni siquiera es representativo para fijarle una meta.
+ * El caso concreto que motivó esto: los equipos de ÁRIDOS durante la obra de la ripiera.
+ */
+export function utilizacion(fila, periodo = null, ubicacion = null) {
+    const m = fila.metrics;
+    const ref = jornadaEsperada(fila.equipo, ubicacion || fila.ubicacion);
+    if (!ref) return null;
+
+    // Numerador y denominador TIENEN que salir del mismo tramo. Si se usan las horas
+    // alineadas (meses con cargas y GPS), el denominador son los días hábiles de esos meses;
+    // si se usa el total de horas del equipo, el denominador son los días hábiles de todos
+    // los meses que cubre su GPS. Mezclarlos —horas de siete meses divididas por los días
+    // hábiles de uno— daba resultados imposibles como 48 hs por día.
+    const alin = m.alineacion || {};
+    const usaAlineadas = m.horas_alineadas > 0;
+    const horas = usaAlineadas ? m.horas_alineadas : m.total_horas;
+    if (!horas || horas <= 0) return null;
+
+    const meses = usaAlineadas
+        ? (alin.meses && alin.meses.length ? alin.meses : null)
+        : (alin.meses_gps && alin.meses_gps.length ? alin.meses_gps : null);
+
+    let desde, hasta;
+    if (meses) {
+        desde = `${meses[0]}-01`;
+        const [uy, um] = meses[meses.length - 1].split('-').map(Number);
+        hasta = `${meses[meses.length - 1]}-${String(new Date(uy, um, 0).getDate()).padStart(2, '0')}`;
+    } else if (periodo && periodo.desde && periodo.hasta) {
+        desde = periodo.desde; hasta = periodo.hasta;
+    } else return null;
+
+    const dh = diasHabiles(desde, hasta);
+    if (!dh || dh.dias <= 0) return null;
+
+    const hsPorDia = horas / dh.dias;
+    // Más de 24 hs por día hábil no es "muy utilizado": o el equipo trabajó también sábados,
+    // domingos y feriados (y entonces la vara de "por día hábil" no aplica), o el GPS está
+    // reportando horas que no existieron — que es un problema de dato, no de operación, y ya
+    // tiene su propio hallazgo. En cualquier caso el número no es una medida de utilización.
+    const estado = hsPorDia > 24 ? 'no_representativa'
+        : hsPorDia < ref.min * 0.6 ? 'muy_baja'
+        : hsPorDia < ref.min ? 'baja'
+        : hsPorDia > ref.max * 1.25 ? 'alta'
+        : 'normal';
+    return {
+        hsPorDia, diasHabiles: dh.dias, horas, desde, hasta,
+        esperadoMin: ref.min, esperadoMax: ref.max, base: ref.base, nota: ref.nota,
+        estado,
+        pct: Math.round((hsPorDia / ref.min) * 100)
+    };
+}
+
+export function coberturaEquipo(fila, periodo = null) {
+    // Se cuentan DÍAS DISTINTOS con carga, no cantidad de cargas: cargar dos veces el mismo
+    // día (doble turno, carga parcial y después completa) es normal y no es "más cobertura".
+    // Es la misma cuenta que hace confiabilidad(), a propósito: antes esta función contaba
+    // cargas y aquella contaba días, así que la tarjeta y el modal de detalle mostraban dos
+    // números distintos ("53 de 60" vs "46 de 60") para el mismo equipo y el mismo período.
+    const diasConCarga = new Set((fila.cargas || []).map(c => c.fecha).filter(Boolean)).size;
+    if (!diasConCarga) return null;
+
+    // Denominador: el período analizado de la flota cuando se lo pasan (para que todos los
+    // equipos se midan contra la misma vara), y si no, el rango propio del equipo.
+    let desde, hasta;
+    if (periodo && periodo.desde && periodo.hasta) {
+        desde = periodo.desde; hasta = periodo.hasta;
+    } else {
+        const fechasC = (fila.cargas || []).map(c => c.fecha).filter(Boolean);
+        const fechasG = (fila.gps || []).map(g => g.fecha).filter(Boolean);
+        const todas = [...fechasC, ...fechasG].sort();
+        if (todas.length < 2) return null;
+        desde = todas[0]; hasta = todas[todas.length - 1];
+    }
+
+    const dh = diasHabiles(desde, hasta);
     if (!dh || dh.totalCorridos <= 0 || dh.dias <= 0) return null;
-    const cantidad = fila.metrics.cantidad_cargas;
-    const pct = Math.round((cantidad / dh.dias) * 100);
-    return { cargas: cantidad, diasHabiles: dh.dias, totalCorridos: dh.totalCorridos, completo: dh.completo, pct, exceso: pct > 100 };
+    const pct = Math.round((diasConCarga / dh.dias) * 100);
+    // Pasarse de 100% (cargó en más días hábiles de los que tuvo el período) sigue siendo
+    // detectable: ahí sí hay algo mal en el dato, no una carga doble legítima.
+    return {
+        cargas: fila.metrics.cantidad_cargas, diasConCarga,
+        diasHabiles: dh.dias, totalCorridos: dh.totalCorridos, completo: dh.completo,
+        pct, exceso: pct > 100
+    };
 }
 
 export function calcularExceso(fila) {
@@ -1195,15 +1284,61 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
 
     if (eficientes.length) {
         const ahorro = -eficientes.reduce((s, x) => s + x.exceso.exceso_costo, 0);
+        // Un consumo por debajo de la meta puede ser eficiencia real o un equipo que casi no
+        // trabajó. Se avisa acá mismo cuántos de estos están además por debajo de su jornada
+        // esperada, para no leer como logro lo que en realidad es inactividad.
+        const paradosEntreEficientes = eficientes.filter(x => {
+            const u = utilizacion(x.fila, periodo);
+            return u && (u.estado === 'baja' || u.estado === 'muy_baja');
+        }).length;
         hallazgos.push({
             id: 'ahorro', severidad: 'ok', icono: 'fa-leaf',
             titulo: `${eficientes.length} equipos consumieron menos que su meta`,
-            detalle: `Un ahorro equivalente a <strong>$${fmt(ahorro)}</strong>. Si el desvío es grande, revisá que la meta no esté sobredimensionada o que no falten cargas por registrar.`,
+            detalle: `Un ahorro equivalente a <strong>$${fmt(ahorro)}</strong>. Si el desvío es grande, revisá que la meta no esté sobredimensionada o que no falten cargas por registrar.` +
+                (paradosEntreEficientes
+                    ? ` <strong>Ojo: ${paradosEntreEficientes} de estos equipos trabajaron por debajo de su jornada esperada</strong>, así que en esos casos el consumo bajo no es rendimiento sino menos actividad — ver el hallazgo de jornada más abajo antes de tomarlo como ahorro.`
+                    : ''),
             impacto_costo: -ahorro,
             equipos: eficientes.slice(0, 8).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.exceso.exceso_litros)} L · $${fmt(x.exceso.exceso_costo)}`,
                 sub: `real ${fmt(x.fila.metrics.consumo_real, 2)} vs meta ${fmt(x.fila.confirmed.valor, 2)} ${x.fila.metrics.tipo_calculo}`
+            }))
+        });
+    }
+
+    // ---------- 2 bis. Equipos que trabajaron por debajo de su jornada de referencia ----------
+    // Va pegado al hallazgo de ahorro a propósito: es la explicación alternativa del mismo
+    // número. Un equipo puede consumir menos que su meta porque rindió mejor, o porque
+    // simplemente no trabajó — y son dos conclusiones opuestas sobre el mismo dato. Sin esto,
+    // un sector entero parado (áridos durante la obra de la ripiera) figura como un logro de
+    // eficiencia y encima arrastra las metas hacia abajo si se las normaliza contra ese real.
+    const subutilizados = activos
+        .map(f => ({ fila: f, u: utilizacion(f, periodo) }))
+        .filter(x => x.u && (x.u.estado === 'baja' || x.u.estado === 'muy_baja'))
+        .sort((a, b) => a.u.pct - b.u.pct);
+
+    if (subutilizados.length) {
+        const muyBajos = subutilizados.filter(x => x.u.estado === 'muy_baja').length;
+        const conAhorroAparente = subutilizados.filter(x => x.fila.metrics.desvio_pct !== null && x.fila.metrics.desvio_pct < -TOLERANCIA * 100).length;
+        const ref = subutilizados[0].u;
+        hallazgos.push({
+            id: 'subutilizacion', severidad: muyBajos ? 'media' : 'baja', icono: 'fa-gauge-simple-low',
+            no_comparar: true,
+            titulo: `${subutilizados.length} equipos trabajaron por debajo de la jornada esperada`,
+            detalle: `La referencia operativa es de <strong>${ref.esperadoMin}-${ref.esperadoMax} horas por día hábil</strong> ` +
+                `(áridos y mixers). Estos equipos quedaron por debajo${muyBajos ? `, y ${muyBajos} de ellos por menos de la mitad` : ''}. ` +
+                `Esto <strong>no es un problema de consumo</strong>: es contexto para leerlo. ` +
+                (conAhorroAparente
+                    ? `<strong>${conAhorroAparente} de ellos figuran hoy consumiendo menos que su meta</strong> — con esta jornada, ese "ahorro" no es eficiencia: es un equipo que estuvo parado. `
+                    : '') +
+                `Cuidado al normalizar metas contra un período así: la meta quedaría fijada con el consumo de meses de baja actividad. ` +
+                `Si hay una causa conocida (una obra, una parada de planta, baja de producción), conviene anotarla en el equipo desde "Marcar para seguimiento" para no volver a investigarlo el mes que viene.`,
+            equipos: subutilizados.slice(0, 12).map(x => ({
+                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
+                texto: `${fmt(x.u.hsPorDia, 1)} hs/día hábil`,
+                sub: `esperado ${x.u.esperadoMin}-${x.u.esperadoMax} (${x.u.base}) · ${fmt(x.u.horas, 0)} hs en ${x.u.diasHabiles} días hábiles` +
+                     (x.fila.metrics.desvio_pct !== null && x.fila.metrics.desvio_pct < 0 ? ` · figura ${fmt(Math.abs(x.fila.metrics.desvio_pct))}% bajo su meta` : '')
             }))
         });
     }
@@ -1274,16 +1409,25 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         const deno = eq.denominacion || '';
         const marca = eq.marca || '';
         const modelo = eq.modelo || '';
-        const potencia = eq.potencia || '';
-        // Si tiene marca y modelo, agrupar por deno+marca+modelo (más justo)
+        // Si tiene marca y modelo, agrupar por deno+marca+modelo: el modelo ya implica la
+        // potencia, así que agregarla no cambiaría el grupo.
         if (marca && modelo) return `${deno}|${marca}|${modelo}`;
-        if (marca) return `${deno}|${marca}`;
-        return deno;
+        // Sin modelo, la potencia SÍ hace falta en la clave. El comentario de arriba decía
+        // desde siempre que un GE de 250 kVA no se compara contra uno de 500, pero la
+        // potencia se leía en una variable que después no se usaba: un grupo "deno|marca" (o
+        // peor, solo "deno") mezclaba máquinas de tamaños distintos y el que era grande
+        // aparecía consumiendo "más que sus pares" por serlo, no por estar fallando.
+        const p = potenciaEquipo(eq);
+        const pot = p ? `${p.valor} ${p.unidad}` : '';
+        if (marca) return `${deno}|${marca}|${pot}`;
+        return `${deno}||${pot}`;
     }
     function etiquetaGrupo(key) {
-        const [deno, marca, modelo] = key.split('|');
-        if (modelo) return `${deno} ${marca} ${modelo}`;
+        const [deno, marca, resto] = key.split('|');
+        // Con marca y modelo, `resto` es el modelo; sin modelo, es la potencia (o vacío).
+        if (marca && resto) return `${deno} ${marca} ${resto}`;
         if (marca) return `${deno} ${marca}`;
+        if (resto) return `${deno} de ${resto}`;
         return deno;
     }
 
@@ -1981,6 +2125,12 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     });
 
     const descNorm = totales.registros_descartados || {};
+    if (descNorm.duplicados) normalizaciones.push({
+        titulo: `${fmt(descNorm.duplicados)} registro${descNorm.duplicados === 1 ? '' : 's'} duplicado${descNorm.duplicados === 1 ? '' : 's'} exacto${descNorm.duplicados === 1 ? '' : 's'} descartado${descNorm.duplicados === 1 ? '' : 's'} al importar`,
+        detalle: `${descNorm.duplicados_cargas ? `<strong>${fmt(descNorm.duplicados_cargas)} carga${descNorm.duplicados_cargas === 1 ? '' : 's'}</strong> idéntica${descNorm.duplicados_cargas === 1 ? '' : 's'} a otra en todo (equipo, fecha, litros, importe, precio, combustible, lugar, centro de costo y chofer)` : ''}${descNorm.duplicados_cargas && descNorm.duplicados_gps ? ' y ' : ''}${descNorm.duplicados_gps ? `<strong>${fmt(descNorm.duplicados_gps)} registro${descNorm.duplicados_gps === 1 ? '' : 's'} de GPS</strong> con el mismo equipo, el mismo período y exactamente los mismos km y horas` : ''}: es el mismo dato entrado dos veces, o el mismo archivo subido de nuevo. Se apartan solos al importar — antes de que lleguen a los totales${descNorm.duplicados_litros > 0 ? `, así que no inflan litros ni costo (${fmt(descNorm.duplicados_litros, 1)} L y $${fmt(descNorm.duplicados_costo)} que se habrían contado de más)` : ''}. Siguen visibles en Base de Datos. Esto es lo que permite volver a subir un archivo, o ir sumando los meses nuevos sin limpiar, sin duplicar nada.`,
+        fuente: 'claveCargaExacta() / claveGpsExacta() · normalizer.js + insertRawRecords() · database.js'
+    });
+
     const totalDesc = (descNorm.cargas || 0) + (descNorm.gps || 0);
     if (totalDesc) normalizaciones.push({
         titulo: `${fmt(totalDesc)} registros en cero apartados del cálculo`,

@@ -495,6 +495,32 @@
 .card-cobertura.cobertura-exceso { border-color: rgba(191, 90, 242, 0.45); background: rgba(191, 90, 242, 0.08); }
 .card-cobertura.cobertura-exceso .cobertura-pct { background: rgba(191, 90, 242, 0.2); color: var(--accent-purple, #bf5af2); }
 
+/* ---------- Utilización: horas por día hábil contra la jornada de referencia ----------
+   Va justo debajo de la cobertura porque responde la otra mitad de la misma pregunta:
+   cobertura dice cada cuánto cargó, utilización dice cuánto trabajó. Un consumo bajo con
+   utilización baja no es eficiencia — es un equipo parado. */
+.card-util {
+    display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+    margin: 0.35rem 0; padding: 0.3rem 0.6rem; border-radius: 7px;
+    font-size: 0.76rem; font-weight: 500;
+    background: var(--bg-input); border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+.card-util i { font-size: 0.72rem; opacity: 0.85; }
+.card-util strong { color: var(--text-primary); font-weight: 700; }
+.card-util.util-ok { border-color: rgba(52, 199, 89, 0.3); }
+.card-util.util-ok i { color: var(--accent-green, #34c759); }
+.card-util.util-baja { border-color: rgba(255, 179, 0, 0.35); }
+.card-util.util-baja i { color: var(--accent-amber, #ffb300); }
+.card-util.util-muy-baja { border-color: rgba(255, 69, 58, 0.35); background: rgba(255, 69, 58, 0.06); }
+.card-util.util-muy-baja i { color: var(--accent-red, #ff453a); }
+.card-util.util-alta { border-color: rgba(10, 132, 255, 0.35); }
+.card-util.util-alta i { color: var(--accent-blue, #0a84ff); }
+.card-util.util-dudosa { border-color: rgba(191, 90, 242, 0.4); color: var(--accent-purple, #bf5af2); }
+
+/* Unidad por la que se mide oficialmente el equipo, cuando se muestran las dos. */
+.card-cross-check .unidad-principal { color: var(--accent-cyan, #64d2ff); }
+
 .litros-bar { height: 3px; background: var(--bg-input); border-radius: 999px; overflow: hidden; }
 .litros-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); border-radius: 999px; }
 

@@ -88,6 +88,16 @@ export function registroVacio(r) {
     return false;
 }
 
+/**
+ * Registros que no entran al análisis: los vacíos (arriba) y las copias exactas de una carga
+ * ya importada, que se marcan al insertarlas (ver insertRawRecords() en database.js). Contar
+ * dos veces la misma carga infla litros, costo y consumo sin que se note en ningún lado.
+ * Siguen guardadas y visibles en Base de Datos: se apartan del cálculo, no se borran.
+ */
+export function registroExcluido(r) {
+    return registroVacio(r) || !!(r && r._dupe_exacta);
+}
+
 export function calculateAlignedPeriod(cargas = [], gps = []) {
     let minC = null, maxC = null, minG = null, maxG = null;
     cargas.forEach(c => {
@@ -125,23 +135,15 @@ export function filtrarPorPeriodo(records = [], filtro = {}) {
     if (periodos && periodos.length) {
         const set = new Set(periodos);
         return records.filter(r => {
-            const p = r.periodo || (r.fecha ? r.fecha.slice(0, 7) : null);
-            if (!p) return false;
-            // Para GPS con rango, incluir si cualquier mes del rango está seleccionado
-            if (r.fecha_hasta) {
-                const pHasta = r.fecha_hasta.slice(0, 7);
-                if (set.has(p) || set.has(pHasta)) return true;
-                // Recorrer meses intermedios si el rango es largo
-                const cur = new Date(p + '-01');
-                const fin = new Date(pHasta + '-01');
-                while (cur <= fin) {
-                    const ym = cur.toISOString().slice(0, 7);
-                    if (set.has(ym)) return true;
-                    cur.setMonth(cur.getMonth() + 1);
-                }
-                return false;
-            }
-            return set.has(p);
+            const meses = mesesDeRegistro(r);
+            if (!meses.length) return false;
+            // Un reporte que abarca VARIOS meses (ej. "Resumen de Flota Ene-Jul") entra solo
+            // si están seleccionados TODOS sus meses. Antes entraba con que coincidiera uno
+            // solo: al filtrar por enero se colaban los siete meses de horas y km del archivo
+            // consolidado contra un mes de cargas, y el consumo salía por el piso sin que
+            // nada lo avisara. No se puede repartir a prorrata — el reporte no dice cuánto
+            // corresponde a cada mes — así que o entra entero o no entra.
+            return meses.every(m => set.has(m));
         });
     }
 
@@ -169,6 +171,10 @@ export function periodosDisponibles(records = []) {
     records.forEach(r => {
         if (r.anio) anios.add(r.anio);
         if (r.mes) meses.add(r.mes);
+        // Todos los meses que CUBRE el registro, no solo el de su fecha de inicio: un
+        // "Resumen de Flota Ene-Jul" aporta datos a los siete meses, y si el selector solo
+        // ofreciera enero no habría forma de elegir el rango completo que ese archivo mide.
+        mesesDeRegistro(r).forEach(m => yms.add(m));
         if (r.periodo) yms.add(r.periodo);
     });
     return {
@@ -214,6 +220,133 @@ export function desgloseHoras(gpsList = []) {
     return o;
 }
 
+/** Mes (YYYY-MM) de un movimiento puntual (una carga). */
+function mesDe(r) {
+    const m = r.periodo || String(r.fecha || '').slice(0, 7);
+    return /^\d{4}-\d{2}$/.test(m) ? m : null;
+}
+
+/**
+ * Meses (YYYY-MM) que CUBRE un registro. Una carga cubre uno solo; un reporte de GPS cubre
+ * todo su rango: los archivos mensuales cubren un mes, pero un "Resumen de Flota Ene-Jul"
+ * cubre siete y no se puede tratar como si fuera de enero.
+ */
+export function mesesDeRegistro(r) {
+    const ini = mesDe(r);
+    if (!ini) return [];
+    const finRaw = String(r.fecha_hasta || r.fecha || '').slice(0, 7);
+    const fin = /^\d{4}-\d{2}$/.test(finRaw) && finRaw > ini ? finRaw : ini;
+    const out = [];
+    let [y, m] = ini.split('-').map(Number);
+    for (let i = 0; i < 120; i++) {
+        const ym = `${y}-${String(m).padStart(2, '0')}`;
+        out.push(ym);
+        if (ym >= fin) break;
+        m++; if (m > 12) { m = 1; y++; }
+    }
+    return out;
+}
+
+/**
+ * Alinea las cargas y el GPS de UN equipo a los meses en que hay dato de LAS DOS fuentes.
+ *
+ * Sin esto, un equipo con cargas de enero a marzo pero GPS solo de febrero y marzo calcula
+ * su consumo dividiendo los litros de tres meses por los km de dos: el número sale inflado
+ * y no es comparable contra su meta ni contra otros equipos. La cuenta correcta usa el
+ * mismo período de los dos lados — que es justo lo que el badge "períodos desalineados"
+ * venía avisando sin que el cálculo lo tuviera en cuenta.
+ *
+ * Los litros y el costo TOTALES del período no se tocan (son gasto real y se siguen
+ * mostrando completos): lo que se alinea es la base del RATIO litros/actividad.
+ *
+ * Un reporte de GPS que abarca meses sin cargas queda afuera en vez de repartirse a
+ * prorrata: repartirlo sería inventar km que nadie midió.
+ */
+export function alinearCargasYGps(cargasList = [], gpsList = []) {
+    const mesesCargas = new Set();
+    cargasList.forEach(c => { const m = mesDe(c); if (m) mesesCargas.add(m); });
+
+    const mesesGps = new Set();
+    gpsList.forEach(g => mesesDeRegistro(g).forEach(m => mesesGps.add(m)));
+
+    const comunes = new Set([...mesesCargas].filter(m => mesesGps.has(m)));
+
+    const cargas = cargasList.filter(c => { const m = mesDe(c); return m && comunes.has(m); });
+    // Solo el GPS que cae ENTERO dentro de los meses comunes: uno que además cubre meses sin
+    // cargas traería km de un período que no se está midiendo.
+    const gps = gpsList.filter(g => {
+        const ms = mesesDeRegistro(g);
+        return ms.length > 0 && ms.every(m => comunes.has(m));
+    });
+
+    const gpsParcial = gpsList.filter(g => {
+        const ms = mesesDeRegistro(g);
+        return ms.some(m => comunes.has(m)) && !ms.every(m => comunes.has(m));
+    }).length;
+
+    return {
+        cargas, gps,
+        meses: [...comunes].sort(),
+        mesesCargas: [...mesesCargas].sort(),
+        mesesGps: [...mesesGps].sort(),
+        // Alineado = las dos fuentes cubren exactamente los mismos meses.
+        alineado: comunes.size > 0 && comunes.size === mesesCargas.size && comunes.size === mesesGps.size,
+        sinMesComun: comunes.size === 0 && mesesCargas.size > 0 && mesesGps.size > 0,
+        cargasFuera: cargasList.length - cargas.length,
+        gpsFuera: gpsList.length - gps.length,
+        gpsParcial
+    };
+}
+
+/**
+ * Jornada operativa de referencia, en horas por día hábil, según lo que informa la operación
+ * (no sale de los datos: es el dato de negocio contra el cual se contrasta lo que miden).
+ *
+ * Sirve para separar dos cosas que se confunden todo el tiempo cuando un equipo consume menos
+ * de lo esperado: puede ser que esté rindiendo bien, o puede ser que casi no haya trabajado.
+ * Un mixer que hace 3 hs por día hábil cuando debería hacer 10-12 no es eficiente, está
+ * parado — y su consumo bajo no es un logro ni su meta es alcanzable.
+ *
+ * Se define por denominación y, cuando corresponde, por sector/centro de costo.
+ */
+export const JORNADA_REFERENCIA = {
+    // Áridos: los equipos de la ripiera trabajan jornada completa cuando la planta produce.
+    por_sector: {
+        ARIDOS: { min: 10, max: 12, nota: 'jornada de planta de áridos' }
+    },
+    por_denominacion: {
+        MIXER: { min: 10, max: 12, nota: 'promedio informado por operaciones' },
+        'SEMI MIXER': { min: 10, max: 12, nota: 'promedio informado por operaciones' }
+    }
+};
+
+/**
+ * Jornada esperada para un equipo: primero por sector (el centro de costo manda, porque la
+ * jornada la fija la operación del lugar), después por denominación.
+ */
+/**
+ * Equipos que NO siguen una jornada laboral: un grupo electrógeno puede quedar encendido de
+ * corrido (incluido fin de semana), un caloventor o una productora de hielo trabajan por
+ * demanda. Medirlos en "horas por día hábil" da números imposibles (39 hs/día) porque el
+ * numerador cuenta días corridos y el denominador solo los hábiles. Para estos equipos la
+ * comparación contra una jornada de referencia no significa nada y no se hace.
+ */
+const SIN_JORNADA = ['GRUPO ELECTRÓGENO', 'GRUPO ELECTROGENO', 'CALOVENTOR', 'PRODUCTORA DE HIELO', 'MOTOCOMPRESOR', 'BOMBA'];
+
+export function jornadaEsperada(equipo, ubicacion = null) {
+    const denoRaw = String(equipo?.denominacion || '').toUpperCase();
+    if (SIN_JORNADA.some(d => denoRaw.includes(d))) return null;
+    const sector = String((ubicacion && (ubicacion.centroCosto || ubicacion.lugarCarga)) || equipo?.centro_costo || '')
+        .toUpperCase().replace(/[ÁÀÄÂ]/g, 'A').replace(/[ÉÈËÊ]/g, 'E').replace(/[ÍÌÏÎ]/g, 'I').replace(/[ÓÒÖÔ]/g, 'O').replace(/[ÚÙÜÛ]/g, 'U');
+    for (const [clave, ref] of Object.entries(JORNADA_REFERENCIA.por_sector)) {
+        if (sector.includes(clave)) return { ...ref, base: `sector ${clave}` };
+    }
+    const deno = String(equipo?.denominacion || '').toUpperCase();
+    const ref = JORNADA_REFERENCIA.por_denominacion[deno];
+    if (ref) return { ...ref, base: deno.toLowerCase() };
+    return null;
+}
+
 /**
  * Métricas de un equipo, con los pasos del cálculo incluidos.
  */
@@ -228,6 +361,15 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
 
     const horas = desgloseHoras(gpsList);
     const totalHoras = horas.total;
+
+    // Base ALINEADA del ratio: mismos meses de los dos lados (ver alinearCargasYGps).
+    const alin = alinearCargasYGps(cargasList, gpsList);
+    let litrosAlin = 0;
+    alin.cargas.forEach(c => { litrosAlin += parseFloat(c.litros) || 0; });
+    let kmAlin = 0;
+    alin.gps.forEach(g => { kmAlin += parseFloat(g.distancia) || 0; });
+    const horasAlinDesglose = desgloseHoras(alin.gps);
+    const horasAlin = horasAlinDesglose.total;
 
     let consumoReal = 0;
     let motivoSinCalculo = null;
@@ -251,28 +393,49 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
         `${nf(totalLitros, 1)} L`
     ));
 
+    // --- Paso 2 bis: alinear los períodos antes de dividir ---
+    // Solo aparece cuando hace falta: si las dos fuentes cubren los mismos meses, no hay nada
+    // que explicar y el cálculo es el de siempre.
+    const necesitaGps = calcType === 'L/100Km' || calcType === 'L/Hora';
+    if (necesitaGps && !alin.alineado && alin.mesesCargas.length && alin.mesesGps.length) {
+        pasos.push(paso(
+            'Alinear los períodos de Cargas y GPS',
+            `cargas: ${alin.mesesCargas.join(', ')} · GPS: ${alin.mesesGps.join(', ')}`,
+            alin.meses.length ? `se usan ${alin.meses.join(', ')}` : 'no hay ningún mes en común',
+            alin.meses.length
+                ? `El consumo se calcula solo sobre los meses que tienen las dos fuentes: ${nf(litrosAlin, 1)} L de los ${nf(totalLitros, 1)} L del período. Dividir todos los litros por la actividad de menos meses daría un consumo inflado.`
+                : 'Las cargas y el GPS no comparten ningún mes, así que no hay contra qué medir los litros.'
+        ));
+    }
+
     if (calcType === 'No Aplica') {
         motivoSinCalculo = 'Equipo remolcado, sin motor propio';
     } else if (calcType === 'Sin clasificar') {
         motivoSinCalculo = 'Falta definir si se mide por hora o por km';
     } else if (totalLitros <= 0) {
         motivoSinCalculo = 'Sin cargas de combustible en el período';
+    } else if (alin.sinMesComun) {
+        motivoSinCalculo = 'Las cargas y el GPS no comparten ningún mes: no se pueden comparar';
     } else if (calcType === 'L/100Km') {
-        pasos.push(paso('Sumar los kilómetros del GPS', `${gpsList.length} ${gpsList.length === 1 ? 'registro' : 'registros'} de Resumen de Flota`, `${nf(totalKm)} km`));
-        if (totalKm > 0) {
-            consumoReal = (totalLitros / totalKm) * 100;
-            pasos.push(paso('Dividir litros por km y llevarlo a 100 km', `${nf(totalLitros, 1)} ÷ ${nf(totalKm)} × 100`, `${nf(consumoReal, 2)} L/100Km`));
+        pasos.push(paso('Sumar los kilómetros del GPS', `${alin.gps.length} ${alin.gps.length === 1 ? 'registro' : 'registros'} de Resumen de Flota`, `${nf(kmAlin)} km`));
+        if (kmAlin > 0 && litrosAlin > 0) {
+            consumoReal = (litrosAlin / kmAlin) * 100;
+            pasos.push(paso('Dividir litros por km y llevarlo a 100 km', `${nf(litrosAlin, 1)} ÷ ${nf(kmAlin)} × 100`, `${nf(consumoReal, 2)} L/100Km`));
+        } else if (totalKm > 0 && kmAlin <= 0) {
+            motivoSinCalculo = 'El GPS del período no coincide con los meses que tienen cargas';
         } else motivoSinCalculo = 'Sin kilómetros de GPS en el período';
     } else if (calcType === 'L/Hora') {
         pasos.push(paso(
             'Sumar las horas del GPS',
-            `${nf(horas.ralenti, 1)} hs ralentí + ${nf(horas.movimiento, 1)} hs movimiento`,
-            `${nf(totalHoras, 1)} hs`,
+            `${nf(horasAlinDesglose.ralenti, 1)} hs ralentí + ${nf(horasAlinDesglose.movimiento, 1)} hs movimiento`,
+            `${nf(horasAlin, 1)} hs`,
             'Se suman ambos tipos de hora: el motor consume igual estando en ralentí.'
         ));
-        if (totalHoras > 0) {
-            consumoReal = totalLitros / totalHoras;
-            pasos.push(paso('Dividir litros por horas', `${nf(totalLitros, 1)} ÷ ${nf(totalHoras, 1)}`, `${nf(consumoReal, 2)} L/Hora`));
+        if (horasAlin > 0 && litrosAlin > 0) {
+            consumoReal = litrosAlin / horasAlin;
+            pasos.push(paso('Dividir litros por horas', `${nf(litrosAlin, 1)} ÷ ${nf(horasAlin, 1)}`, `${nf(consumoReal, 2)} L/Hora`));
+        } else if (totalHoras > 0 && horasAlin <= 0) {
+            motivoSinCalculo = 'El GPS del período no coincide con los meses que tienen cargas';
         } else motivoSinCalculo = 'Sin horas de GPS en el período';
     }
 
@@ -292,18 +455,21 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
     }
 
     // --- Cross-check: si el GPS reporta tanto horas como km, validar el tipo de cálculo ---
+    // El cross-check usa la MISMA base alineada que consumo_real: si usara los totales del
+    // período completo, las dos unidades saldrían de datos distintos y no serían comparables
+    // entre sí (que es justamente lo que este paso pretende dejar comparar).
     let crossCheck = null;
-    if (totalHoras > 0 && totalKm > 0 && totalLitros > 0 && calcType !== 'No Aplica' && calcType !== 'Sin clasificar') {
+    if (horasAlin > 0 && kmAlin > 0 && litrosAlin > 0 && calcType !== 'No Aplica' && calcType !== 'Sin clasificar') {
         const consumoAlt = calcType === 'L/Hora'
-            ? (totalLitros / totalKm) * 100
-            : totalLitros / totalHoras;
+            ? (litrosAlin / kmAlin) * 100
+            : litrosAlin / horasAlin;
         const unidadAlt = calcType === 'L/Hora' ? 'L/100Km' : 'L/Hora';
         crossCheck = { tipo_alt: unidadAlt, consumo_alt: consumoAlt };
         pasos.push(paso(
             'Cross-check: el GPS reporta horas y km',
             `Consumo calculado con la otra unidad: ${nf(consumoAlt, 2)} ${unidadAlt}`,
             `Tipo asignado: ${calcType}`,
-            `Este equipo tiene ${nf(totalHoras, 1)} hs y ${nf(totalKm)} km en el GPS. Si el tipo de cálculo no es el correcto, se puede cambiar manualmente.`
+            `Este equipo tiene ${nf(horasAlin, 1)} hs y ${nf(kmAlin)} km en el GPS del período medido. Si el tipo de cálculo no es el correcto, se puede cambiar manualmente.`
         ));
     }
 
@@ -311,16 +477,42 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
 
     return {
         tipo_calculo: calcType,
+        // Totales del período: gasto y actividad REALES, tal como se registraron. No se
+        // recortan por la alineación — el equipo cargó esos litros aunque falte el GPS de
+        // algún mes, y ese gasto tiene que seguir contando en los totales de la flota.
         total_litros: totalLitros,
         total_costo: totalCosto,
         total_km: totalKm,
         total_horas: totalHoras,
         horas_ralenti: horas.ralenti,
         horas_movimiento: horas.movimiento,
+        // Base efectivamente usada para el RATIO (meses con cargas Y GPS). Cuando los
+        // períodos están alineados coincide con los totales de arriba.
+        litros_alineados: litrosAlin,
+        km_alineados: kmAlin,
+        horas_alineadas: horasAlin,
+        // Las DOS unidades, siempre que haya con qué calcularlas, sobre la misma base
+        // alineada. No son alternativas excluyentes: en un mixer de Tunuyán las distancias
+        // son largas (L/100km dice algo) y además hay ralentí en obra (L/hora dice otra
+        // cosa), y mirar una sola esconde la mitad del comportamiento del equipo.
+        consumo_l_hora: horasAlin > 0 && litrosAlin > 0 ? litrosAlin / horasAlin : 0,
+        consumo_l_100km: kmAlin > 0 && litrosAlin > 0 ? (litrosAlin / kmAlin) * 100 : 0,
+        alineacion: {
+            meses: alin.meses,
+            meses_cargas: alin.mesesCargas,
+            meses_gps: alin.mesesGps,
+            alineado: alin.alineado,
+            sin_mes_comun: alin.sinMesComun,
+            cargas_fuera: alin.cargasFuera,
+            gps_fuera: alin.gpsFuera,
+            gps_parcial: alin.gpsParcial
+        },
         consumo_real: consumoReal,
         desvio_pct: desvioPct,
         cantidad_cargas: cargasList.length,
         cantidad_gps: gpsList.length,
+        cantidad_cargas_alineadas: alin.cargas.length,
+        cantidad_gps_alineados: alin.gps.length,
         motivo_sin_calculo: motivoSinCalculo,
         cross_check: crossCheck,
         pasos,
@@ -410,7 +602,8 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
     // sola fila real de enero y cinco filas vacías hasta junio arrastra el período de toda la
     // flota y aparece como si tuviera seis meses de datos.
     const vacios = rawRecords.filter(registroVacio);
-    const utiles = rawRecords.filter(r => !registroVacio(r));
+    const duplicadosExactos = rawRecords.filter(r => r && r._dupe_exacta && !registroVacio(r));
+    const utiles = rawRecords.filter(r => !registroExcluido(r));
     const allCargas = utiles.filter(r => r.type === 'carga');
     const allGps = utiles.filter(r => r.type === 'gps');
     const allOtros = utiles.filter(r => r.type !== 'carga' && r.type !== 'gps');
@@ -418,7 +611,13 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         total: vacios.length,
         gps: vacios.filter(r => r.type === 'gps').length,
         cargas: vacios.filter(r => r.type === 'carga').length,
-        internos: [...new Set(vacios.map(r => r.interno).filter(Boolean))]
+        internos: [...new Set(vacios.map(r => r.interno).filter(Boolean))],
+        // Copias exactas apartadas automáticamente al importar (no se cuentan dos veces).
+        duplicados: duplicadosExactos.length,
+        duplicados_cargas: duplicadosExactos.filter(r => r.type === 'carga').length,
+        duplicados_gps: duplicadosExactos.filter(r => r.type === 'gps').length,
+        duplicados_litros: duplicadosExactos.reduce((s, r) => s + (parseFloat(r.litros) || 0), 0),
+        duplicados_costo: duplicadosExactos.reduce((s, r) => s + (parseFloat(r.importe) || 0), 0)
     };
 
     const auto = calculateAlignedPeriod(allCargas, allGps);

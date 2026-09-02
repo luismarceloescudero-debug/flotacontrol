@@ -20,7 +20,7 @@
  *                                   campos del sistema.
  *   `config`                     -> definición de las columnas propias del maestro y otros ajustes.
  */
-import { normalizeEquipoKey } from './normalizer.js';
+import { normalizeEquipoKey, claveCargaExacta, claveGpsExacta } from './normalizer.js';
 
 const DB_NAME = 'FlotaControlDB';
 // v7: estados persistentes de "consumo fuera de la flota" (vehículos con patente sin interno,
@@ -302,6 +302,29 @@ export function saveMapeo(tipo, columnas) {
 export async function insertRawRecords(arr) {
     const correcciones = await getCorreccionesCargas();
     const mapa = new Map(correcciones.map(c => [c.huella, c]));
+
+    // Duplicados EXACTOS: se marcan al importar en vez de dejarlos entrar y avisar después.
+    // Cubre los dos casos que inflan los totales sin que se note:
+    //   - la misma fila repetida dentro del mismo archivo;
+    //   - volver a subir un archivo ya procesado sin limpiar los movimientos (que es
+    //     justamente lo que hay que poder hacer para ir SUMANDO los meses nuevos).
+    // No se borran: se guardan marcadas, siguen visibles en Base de Datos, y el análisis las
+    // saltea (ver registroExcluido() en analyzer.js). Así el dato original no se pierde y la
+    // decisión es reversible.
+    const claveExacta = (r) => r.type === 'carga' ? 'C:' + claveCargaExacta(r)
+        : r.type === 'gps' ? 'G:' + claveGpsExacta(r)
+        : null;
+
+    const yaExistentes = new Set();
+    try {
+        (await getAllRawRecords()).forEach(r => {
+            if (r._dupe_exacta) return;
+            const k = claveExacta(r);
+            if (k) yaExistentes.add(k);
+        });
+    } catch (e) {
+        console.warn('No se pudieron leer los movimientos previos para detectar duplicados:', e);
+    }
     // Cuántas veces vimos ya cada huella en ESTA importación. Lo necesita 'dedupe': un duplicado
     // exacto produce, por definición, la misma huella en las dos filas, así que no se puede
     // resolver con 'eliminar' (saltearía las dos y se perdería también la carga buena). 'dedupe'
@@ -367,6 +390,22 @@ export async function insertRawRecords(arr) {
             });
         }
     }
+    // Marcado de duplicados exactos: se hace DESPUÉS de aplicar las correcciones, porque una
+    // corrección puede cambiar el interno o el centro de costo, y esos campos forman parte de
+    // la identidad de la carga.
+    let dupes = 0;
+    finales.forEach(r => {
+        const k = claveExacta(r);
+        if (!k) return;
+        if (yaExistentes.has(k)) {
+            r._dupe_exacta = true;
+            dupes++;
+        } else {
+            yaExistentes.add(k);
+        }
+    });
+    if (dupes) console.log(`[DEDUPE] ${dupes} registro(s) idéntico(s) marcados como duplicado exacto y apartados del análisis`);
+
     return writeTx(['raw_records'], ([store]) => { finales.forEach(r => store.add(r)); return finales.length; });
 }
 

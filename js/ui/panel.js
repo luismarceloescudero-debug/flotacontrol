@@ -5,8 +5,8 @@
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
 import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord } from '../data/database.js';
-import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio } from '../data/analyzer.js';
-import { generarDiagnostico, cruzarIgnicion, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada } from '../data/diagnostico.js';
+import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
+import { generarDiagnostico, cruzarIgnicion, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
@@ -348,14 +348,19 @@ window.abrirActividadEstimada = (internos) => abrirActividadEstimada(internos, u
 function poblarFiltrosPeriodo(rawRecords) {
     const { anios, periodos } = periodosDisponibles(rawRecords);
 
-    // Contar qué meses tienen cargas y cuáles GPS
+    // Contar qué meses tienen cargas y cuáles GPS. Para el GPS se toman TODOS los meses que
+    // cubre el reporte (mesesDeRegistro), no solo el de su fecha de inicio: un "Resumen de
+    // Flota Ene-Jul" mide siete meses, y marcando solo enero el resto aparecía como "sin GPS"
+    // aunque el dato estuviera cargado.
     const mesesCargas = new Set();
     const mesesGps = new Set();
     rawRecords.forEach(r => {
-        const p = r.periodo || (r.fecha ? r.fecha.slice(0, 7) : null);
-        if (!p) return;
-        if (r.type === 'carga') mesesCargas.add(p);
-        else if (r.type === 'gps') mesesGps.add(p);
+        if (r.type === 'carga') {
+            const p = r.periodo || (r.fecha ? r.fecha.slice(0, 7) : null);
+            if (p) mesesCargas.add(p);
+        } else if (r.type === 'gps') {
+            mesesDeRegistro(r).forEach(m => mesesGps.add(m));
+        }
     });
 
     const selA = document.getElementById('filter-anio');
@@ -2471,7 +2476,8 @@ async function completarPreciosFaltantes(analisis, rawRecords) {
         if (!ref.has(k)) ref.set(k, []);
         ref.get(k).push(pu);
     });
-    const mediana = (arr) => { const a = [...arr].sort((x, y) => x - y); return a[Math.floor(a.length / 2)]; };
+    // mediana() se importa de diagnostico.js: la copia local que había acá devolvía el valor
+    // de arriba con una cantidad par de precios en vez del promedio de los dos del medio.
 
     const pendientes = cargas.filter(c => (parseFloat(c.litros) || 0) > 0 &&
         ((parseFloat(c.importe) || 0) <= 0 || (parseFloat(c.precio_unitario) || 0) <= 0));
@@ -3553,6 +3559,28 @@ function poblarFiltroCombustible(filas) {
     sel.value = (todos.includes(actual) || actual === 'ALL') ? actual : 'ALL';
 }
 
+/**
+ * Valor normalizado de una spec del padrón, para agrupar y filtrar.
+ *
+ * La planilla de Equipos trae estos campos como texto libre y la misma spec aparece escrita
+ * de varias formas: "260 HP" y "260HP", "320HP" y "320 HP", "6X4" y "6x4". Sin normalizar, el
+ * desplegable listaba las dos variantes como si fueran potencias distintas y filtrar por una
+ * escondía los equipos escritos de la otra forma.
+ *
+ * La potencia se normaliza con potenciaEquipo() — el mismo parser que usa el diagnóstico para
+ * comparar equipos por tamaño — así que el filtro y el análisis agrupan igual.
+ */
+function specNormalizada(equipo, key) {
+    const bruto = equipo[key];
+    if (bruto === null || bruto === undefined || bruto === '') return null;
+    if (key === 'potencia') {
+        const p = potenciaEquipo(equipo);
+        if (p) return `${p.valor} ${p.unidad}`;
+    }
+    // Capacidad y cualquier otro texto libre: espacios colapsados y mayúsculas.
+    return String(bruto).trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
 /** Año, potencia y capacidad: atributos fijos del padrón (Equipos.xlsx), a diferencia de ubicación/combustible que dependen del período. */
 function poblarFiltrosSpecs(filas) {
     const specs = [
@@ -3564,8 +3592,15 @@ function poblarFiltrosSpecs(filas) {
         const sel = document.getElementById(id);
         if (!sel) return;
         const actual = sel.value || 'ALL';
-        let valores = [...new Set(filas.map(f => f.equipo[key]).filter(v => v !== null && v !== undefined && v !== ''))];
-        valores.sort(ordenNum ? (a, b) => b - a : (a, b) => String(a).localeCompare(String(b)));
+        let valores = [...new Set(filas.map(f => specNormalizada(f.equipo, key)).filter(v => v !== null && v !== ''))];
+        valores.sort(ordenNum
+            ? (a, b) => Number(b) - Number(a)
+            : (a, b) => {
+                // Las potencias ordenan por número ("90 HP" antes que "440 HP"), no alfabéticamente.
+                const na = parseFloat(a), nb = parseFloat(b);
+                if (!isNaN(na) && !isNaN(nb) && na !== nb) return na - nb;
+                return String(a).localeCompare(String(b));
+            });
         sel.innerHTML = `<option value="ALL">${label}</option>` + valores.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
         sel.value = (valores.map(String).includes(actual) || actual === 'ALL') ? actual : 'ALL';
     });
@@ -3625,8 +3660,10 @@ function filtrarYOrdenar(filas) {
     if (view.centroCosto !== 'ALL') out = out.filter(f => (f.ubicacion?.centroCostoBreakdown || []).some(c => c.codigo === view.centroCosto));
     if (view.combustible !== 'ALL') out = out.filter(f => f.ubicacion?.combustible === view.combustible);
     if (view.anioEquipo !== 'ALL') out = out.filter(f => String(f.equipo.anio ?? '') === view.anioEquipo);
-    if (view.potencia !== 'ALL') out = out.filter(f => f.equipo.potencia === view.potencia);
-    if (view.capacidad !== 'ALL') out = out.filter(f => f.equipo.capacidad === view.capacidad);
+    // Se compara contra el valor NORMALIZADO (ver specNormalizada): filtrar por "260 HP" tiene
+    // que traer también los equipos que el Excel escribió "260HP".
+    if (view.potencia !== 'ALL') out = out.filter(f => specNormalizada(f.equipo, 'potencia') === view.potencia);
+    if (view.capacidad !== 'ALL') out = out.filter(f => specNormalizada(f.equipo, 'capacidad') === view.capacidad);
     if (view.estado === 'SOBRE') out = out.filter(f => f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15);
     else if (view.estado === 'OK') out = out.filter(f => f.metrics.desvio_pct !== null && f.metrics.desvio_pct <= 15);
     else if (view.estado === 'SIN_DATOS') out = out.filter(f => f.metrics.motivo_sin_calculo && f.metrics.tipo_calculo !== 'No Aplica');
@@ -3783,6 +3820,55 @@ function rangoMeses(meses) {
  * revisar una fecha mal cargada, etc.). Se usa tanto en la tarjeta como en el overlay de
  * detalle, para que la información y la acción estén disponibles en los dos lugares.
  */
+/**
+ * Franja de utilización: cuántas horas por día hábil trabajó el equipo contra la jornada de
+ * referencia que informa la operación (10-12 hs en áridos y en mixers).
+ *
+ * Es el contexto que le falta a un consumo bajo: sin esto, un equipo que casi no trabajó
+ * aparece igual que uno eficiente. Con esto se distingue "rindió mejor" de "estuvo parado"
+ * — el caso de los equipos de áridos durante la obra de la ripiera.
+ */
+function utilizacionHTML(f, periodoFlota) {
+    const u = utilizacion(f, periodoFlota);
+    if (!u) return '';
+    if (u.estado === 'no_representativa') {
+        return `<div class="card-util util-dudosa" title="El GPS reporta ${nf(u.horas, 0)} hs en ${u.diasHabiles} días hábiles: más de 24 hs por día. O el equipo trabajó también fines de semana y feriados, o el GPS está reportando horas de más."><i class="fa-solid fa-circle-question"></i> ${nf(u.hsPorDia, 1)} hs/día hábil — fuera de escala, revisar el dato de GPS</div>`;
+    }
+    const cls = u.estado === 'muy_baja' ? 'util-muy-baja' : u.estado === 'baja' ? 'util-baja' : u.estado === 'alta' ? 'util-alta' : 'util-ok';
+    const icono = u.estado === 'normal' ? 'fa-circle-check' : u.estado === 'alta' ? 'fa-arrow-up' : 'fa-arrow-down';
+    const txt = u.estado === 'normal' ? 'en la jornada esperada'
+        : u.estado === 'alta' ? 'por encima de la jornada esperada'
+        : 'por debajo de la jornada esperada';
+    return `<div class="card-util ${cls}" title="${nf(u.horas, 0)} hs de GPS en ${u.diasHabiles} días hábiles (${u.desde} → ${u.hasta}). Referencia: ${u.esperadoMin}-${u.esperadoMax} hs por día hábil (${esc(u.nota)}, ${esc(u.base)}). Un consumo bajo con utilización baja no es eficiencia: es un equipo que trabajó menos.">
+        <i class="fa-solid ${icono}"></i> <strong>${nf(u.hsPorDia, 1)}</strong> hs/día hábil · esperado ${u.esperadoMin}-${u.esperadoMax} — ${txt}
+    </div>`;
+}
+
+/**
+ * Actividad que efectivamente entró en el cálculo del consumo: la de los meses que tienen
+ * cargas Y GPS (ver alinearCargasYGps() en analyzer.js). Cuando los períodos están alineados
+ * es igual al total del período.
+ *
+ * La tarjeta tiene que mostrar ESTE número y no el total: es el que está dividiendo a los
+ * litros, y poner el total al lado de un consumo calculado con otra base es lo que hacía que
+ * la cuenta no cerrara a ojo. Vive acá, en una sola función, para que la tarjeta chica y el
+ * overlay de detalle no puedan volver a desincronizarse.
+ */
+function actividadDelCalculo(m) {
+    const esHora = m.tipo_calculo === 'L/Hora';
+    const total = esHora ? m.total_horas : m.total_km;
+    const alineada = esHora ? (m.horas_alineadas || 0) : (m.km_alineados || 0);
+    const usaAlineada = m.consumo_real > 0 && alineada > 0;
+    return {
+        esHora,
+        valor: usaAlineada ? alineada : total,
+        total,
+        parcial: usaAlineada && alineada < total,
+        unidad: esHora ? 'hs' : 'km',
+        litros: m.litros_alineados > 0 ? m.litros_alineados : m.total_litros
+    };
+}
+
 function desalineadoInfo(f) {
     const fechasC = f.cargas.map(c => c.fecha).filter(Boolean).sort();
     const fechasG = f.gps.map(g => g.fecha).filter(Boolean).sort();
@@ -3817,24 +3903,27 @@ function cardPeriodoInfo(f, m, ubi, ralentiTag) {
     const mesesTodos = [...new Set([...mesesC, ...mesesG])].sort();
     const rango = rangoMeses(mesesTodos);
 
-    // Días hábiles del período de este equipo (unión de cargas + GPS) + % de cobertura —
-    // coberturaEquipo() en diagnostico.js, compartida con la vista de Seguimiento para que las
-    // dos lean siempre el mismo número.
+    // Cobertura: DÍAS DISTINTOS con carga sobre los días hábiles del período analizado de la
+    // flota — coberturaEquipo() en diagnostico.js, la misma función y el mismo denominador que
+    // usan la vista de Seguimiento, el modal de detalle y el aviso de confiabilidad de
+    // "Ajustar metas". Antes cada lugar contaba una cosa distinta (esta tarjeta contaba
+    // CARGAS contra el rango propio del equipo, el modal contaba DÍAS contra el período de la
+    // flota) y el mismo equipo aparecía con dos porcentajes distintos según dónde se lo mirara.
     //
-    // OJO: a propósito NO se recorta a 100%. Antes se recortaba con Math.min(...,100), lo que
-    // escondía el caso más grave (más cargas que días hábiles hubo) mostrándolo como "100% -
-    // cobertura ok" en verde, igual que un equipo con cobertura perfecta. Cargar combustible más
-    // veces de las que hubo días hábiles no es "cobertura completa": es una señal de datos mal
-    // cruzados (cargas duplicadas, interno reciclado, período mal recortado) — ver también el
-    // hallazgo "cargas_exceden_dias_habiles" del diagnóstico automático.
+    // OJO: a propósito NO se recorta a 100%. Cargar en más días hábiles de los que tuvo el
+    // período no es "cobertura completa": es una señal de datos mal cruzados (cargas
+    // duplicadas, interno reciclado, período mal recortado) — ver también el hallazgo
+    // "cargas_exceden_dias_habiles" del diagnóstico automático.
     let coberturaHtml = '';
-    const cob = coberturaEquipo(f);
+    const periodoFlota = ultimoAnalisis ? { desde: ultimoAnalisis.totales.periodo_desde, hasta: ultimoAnalisis.totales.periodo_hasta } : null;
+    const cob = coberturaEquipo(f, periodoFlota);
     if (cob) {
-        const { pct, diasHabiles: dias, totalCorridos, completo, cargas } = cob;
+        const { pct, diasHabiles: dias, totalCorridos, completo, diasConCarga, cargas } = cob;
         const cls = pct > 100 ? 'cobertura-exceso' : (pct >= 40 ? 'cobertura-ok' : (pct >= 20 ? 'cobertura-media' : 'cobertura-baja'));
-        const tituloExceso = pct > 100 ? ` · ⚠ más cargas que días hábiles: revisar datos duplicados o el período` : '';
-        coberturaHtml = `<div class="card-cobertura ${cls}" title="${dias} días hábiles de ${totalCorridos} corridos${completo ? '' : ' (sin feriados móviles confirmados)'} · ${cargas} cargas registradas → ${pct}% de cobertura${tituloExceso}">
-            <span class="cobertura-num"><i class="fa-solid fa-gas-pump"></i> ${cargas}</span>
+        const tituloExceso = pct > 100 ? ` · ⚠ cargó en más días hábiles de los que tuvo el período: revisar duplicados o el período` : '';
+        const notaCargas = cargas > diasConCarga ? ` (${cargas} cargas en total: hubo días con más de una)` : '';
+        coberturaHtml = `<div class="card-cobertura ${cls}" title="Cargó combustible en ${diasConCarga} de los ${dias} días hábiles del período analizado${completo ? '' : ' (sin feriados móviles confirmados)'}, sobre ${totalCorridos} días corridos${notaCargas} → ${pct}% de cobertura${tituloExceso}">
+            <span class="cobertura-num"><i class="fa-solid fa-gas-pump"></i> ${diasConCarga}</span>
             <span class="cobertura-sep">de</span>
             <span class="cobertura-num"><i class="fa-solid fa-calendar-days"></i> ${dias} días hábiles</span>
             <span class="cobertura-pct">${pct > 100 ? `<i class="fa-solid fa-triangle-exclamation"></i> ${pct}%` : `${pct}%`}</span>
@@ -3848,6 +3937,7 @@ function cardPeriodoInfo(f, m, ubi, ralentiTag) {
 
     return `
         ${coberturaHtml}
+        ${utilizacionHTML(f, periodoFlota)}
         <div class="card-meta-line card-meta-line-sub">
             ${rango ? `<span class="card-periodo-rango"><i class="fa-solid fa-calendar"></i> ${esc(rango)}</span>` : ''}
             ${m.cantidad_gps > 0 ? `<span title="${esc(tooltipG)}"><i class="fa-solid fa-satellite-dish"></i> ${m.cantidad_gps} GPS</span>` : ''}
@@ -3876,7 +3966,8 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
     const { equipo: eq, metrics: m, confirmed } = f;
     const editando = view.editando === eq.interno;
     const esHora = m.tipo_calculo === 'L/Hora';
-    const factor = esHora ? m.total_horas : m.total_km;
+    const act = actividadDelCalculo(m);
+    const factor = act.valor;
     const uf = esHora ? 'hs' : 'km';
     const pctLitros = (m.total_litros / maxLitros) * 100;
     const idc = eq.interno.replace(/[^A-Za-z0-9]/g, '');
@@ -4044,16 +4135,17 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
                 <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>
                 <span class="stat-value ${implicita ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0)} <small class="stat-unit">${uf}</small></span>
                 ${implicita ? `<span class="stat-nota">estimado: ${esc(implicita.formula)}</span>` : ''}
+                ${!implicita && act.parcial ? `<span class="stat-nota" title="Solo se usan los meses que tienen cargas Y GPS: dividir todos los litros por la actividad de menos meses daría un consumo inflado.">de ${nf(act.total, esHora ? 1 : 0)} ${uf} del período · meses con las dos fuentes</span>` : ''}
             </div>
             <div class="stat stat-clickable" ${attrsConsumo} role="button" tabindex="0">
                 <span class="stat-label">Consumo real <i class="fa-solid fa-calculator"></i></span>
                 <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? `${nf(m.consumo_real, 2)} <small class="stat-unit">${esc(unidadConsumoLabel(m.tipo_calculo))}</small>` : '—'}</span>
             </div>
         </div>
-        ${m.cross_check ? `<div class="card-cross-check" title="El GPS reporta horas y km para este equipo. Verificá que el tipo de cálculo sea el correcto.">
+        ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? `<div class="card-cross-check" title="Las dos unidades, calculadas sobre la misma base (${nf(m.litros_alineados || m.total_litros, 1)} L, ${nf(m.horas_alineadas || m.total_horas, 1)} hs, ${nf(m.km_alineados || m.total_km)} km). No son alternativas: donde las distancias son largas pero además hay ralentí en obra —Tunuyán es el caso típico— hace falta mirar las dos para entender el consumo.">
             <i class="fa-solid fa-arrows-left-right"></i>
-            <span>También se podría medir como <strong>${nf(m.cross_check.consumo_alt, 2)} ${esc(m.cross_check.tipo_alt)}</strong></span>
-            <small>(tiene ${nf(m.total_horas, 1)} hs y ${nf(m.total_km)} km)</small>
+            <span>Medido de las dos formas: <strong${m.tipo_calculo === 'L/Hora' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong${m.tipo_calculo === 'L/100Km' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_100km, 2)} L/100Km</strong></span>
+            <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs y ${nf(m.km_alineados || m.total_km)} km)</small>
         </div>` : ''}
         ${confirmed ? `<div class="card-meta-hero">
             <span class="meta-label"><i class="fa-solid fa-bullseye"></i> Meta ${confirmed.source === 'Maestro' ? '(ajustada)' : '(estimada)'}</span>
@@ -4096,7 +4188,8 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
 function abrirOverlayEquipo(fila, analisis) {
     const { equipo: eq, metrics: m, confirmed } = fila;
     const esHora = m.tipo_calculo === 'L/Hora';
-    const factor = esHora ? m.total_horas : m.total_km;
+    const act = actividadDelCalculo(m);
+    const factor = act.valor;
     const uf = esHora ? 'hs' : 'km';
     const ubi = fila.ubicacion || {};
 
@@ -4178,6 +4271,7 @@ function abrirOverlayEquipo(fila, analisis) {
                 <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>
                 <span class="stat-value ${implicita ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0)} <small class="stat-unit">${uf}</small></span>
                 ${implicita ? `<span class="stat-nota">estimado: ${esc(implicita.formula)}</span>` : ''}
+                ${!implicita && act.parcial ? `<span class="stat-nota">de ${nf(act.total, esHora ? 1 : 0)} ${uf} del período — el consumo se mide solo sobre los meses que tienen cargas y GPS (${esc((m.alineacion?.meses || []).join(', '))})</span>` : ''}
               </div>
               <div class="stat">
                 <span class="stat-label">Consumo real</span>
@@ -4200,7 +4294,7 @@ function abrirOverlayEquipo(fila, analisis) {
                 <span>Meta <strong>${nf(confirmed.valor, 2)}</strong></span>
               </div>
             </div>` : ''}` : (m.consumo_real > 0 ? `<div class="card-meta-hero card-meta-falta overlay-meta-hero"><span class="meta-label"><i class="fa-solid fa-circle-question"></i> Sin meta cargada</span></div>` : '')}
-            ${m.cross_check ? `<div class="card-cross-check" style="margin-top:8px"><i class="fa-solid fa-arrows-left-right"></i> También medible como <strong>${nf(m.cross_check.consumo_alt, 2)} ${esc(m.cross_check.tipo_alt)}</strong> <small>(${nf(m.total_horas, 1)} hs · ${nf(m.total_km)} km)</small></div>` : ''}
+            ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? `<div class="card-cross-check" style="margin-top:8px" title="Las dos unidades sobre la misma base alineada. Donde las distancias son largas y además hay ralentí en obra (Tunuyán), hace falta mirar las dos."><i class="fa-solid fa-arrows-left-right"></i> Medido de las dos formas: <strong${m.tipo_calculo === 'L/Hora' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong${m.tipo_calculo === 'L/100Km' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_100km, 2)} L/100Km</strong> <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs · ${nf(m.km_alineados || m.total_km)} km)</small></div>` : ''}
             ${combustibleLine}
             ${ubi.centroCosto ? `<div class="overlay-line"><i class="fa-solid fa-building"></i> ${esc(ubi.centroCosto)}</div>` : ''}
             ${ubi.provincia && ubi.provincia !== 'SIN DATO' ? `<div class="overlay-line"><i class="fa-solid fa-location-dot"></i> ${esc(ubi.provincia)}</div>` : ''}

@@ -495,16 +495,31 @@ export function parseNumber(val) {
 export function parseDuration(val) {
     if (!val) return 0;
     if (typeof val === 'number') return val;
-    const str = String(val).trim();
+    let str = String(val).trim();
+
+    // "3 days, 10:53:03" / "1 day, 5:00:00" — así exporta el Resumen de Flota cuando el
+    // reporte abarca varios meses (ej. "Resumen de Flota Ene-Jul"), a diferencia de los
+    // archivos mensuales, que traen fracción de día de Excel. Sin contemplarlo, el split por
+    // ":" partía "3 days, 10" como si fuera la hora y se perdían los días enteros: 82,9 hs
+    // reales se leían como 10,9 hs (o peor), y el consumo del equipo salía por las nubes
+    // porque los litros quedaban divididos por una fracción de las horas que trabajó.
+    let dias = 0;
+    const mDias = str.match(/^\s*(\d+(?:[.,]\d+)?)\s*(?:d|d[íi]as?|days?)\b[\s,]*/i);
+    if (mDias) {
+        dias = parseFloat(mDias[1].replace(',', '.')) || 0;
+        str = str.slice(mDias[0].length).trim();
+    }
+
     if (str.includes(':')) {
         const parts = str.split(':');
         if (parts.length === 3 || parts.length === 2) {
             const h = parseNumber(parts[0]) || 0;
             const m = parseNumber(parts[1]) || 0;
             const s = parts.length === 3 ? (parseNumber(parts[2]) || 0) : 0;
-            return h + (m / 60) + (s / 3600);
+            return dias * 24 + h + (m / 60) + (s / 3600);
         }
     }
+    if (dias) return dias * 24 + (str ? (parseNumber(str) || 0) : 0);
     return parseNumber(str);
 }
 
@@ -529,7 +544,9 @@ export function parseExcelHours(val) {
     }
     const str = String(val).trim();
     if (!str || /^(n\/a|---|na)$/i.test(str)) return 0;
-    if (str.includes(':')) return parseDuration(str); // formato "HH:MM:SS"
+    // "HH:MM:SS" y también "3 days, 10:53:03" / "2 días 4:15:00" (formato del Resumen de Flota
+    // consolidado de varios meses): parseDuration ya devuelve HORAS en los dos casos.
+    if (str.includes(':') || /\b(d|d[íi]as?|days?)\b/i.test(str)) return parseDuration(str);
     const num = parseNumber(str);
     return num ? num * 24 : 0; // string numérico -> también fracción de día
 }
@@ -548,4 +565,55 @@ export function aggregateHours(horasDict) {
         parado: Math.round(hp * 100) / 100,
         total: Math.round(total * 100) / 100
     };
+}
+
+/**
+ * Clave de identidad EXACTA de una carga de combustible: equipo, fecha, litros, importe,
+ * precio unitario, combustible, lugar de carga, centro de costo y chofer.
+ *
+ * Dos cargas reales del mismo equipo el mismo día no coinciden hasta el centavo y el litro
+ * con un decimal: cuando esta clave se repite, es la misma fila entrada dos veces. Se usa en
+ * los dos extremos del sistema y por eso vive acá, en un solo lugar:
+ *   - database.js la usa al IMPORTAR, para descartar la copia antes de que llegue a los
+ *     totales (incluyendo el caso de volver a subir un archivo ya procesado sin limpiar).
+ *   - diagnostico.js usa el mismo criterio al AUDITAR, para poder informar cuántas se
+ *     descartaron y que el número coincida con lo que efectivamente se descartó.
+ *
+ * Ojo: coincidir en equipo + fecha + litros pero NO en el resto (otro importe, otro lugar,
+ * otro chofer) es un caso distinto — puede ser legítimo (dos surtidores el mismo día) y no
+ * se toca solo. Eso se sigue reportando como "posible repetida" para decidir a mano.
+ */
+/**
+ * Clave de identidad EXACTA de un registro de Resumen de Flota (GPS): equipo, rango del
+ * reporte, km y horas. Un mes de GPS del mismo equipo con exactamente los mismos km y las
+ * mismas horas es el mismo reporte importado dos veces — sumarlo duplicaría la actividad y,
+ * al dividir los litros por el doble de horas, mostraría el equipo consumiendo la mitad.
+ */
+export function claveGpsExacta(g) {
+    const txt = (v) => String(v == null ? '' : v).trim().toUpperCase();
+    const h = g.horas && typeof g.horas === 'object' ? g.horas : {};
+    const n2 = (v) => Math.round((parseFloat(v) || 0) * 100);
+    return [
+        txt(g.interno_key || g.interno),
+        g.fecha || '',
+        g.fecha_hasta || '',
+        n2(g.distancia),
+        n2(h.ralenti), n2(h.movimiento), n2(h.parado)
+    ].join('|');
+}
+
+export function claveCargaExacta(c) {
+    const txt = (v) => String(v == null ? '' : v).trim().toUpperCase();
+    const cent = (v) => Math.round((parseFloat(v) || 0) * 100);
+    return [
+        txt(c.interno_key || c.interno),
+        c.fecha || '',
+        Math.round((parseFloat(c.litros) || 0) * 10),
+        cent(c.importe),
+        cent(c.precio_unitario),
+        txt(c.combustible),
+        txt(c.lugar_carga),
+        txt(c.centro_costo),
+        txt(c.chofer)
+    ].join('|');
 }
