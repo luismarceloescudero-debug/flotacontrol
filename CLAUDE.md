@@ -35,6 +35,34 @@ at the top of `api/chat.js` — `APP_SHARED_SECRET` must exactly match `APP_SECR
 
 No automated tests exist in this repo.
 
+### Verifying a change (there is no test suite, so this is the substitute)
+
+Syntax-check an edited module without a bundler:
+
+```bash
+node --input-type=module --check < js/data/analyzer.js
+```
+
+Real spreadsheets to test against live **outside the repo**, in `../../ARCHIVOS/` (the folder
+next to `flotacontrol-repo/`): the four core files plus several monthly `Resumen de Flota` and
+a consolidated `Resumen de Flota Ene-Jul`. They are gitignored by pattern (`Cargas_Combustible_*.xlsx`,
+`Equipos HSV*.xlsx`, `Resumen de Flota*.xlsx`, `Consumos Estimados*.xlsx`) so they can be copied
+into the served directory temporarily without any risk of committing fleet data — but delete the
+copy when done.
+
+Anything touching consumption math must be verified against those files, not reasoned about:
+a wrong formula still runs and still prints a plausible number. Load them, then read the result
+out of `window.ultimoAnalisis` (published by `renderPanel`) — `.totales` for fleet figures and
+`.filas[].metrics` for per-equipment ones — and check that the card's displayed formula divides
+to the consumption it shows next to it.
+
+**Browser module cache will lie to you.** `python -m http.server` sends no `Cache-Control`, and
+the browser keeps ES modules from a previous run of the same origin, so edits appear to have no
+effect and you end up debugging code that isn't running. Confirm what's actually loaded
+(`import('/js/data/analyzer.js?probe=' + Date.now())` and check for your new export), and if it's
+stale, **serve on a different port** — a new origin gets a fresh module cache and a fresh, empty
+IndexedDB, which also makes the import path a clean test.
+
 ## Architecture
 
 ### Data pipeline: 4 spreadsheets → one merged model
@@ -70,6 +98,11 @@ The `TIPO` column in the Equipos spreadsheet is not trustworthy (tractors are la
    rows. Handles Excel's fraction-of-day hour encoding, several date formats, and columns
    that repeat (e.g. `TIPO` appears twice in the Equipos sheet — auto-renamed to `TIPO_2`).
 2. `js/data/normalizer.js` — key normalization, denomination lookup, duration/meta parsing.
+   The GPS export writes time in **two different formats depending on the report's span**:
+   monthly files give an Excel fraction of a day (`0.5` = 12 h), while a consolidated
+   multi-month file gives text like `"3 days, 10:53:03"` (= 82.88 h). `parseExcelHours()` /
+   `parseDuration()` handle both; a parser that only splits on `:` silently drops the whole-day
+   part, which is 72 of those 82 hours. Same trap applies to any new time column.
 3. `js/data/database.js` — IndexedDB wrapper. Two conceptually different stores:
    - `equipos` (the "maestro"): one row per equipment, **persists across sessions**, merges
      non-destructively on reimport (a new upload only overwrites fields it actually carries a
@@ -115,6 +148,14 @@ again by accident, so check them when touching consumption math:
    prorated (prorating would invent km nobody measured). The same "all its months or none" rule
    applies in `filtrarPorPeriodo()`, because a multi-month report like "Resumen de Flota
    Ene-Jul" cannot be attributed to a single selected month.
+
+   The trap that made this bug invisible: a record's `periodo` field is only the month of its
+   **start date**, so a Jan–Jul GPS report carries `periodo: '2026-01'` while actually measuring
+   seven months. Grouping or filtering by `r.periodo` therefore counts it as January, and its
+   seven months of hours end up divided by one month of charges. Use `mesesDeRegistro(r)`
+   (analyzer.js) — which expands `fecha`..`fecha_hasta` into every month covered — anywhere you
+   attribute a record to a month; `periodo` alone is only safe for charges, which are
+   point-in-time.
 
 2. **One definition per concept.** Coverage lives only in `coberturaEquipo()` (distinct days
    with a charge ÷ business days of the analyzed period) and is used by the card, the detail
@@ -183,9 +224,24 @@ convention when adding a new store.
 actually been done and what's genuinely still pending — read it before assuming a documented
 problem is real, and add to it (rather than the older docs) when you fix something non-trivial.
 
-## Deployment
+## Deployment — and why `git commit` is not a local-only action here
 
 Vercel, connected to this GitHub repo (Git integration — pushing to `main` deploys
 automatically, no `vercel.json` needed). GitHub Pages will not work: it can't run `api/chat.js`.
 Required env vars in Vercel: `ANTHROPIC_API_KEY`, `APP_SHARED_SECRET`; optional:
 `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_WEB_SEARCHES`.
+
+**There is a `post-commit` hook installed in `.git/hooks/` that auto-pushes to `origin main`
+after every successful commit** (and runs `git gc --auto`, logging to
+`.git/post-commit-sync.log`). Combined with the Vercel Git integration, that makes any commit on
+`main` a production deploy: commit → push → deploy, with no further confirmation. Two
+consequences worth internalizing:
+
+- `git push` reporting "Everything up-to-date" right after you commit does **not** mean the push
+  failed — the hook already did it. Verify with `git ls-remote origin refs/heads/main` (asks the
+  server) rather than trusting the local ref.
+- Don't commit half-finished work "just to save it". There is no staging environment between
+  the commit and the live app.
+
+The hook never force-pushes and leaves the commit intact if the push is rejected; it only warns
+in its log. Remove it by deleting `.git/hooks/post-commit`.
