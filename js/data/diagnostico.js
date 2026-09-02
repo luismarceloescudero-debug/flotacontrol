@@ -12,6 +12,13 @@
 import { getPrefijo, clasificarIdentificador, MESES, normalizeEquipoKey, TIPO_POR_PREFIJO, provinciaDeCentroCosto } from './normalizer.js';
 import { diasHabiles, esDiaHabil } from './feriados.js';
 
+// `hallazgo.detalle` se renderiza como HTML crudo en panel.js (para poder llevar <strong>
+// intencional alrededor de los números) — cualquier texto libre del Excel (combustible,
+// centro de costo, etc.) que se interpole ahí adentro tiene que pasar por esc() primero,
+// igual que en el resto de la app, o un valor con HTML/JS en una celda se ejecutaría al
+// mostrarse en el panel.
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
 const TOLERANCIA = 0.15;
 const META_ALTA = 2.5;
 const META_BAJA = 0.4;
@@ -1803,7 +1810,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             titulo: `${cal.sinValor.length} cargas sin valorizar: ${fmt(litros)} L cargados con precio o costo en cero`,
             detalle: `El combustible salió del surtidor pero la planilla lo registra con <strong>precio unitario o costo total en cero</strong>. No es que hayan sido gratis: falta el dato. Todo lo que la app muestra en pesos — el gasto del período, el costo del sobreconsumo, el ahorro — está subestimado en esa cantidad hasta que se completen. ${meses.length ? `Se concentran en ${meses.join(', ')}.` : ''}` +
                 (causaRaiz
-                    ? ` <strong>Y ya sabemos por qué:</strong> las ${cal.sinValor.length} están escritas <strong>"${causaRaiz.forma}"</strong> mientras que el resto de la flota usa <strong>"${causaRaiz.mayoritaria}"</strong>. El nombre no coincide con la tabla de precios del sistema que emite la planilla, así que el precio vuelve en cero. No es un olvido: es una diferencia de escritura. Corregir el nombre en el origen completa los precios solo.`
+                    ? ` <strong>Y ya sabemos por qué:</strong> las ${cal.sinValor.length} están escritas <strong>"${esc(causaRaiz.forma)}"</strong> mientras que el resto de la flota usa <strong>"${esc(causaRaiz.mayoritaria)}"</strong>. El nombre no coincide con la tabla de precios del sistema que emite la planilla, así que el precio vuelve en cero. No es un olvido: es una diferencia de escritura. Corregir el nombre en el origen completa los precios solo.`
                     : '') +
                 (() => {
                     const fl = cal.sinValor.map(c => c.fila_excel).filter(Boolean);
@@ -1828,7 +1835,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         if (cal.duplicadosExactos.length) partes.push(`${cal.duplicadosExactos.length} carga${cal.duplicadosExactos.length === 1 ? '' : 's'} duplicada${cal.duplicadosExactos.length === 1 ? '' : 's'} exacta${cal.duplicadosExactos.length === 1 ? '' : 's'}`);
         if (cal.duplicadosPosibles.length) partes.push(`${cal.duplicadosPosibles.length} posible${cal.duplicadosPosibles.length === 1 ? '' : 's'} repetida${cal.duplicadosPosibles.length === 1 ? '' : 's'} a revisar`);
         const ejemplos = cal.variantes.map(v =>
-            `<strong>${v.formas.map(([f, n]) => `"${f}" (${n})`).join(' y ')}</strong>`).join('; ');
+            `<strong>${v.formas.map(([f, n]) => `"${esc(f)}" (${n})`).join(' y ')}</strong>`).join('; ');
         hallazgos.push({
             id: 'calidad_planilla', severidad: 'media', icono: 'fa-spell-check',
             no_comparar: true,
@@ -1904,7 +1911,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
         const sinCC = noFlotaConCargas.filter(f => !f.equipo.centro_costo).length;
         const resumenCC = Object.entries(porCC).sort((a, b) => b[1] - a[1])
-            .map(([cc, v]) => `${cc}: $${fmt(v)}`).join(' · ');
+            .map(([cc, v]) => `${esc(cc)}: $${fmt(v)}`).join(' · ');
         hallazgos.push({
             id: 'no_flota_alta', severidad: sinCC ? 'baja' : 'ok', icono: 'fa-boxes-stacked',
             no_comparar: true,
