@@ -43,7 +43,12 @@ const crypto = require('crypto');
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_MODEL = 'claude-sonnet-5';
-const MAX_TOKENS = 1536;
+// Subido de 1536 a 3072 (2026-08-27): al pedirle que investigue/ajuste varios equipos a
+// la vez (ej. 10 equipos con metas desactualizadas), la respuesta final que sintetiza todo
+// se quedaba sin presupuesto de tokens antes de terminar de escribir texto — el modelo
+// SÍ había hecho el trabajo, pero el cliente mostraba "no devolvió una respuesta" porque
+// no le alcanzaba para redactar la conclusión.
+const MAX_TOKENS = 3072;
 
 // Límites simples para no dejar pasar payloads gigantes/abusivos del cliente
 const MAX_CONTEXT_CHARS = 8000;

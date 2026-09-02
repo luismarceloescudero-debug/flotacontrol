@@ -29,7 +29,12 @@ import { APP_SECRET_HEADER, APP_SECRET_VALUE } from '../config/appSecret.js';
 
 const API_ENDPOINT = '/api/chat';
 const MAX_TURNS = 16; // mensajes (usuario+asistente, incluye idas y vueltas de tools) en memoria
-const MAX_TOOL_ROUNDS = 4; // tope de vueltas tool_use/tool_result por mensaje del usuario, para no loopear sin fin
+// Subido de 4 a 8 (2026-08-27): un pedido que toca varios equipos a la vez (ej. "investigar
+// y ajustar metas" sobre 10 equipos) necesita una ronda de tool_use por cada consulta de
+// detalle, y con 4 se cortaba a mitad de camino sin llegar nunca a la respuesta final —
+// el usuario veía "el asistente no devolvió una respuesta de texto" aunque en realidad
+// estaba a mitad de investigar, no roto.
+const MAX_TOOL_ROUNDS = 8; // tope de vueltas tool_use/tool_result por mensaje del usuario, para no loopear sin fin
 
 // Historial de la conversación en memoria. Cada item es { role, content } donde `content`
 // puede ser un string (turno de texto simple) o un array de bloques (tool_use/tool_result/
@@ -76,6 +81,7 @@ export function initAIChat() {
         input.disabled = true;
 
         let renderedAny = false;
+        let lastStopReason = null; // para poder explicar POR QUÉ no hubo texto, no solo que no lo hubo
 
         try {
             const context = await buildContextSummary();
@@ -101,6 +107,7 @@ export function initAIChat() {
                 const content = Array.isArray(data.content) ? data.content : [];
                 conversation.push({ role: 'assistant', content });
                 conversation = conversation.slice(-MAX_TURNS);
+                lastStopReason = data.stopReason || null;
 
                 const textHtml = renderContentBlocks(content);
                 if (textHtml) {
@@ -144,7 +151,18 @@ export function initAIChat() {
             }
 
             if (!renderedAny) {
-                setStatus(status, '(El asistente no devolvió una respuesta de texto.)');
+                // Antes esto era un mensaje mudo ("no devolvió una respuesta de texto") sin decir
+                // por qué, que para el usuario era indistinguible de "está roto". Casi siempre es
+                // una de estas dos cosas puntuales, no una falla general del asistente:
+                let motivo;
+                if (round >= MAX_TOOL_ROUNDS) {
+                    motivo = `necesité más pasos de los permitidos (${MAX_TOOL_ROUNDS}) para juntar todos los datos — probá pidiendo un equipo o un grupo más chico a la vez`;
+                } else if (lastStopReason === 'max_tokens') {
+                    motivo = 'la respuesta se cortó por longitud antes de terminar — probá pidiendo algo más acotado';
+                } else {
+                    motivo = `no llegó a generar una respuesta esta vez (motivo interno: ${lastStopReason || 'desconocido'}) — probá reformular el pedido`;
+                }
+                setStatus(status, `<i class="fa-solid fa-circle-info"></i> No pude terminar de responder: ${escapeHtml(motivo)}.`);
             }
         } catch (e) {
             console.error('Error en el chat IA:', e);
