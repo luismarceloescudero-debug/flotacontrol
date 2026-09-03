@@ -32,7 +32,11 @@ const DB_NAME = 'FlotaControlDB';
 // v9: registro de prefijos "fuera de flota" oficializados (ej. CA = CALDERA, LM = LIMPIEZA):
 // códigos que no son equipos con km/horas pero sí gasto real, dados de alta a propósito desde
 // el hallazgo "códigos nuevos de Mendoza" para que dejen de figurar como consumo sin identificar.
-const DB_VERSION = 11;
+// v12: acciones que el diagnóstico aplicó solo (dar de alta un interno nuevo, aceptar un código
+// que no se puede resolver más, alinear una meta vacía al consumo real la primera vez) — ver
+// js/data/autocorreccion.js. No pide permiso antes de aplicar, pero queda registrado para que
+// se pueda revisar y deshacer.
+const DB_VERSION = 12;
 
 let dbInstance = null;
 
@@ -120,6 +124,12 @@ export function initDB() {
             if (!db.objectStoreNames.contains('actividadEstimada')) {
                 const s = db.createObjectStore('actividadEstimada', { keyPath: 'id' });
                 s.createIndex('interno', 'interno', { unique: false });
+            }
+            // v12 — ver comentario junto a DB_VERSION.
+            if (!db.objectStoreNames.contains('accionesAutomaticas')) {
+                const s = db.createObjectStore('accionesAutomaticas', { keyPath: 'id', autoIncrement: true });
+                s.createIndex('codigo', 'codigo', { unique: false });
+                s.createIndex('revisado', 'revisado', { unique: false });
             }
         };
     });
@@ -686,6 +696,31 @@ export function quitarNoFlotaAceptado(codigo) {
     return writeTx(['noFlotaAceptados'], ([store]) => { store.delete(codigo); });
 }
 
+// ============================ ACCIONES AUTOMÁTICAS (para revisión) ============================
+
+/**
+ * Registro de una corrección que aplicó sola el diagnóstico automático (ver
+ * js/data/autocorreccion.js): dar de alta un interno nuevo, aceptar un código que no se puede
+ * resolver más, o alinear una meta vacía al consumo real. No pide permiso antes — eso volvería
+ * todo manual otra vez — pero queda anotado con motivo y fecha para poder revisarlo y, si hace
+ * falta, deshacerlo. `revisado` empieza en `false`; se pone en `true` cuando alguien lo mira
+ * desde el panel de revisión (no hace falta deshacerlo para marcarlo como visto).
+ * { id, tipo: 'alta_interno'|'aceptado_no_flota'|'meta_alineada', codigo, motivo, detalle,
+ *   fecha, revisado }
+ */
+export function registrarAccionAutomatica({ tipo, codigo, motivo, detalle = '' }) {
+    return writeTx(['accionesAutomaticas'], ([store]) => {
+        store.add({ tipo, codigo, motivo, detalle, fecha: new Date().toISOString(), revisado: false });
+    });
+}
+export function getAccionesAutomaticas() { return readAll('accionesAutomaticas'); }
+export function marcarAccionRevisada(id) {
+    return writeTx(['accionesAutomaticas'], ([store]) => {
+        const req = store.get(id);
+        req.onsuccess = () => { const rec = req.result; if (rec) store.put({ ...rec, revisado: true }); };
+    });
+}
+
 // ============================ EQUIPOS APARTADOS DEL ANÁLISIS ============================
 
 /**
@@ -810,7 +845,7 @@ export function clearAllData() {
     return writeTx(
         ['equipos', 'raw_records', 'files_meta', 'estimados', 'precios', 'mapeos', 'config',
          'correccionesCargas', 'disponibilidad', 'edicionesLog', 'ralentiEstados', 'reclamosGPS', 'noFlotaAceptados',
-         'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos', 'actividadEstimada'],
+         'equiposExcluidos', 'prefijosNoFlota', 'seguimientoEquipos', 'actividadEstimada', 'accionesAutomaticas'],
         (stores) => { stores.forEach(s => s.clear()); }
     );
 }

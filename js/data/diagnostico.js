@@ -1300,6 +1300,33 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     const periodo = { desde: totales.periodo_desde, hasta: totales.periodo_hasta };
     const conExceso = activos.map(f => ({ fila: f, exceso: calcularExceso(f), conf: confiabilidad(f, periodo) })).filter(x => x.exceso);
 
+    // ---------- 0. Correcciones que se aplicaron solas ----------
+    // No es un problema a resolver — ya está resuelto. Es el aviso de qué se decidió sin
+    // preguntar, para que quede a la vista y se pueda deshacer si hace falta (ver
+    // autocorreccion.js). Deshacer cada tipo usa el modal que ya existe para eso: un interno
+    // dado de alta se edita/borra desde Base de Datos; un código aceptado se destilda desde
+    // "Códigos válidos así"; una meta alineada se pisa desde "Ajustar metas" o reimportando
+    // Consumos Estimados con el valor real de fábrica.
+    const accionesRecientes = (extra.accionesRecientes || []).filter(a => !a.revisado);
+    if (accionesRecientes.length) {
+        const porTipo = { alta_interno: [], aceptado_no_flota: [], meta_alineada: [] };
+        accionesRecientes.forEach(a => { (porTipo[a.tipo] || (porTipo[a.tipo] = [])).push(a); });
+        const partes = [];
+        if (porTipo.alta_interno.length) partes.push(`${porTipo.alta_interno.length} equipo${porTipo.alta_interno.length === 1 ? '' : 's'} nuevo${porTipo.alta_interno.length === 1 ? '' : 's'} dado${porTipo.alta_interno.length === 1 ? '' : 's'} de alta`);
+        if (porTipo.aceptado_no_flota.length) partes.push(`${porTipo.aceptado_no_flota.length} código${porTipo.aceptado_no_flota.length === 1 ? '' : 's'} sin identificar aceptado${porTipo.aceptado_no_flota.length === 1 ? '' : 's'} como "así está bien"`);
+        if (porTipo.meta_alineada.length) partes.push(`${porTipo.meta_alineada.length} meta${porTipo.meta_alineada.length === 1 ? '' : 's'} alineada${porTipo.meta_alineada.length === 1 ? '' : 's'} al consumo real`);
+        hallazgos.push({
+            id: 'acciones_automaticas', severidad: 'baja', icono: 'fa-robot', no_comparar: true,
+            titulo: `${accionesRecientes.length} corrección${accionesRecientes.length === 1 ? '' : 'es'} se aplicó sola: ${partes.join(', ')}`,
+            detalle: `El diagnóstico automático resuelve solo lo que no tiene ambigüedad — nunca adivina, solo actúa donde el siguiente paso es el único posible. <strong>Equipo nuevo dado de alta:</strong> el código tenía forma de interno válida y no existía en el maestro. <strong>Aceptado "así está bien":</strong> el código no tiene forma de interno ni de patente, no hay más dato para resolverlo. <strong>Meta alineada:</strong> el equipo no tenía meta cargada, se usó su propio consumo real medido — se pisa sola en cuanto llegue el valor de fábrica real. Para deshacer cualquiera de estas: un alta se corrige desde Base de Datos, un código aceptado se destilda desde "Códigos válidos así", una meta se reemplaza desde "Ajustar metas".`,
+            equipos: accionesRecientes.slice(0, 15).map(a => ({
+                interno: a.codigo, denominacion: '',
+                texto: a.tipo === 'alta_interno' ? 'equipo nuevo' : a.tipo === 'meta_alineada' ? 'meta alineada' : 'aceptado',
+                sub: `${a.motivo} ${a.detalle ? '· ' + a.detalle : ''} · ${new Date(a.fecha).toLocaleDateString('es-AR')}`
+            }))
+        });
+    }
+
     // ---------- 1. Sobreconsumo valorizado ----------
     const excedidos = conExceso
         .filter(x => x.fila.metrics.desvio_pct > TOLERANCIA * 100 && x.exceso.exceso_litros > 0)

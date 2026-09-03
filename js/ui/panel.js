@@ -4,10 +4,11 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord } from '../data/database.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
 import { generarDiagnostico, cruzarIgnicion, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
+import { aplicarCorreccionesAutomaticas } from '../data/autocorreccion.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
@@ -47,6 +48,15 @@ let prefijosIgnoradosCache = [];
 // Grupos de variantes de texto ("Unificar variantes") marcados como "son distintos, no juntar"
 // — también solo de sesión, por el mismo motivo. Clave: "campo|claveNormalizada".
 const variantesIgnoradasCache = new Set();
+// Correcciones que aplicó solo el diagnóstico automático (ver autocorreccion.js), para el
+// hallazgo "se aplicó sola" — acotado a los últimos 14 días para que no quede como una alerta
+// permanente mucho después de que alguien ya la vio.
+let accionesAutomaticasCache = [];
+const RECIENTE_DIAS = 14;
+function accionesRecientes() {
+    const corte = Date.now() - RECIENTE_DIAS * 24 * 60 * 60 * 1000;
+    return accionesAutomaticasCache.filter(a => new Date(a.fecha).getTime() >= corte);
+}
 
 // "Estado del equipo": mismo store persistente que usa Base de Datos / Consumo Real
 // (seguimientoEquipos) para anotar por qué un equipo tiene poca base o datos raros, sin
@@ -68,7 +78,7 @@ const CATEGORIA_SEGUIMIENTO_LABEL = Object.fromEntries(CATEGORIAS_SEGUIMIENTO.ma
 
 /** El 7° parámetro opcional de generarDiagnostico(): siempre las mismas cachés de sesión. */
 function extraDiag() {
-    return { prefijosOficiales: prefijosOficialesCache, prefijosIgnorados: prefijosIgnoradosCache };
+    return { prefijosOficiales: prefijosOficialesCache, prefijosIgnorados: prefijosIgnoradosCache, accionesRecientes: accionesRecientes() };
 }
 
 // Equipos marcados para comparar desde las tarjetas (checkbox en cada card + barra flotante),
@@ -278,8 +288,8 @@ export async function renderPanel() {
     kpiEl.innerHTML = '<p style="color:var(--text-muted)">Analizando datos...</p>';
 
     try {
-        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos, actividadEstimada] = await Promise.all([
-            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos(), getActividadEstimada()
+        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos, actividadEstimada, accionesAutomaticas] = await Promise.all([
+            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos(), getActividadEstimada(), getAccionesAutomaticas()
         ]);
         datosCrudos = { equipos, rawRecords, estimados };
         ralentiEstadosCache = ralentiEstados;
@@ -289,6 +299,7 @@ export async function renderPanel() {
         seguimientoEquiposCache = new Map(seguimientoEquipos.map(s => [s.interno, s]));
         actividadEstimadaCache = actividadEstimada;
         window.actividadEstimadaCache = actividadEstimada;
+        accionesAutomaticasCache = accionesAutomaticas;
 
         const fuentes = {
             equipos: equipos.length,
@@ -312,10 +323,28 @@ export async function renderPanel() {
         poblarFiltrosPeriodo(rawRecords);
 
         limpiarCalculos();
-        ultimoAnalisis = analizarFlota({
-            equipos, rawRecords, estimados,
-            filtro: { anio: view.anio || null, periodos: [...view.meses] }
+        const filtroActivo = { anio: view.anio || null, periodos: [...view.meses] };
+        ultimoAnalisis = analizarFlota({ equipos, rawRecords, estimados, filtro: filtroActivo });
+
+        // Diagnóstico automático que se resuelve solo (ver autocorreccion.js): dar de alta un
+        // interno nuevo, aceptar un código no identificable, alinear una meta vacía al consumo
+        // real la primera vez. Si aplicó algo, el maestro cambió — se vuelve a analizar con los
+        // datos frescos antes de mostrar nada, para no pintar un huérfano que ya se resolvió
+        // hace un instante.
+        const codigosAceptadosSet = new Set(noFlotaAceptados.map(n => n.codigo));
+        const aplicado = await aplicarCorreccionesAutomaticas({
+            equipos, huerfanos: ultimoAnalisis.totales.huerfanos, filas: ultimoAnalisis.filas,
+            codigosAceptados: codigosAceptadosSet
         });
+        if (aplicado.altas || aplicado.aceptados || aplicado.metas) {
+            const [equiposFrescos, noFlotaFrescos, accionesFrescas] = await Promise.all([getAllEquipos(), getNoFlotaAceptados(), getAccionesAutomaticas()]);
+            datosCrudos = { equipos: equiposFrescos, rawRecords, estimados };
+            noFlotaAceptadosCache = noFlotaFrescos;
+            accionesAutomaticasCache = accionesFrescas;
+            ultimoAnalisis = analizarFlota({ equipos: equiposFrescos, rawRecords, estimados, filtro: filtroActivo });
+            fuentes.equipos = equiposFrescos.length;
+        }
+
         // Exponer para que datatable.js pueda abrir el modal de metas sin importar directamente
         window.ultimoAnalisis = ultimoAnalisis;
         window.abrirAjusteMetasDesdeTabla = (filtro) => abrirAjusteMetas(ultimoAnalisis, filtro);
@@ -1459,6 +1488,11 @@ async function abrirReclamosGPS() {
                     <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <div class="modal-body">
+                    ${reclamos.filter(r => r.estado === 'abierto').length > 1 ? `
+                    <div class="modal-note" style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:0.75rem">
+                        <span>Los ${reclamos.filter(r => r.estado === 'abierto').length} reclamos abiertos se pueden mandar juntos, agrupados por motivo (ralentí, camionetas, etc.), en un solo mail.</span>
+                        <button class="btn-primary btn-sm btn-reclamo-consolidado" style="white-space:nowrap"><i class="fa-solid fa-layer-group"></i> Mail único con todos los abiertos</button>
+                    </div>` : ''}
                     ${reclamos.length ? `
                     <table class="data-table">
                         <thead><tr><th>Equipo</th><th>Motivo</th><th>Fecha</th><th>Estado</th><th></th></tr></thead>

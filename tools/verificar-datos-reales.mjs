@@ -43,10 +43,11 @@ globalThis.FileReader = FileReaderShim;
 const { parseXLSX } = await import('../js/parsers/xlsx-parser.js');
 const {
     initDB, getAllEquipos, getAllRawRecords, getAllEstimados,
-    getRalentiEstados, getNoFlotaAceptados, getEquiposExcluidos
+    getRalentiEstados, getNoFlotaAceptados, getEquiposExcluidos, getAccionesAutomaticas
 } = await import('../js/data/database.js');
 const { analizarFlota } = await import('../js/data/analyzer.js');
 const { generarDiagnostico, mediana } = await import('../js/data/diagnostico.js');
+const { aplicarCorreccionesAutomaticas } = await import('../js/data/autocorreccion.js');
 
 const ACTUALIZAR = process.argv.includes('--actualizar');
 
@@ -76,12 +77,27 @@ async function main() {
         }
     }
 
-    const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos] = await Promise.all([
+    let [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos] = await Promise.all([
         getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos()
     ]);
 
-    const analisis = analizarFlota({ equipos, rawRecords, estimados, filtro: { anio: null, periodos: [] } });
-    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstados, noFlotaAceptados, equiposExcluidos, {});
+    let analisis = analizarFlota({ equipos, rawRecords, estimados, filtro: { anio: null, periodos: [] } });
+
+    // Diagnóstico automático (autocorreccion.js): mismo paso que hace renderPanel() antes de
+    // mostrar nada — se ejercita acá para que el arnés detecte si alguna vez se onboardea un
+    // interno de más, o se acepta un código que en realidad sí tenía que quedar para revisión
+    // manual (patente real sin interno, que autocorreccion.js nunca debe tocar).
+    const codigosAceptadosSet = new Set(noFlotaAceptados.map(n => n.codigo));
+    const aplicado = await aplicarCorreccionesAutomaticas({
+        equipos, huerfanos: analisis.totales.huerfanos, filas: analisis.filas, codigosAceptados: codigosAceptadosSet
+    });
+    if (aplicado.altas || aplicado.aceptados || aplicado.metas) {
+        [equipos, noFlotaAceptados] = await Promise.all([getAllEquipos(), getNoFlotaAceptados()]);
+        analisis = analizarFlota({ equipos, rawRecords, estimados, filtro: { anio: null, periodos: [] } });
+    }
+    const accionesAutomaticas = await getAccionesAutomaticas();
+
+    const hallazgos = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstados, noFlotaAceptados, equiposExcluidos, { accionesRecientes: accionesAutomaticas });
 
     const cargas = rawRecords.filter(r => r.type === 'carga');
     const gps = rawRecords.filter(r => r.type === 'gps');
@@ -119,7 +135,9 @@ async function main() {
         duplicados_exactos_detectados: dupExactas.length,
         equipos_analizados: analisis.filas.length,
         hallazgos_generados: hallazgos.length,
-        hallazgos_por_id: Object.fromEntries(hallazgos.map(h => [h.id, (hallazgos.filter(x => x.id === h.id).length)]))
+        hallazgos_por_id: Object.fromEntries(hallazgos.map(h => [h.id, (hallazgos.filter(x => x.id === h.id).length)])),
+        autocorreccion: { altas_interno: aplicado.altas, aceptados_no_flota: aplicado.aceptados, metas_alineadas: aplicado.metas },
+        huerfanos_restantes: analisis.totales.huerfanos.length
     };
 
     console.log('\n=== REPORTE DE FUENTES ===');
@@ -133,6 +151,7 @@ async function main() {
     console.log(`Entregas Loop: ${medido.entregas_loop.registros_finales} registros finales · ${medido.entregas_loop.volumen_total_m3.toLocaleString('es-AR')} m³ · ${medido.entregas_loop.remitos_en_conflicto} remitos en conflicto`);
     console.log(`Duplicados exactos detectados y excluidos automáticamente: ${medido.duplicados_exactos_detectados}`);
     console.log(`Diagnóstico: ${medido.equipos_analizados} equipos analizados, ${medido.hallazgos_generados} hallazgos generados`);
+    console.log(`Autocorrección: ${medido.autocorreccion.altas_interno} interno(s) nuevo(s) dado(s) de alta · ${medido.autocorreccion.aceptados_no_flota} código(s) aceptado(s) automáticamente · ${medido.autocorreccion.metas_alineadas} meta(s) alineada(s) al real · ${medido.huerfanos_restantes} huérfanos siguen para revisión manual (patente sin interno)`);
 
     if (ACTUALIZAR || !existsSync(INVARIANTES_PATH)) {
         writeFileSync(INVARIANTES_PATH, JSON.stringify(medido, null, 2) + '\n');
@@ -158,6 +177,10 @@ async function main() {
     checar('volumen total Loop (m³)', medido.entregas_loop.volumen_total_m3, esperado.entregas_loop.volumen_total_m3, 0.1);
     checar('remitos Loop en conflicto', medido.entregas_loop.remitos_en_conflicto, esperado.entregas_loop.remitos_en_conflicto);
     checar('equipos analizados', medido.equipos_analizados, esperado.equipos_analizados);
+    checar('internos dados de alta automáticamente', medido.autocorreccion.altas_interno, esperado.autocorreccion.altas_interno);
+    checar('códigos aceptados automáticamente', medido.autocorreccion.aceptados_no_flota, esperado.autocorreccion.aceptados_no_flota);
+    checar('metas alineadas automáticamente', medido.autocorreccion.metas_alineadas, esperado.autocorreccion.metas_alineadas);
+    checar('huérfanos restantes (patente sin interno)', medido.huerfanos_restantes, esperado.huerfanos_restantes);
 
     if (fallas.length) {
         console.error('\nFALLÓ LA VERIFICACIÓN:');

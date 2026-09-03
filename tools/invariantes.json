@@ -1,5 +1,5 @@
 {
-  "generado": "2026-09-03T18:14:04.529Z",
+  "generado": "2026-09-03T19:12:17.058Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
@@ -80,7 +80,7 @@
       "etiqueta": "Resumen de Flota (GPS)"
     }
   ],
-  "equipos_maestro": 183,
+  "equipos_maestro": 187,
   "cargas": {
     "filas": 4412,
     "litros_totales": 677281,
@@ -93,37 +93,37 @@
       {
         "mes": "2026-01",
         "unidades": 120,
-        "pct": 66
+        "pct": 64
       },
       {
         "mes": "2026-02",
         "unidades": 120,
-        "pct": 66
+        "pct": 64
       },
       {
         "mes": "2026-03",
         "unidades": 120,
-        "pct": 66
+        "pct": 64
       },
       {
         "mes": "2026-04",
         "unidades": 120,
-        "pct": 66
+        "pct": 64
       },
       {
         "mes": "2026-05",
         "unidades": 120,
-        "pct": 66
+        "pct": 64
       },
       {
         "mes": "2026-06",
         "unidades": 120,
-        "pct": 66
+        "pct": 64
       },
       {
         "mes": "2026-07",
         "unidades": 67,
-        "pct": 37
+        "pct": 36
       }
     ]
   },
@@ -134,7 +134,7 @@
     "filas_en_conflicto": 12
   },
   "duplicados_exactos_detectados": 3,
-  "equipos_analizados": 183,
+  "equipos_analizados": 187,
   "hallazgos_generados": 21,
   "hallazgos_por_id": {
     "sobreconsumo": 1,
@@ -144,7 +144,6 @@
     "nofl_vehiculo_sin_interno": 1,
     "subutilizacion": 1,
     "metas": 1,
-    "sin_meta": 1,
     "sin_medicion": 1,
     "datos_parciales": 1,
     "calidad_planilla": 1,
@@ -152,11 +151,18 @@
     "nofl_otros": 1,
     "nofl_planta": 1,
     "prefijos_nuevos": 1,
+    "acciones_automaticas": 1,
     "ralenti_espera": 1,
     "sin_gps_estimado": 1,
     "anomalas": 1,
     "bajo_uso": 1,
     "ahorro": 1,
     "normalizaciones": 1
-  }
+  },
+  "autocorreccion": {
+    "altas_interno": 4,
+    "aceptados_no_flota": 7,
+    "metas_alineadas": 2
+  },
+  "huerfanos_restantes": 18
 }

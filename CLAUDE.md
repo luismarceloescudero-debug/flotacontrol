@@ -146,7 +146,19 @@ The `TIPO` column in the Equipos spreadsheet is not trustworthy (tractors are la
    through this file's local `esc()` first — the literal `<strong>` tags in the template stay
    unescaped, only the interpolated data does. This is the one recurring foot-gun in this file;
    grep for `detalle:` when adding a new finding and check what you're interpolating.
-6. `js/ui/panel.js` (~4400 lines, the largest file) — the unified Panel: fleet KPIs, editable
+6. `js/data/autocorreccion.js` — runs once per `renderPanel()`, right after the first
+   `analizarFlota()` and before anything renders. Applies the diagnostic corrections that have
+   no ambiguity (onboard a charge code shaped like a valid interno that isn't in the maestro
+   yet; accept a code that's neither interno- nor dominio-shaped as non-fleet spend; align an
+   equipment's empty meta to its own measured consumption the first time) directly — no
+   confirmation step — and logs every action to the `accionesAutomaticas` store so it surfaces
+   as a "se aplicó sola" finding (`generarDiagnostico`'s `extra.accionesRecientes`) instead of
+   disappearing silently. If anything was applied, `renderPanel()` re-fetches `equipos` and
+   re-runs `analizarFlota()` before rendering, so the fix is visible immediately, not next
+   reload. The one huérfano case it deliberately never touches: a valid patente with no interno
+   match (`clasificarNoFlota`'s `vehiculo_sin_interno`) — which real equipment that belongs to
+   is a judgment call only a person can make, so it stays queued for manual review.
+7. `js/ui/panel.js` (~4400 lines, the largest file) — the unified Panel: fleet KPIs, editable
    equipment cards, the diagnostic list, filters, period selection, meta-adjustment and
    equipment-comparison modals. `js/ui/datatable.js` (~2000 lines) is the separate
    spreadsheet-like editor/viewer for raw tables (Base de Datos view).
@@ -256,14 +268,17 @@ in `chat.js` before assuming the model is broken.
 field. Each version bump has an inline comment explaining what it added and why; keep that
 convention when adding a new store.
 
-### Historical docs — do not follow as current instructions
+### Changelog
 
-`.agent.md`, `.instructions.md`, `.prompt.md`, `PLAN_ROO_CODE.md`, `ROO_CODE_SETUP.md`,
-`DIAGNOSTICO_NORMALIZACION.md`, and `RESUMEN_EJECUTIVO.md` document a prior repair attempt
-(via Roo Code) and describe several things as "still to fix" that are already fixed.
 **`CORRECCIONES_APLICADAS.md` is the up-to-date changelog and source of truth** for what's
 actually been done and what's genuinely still pending — read it before assuming a documented
-problem is real, and add to it (rather than the older docs) when you fix something non-trivial.
+problem is real, and add to it when you fix something non-trivial.
+
+(`.agent.md`, `.instructions.md`, `.prompt.md`, `PLAN_ROO_CODE.md`, `ROO_CODE_SETUP.md`,
+`DIAGNOSTICO_NORMALIZACION.md` and `RESUMEN_EJECUTIVO.md` documented a prior repair attempt via
+Roo Code and described several things as "still to fix" that were already fixed by the time
+anyone read them again — removed 03/09/2026, their content is superseded by this file and by
+git history if it's ever needed.)
 
 ## Deployment — and why `git commit` is not a local-only action here
 

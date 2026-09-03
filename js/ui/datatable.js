@@ -801,7 +801,7 @@ async function renderMovimientos(tipo) {
         : esDuplicadoCargas
         ? '⚠ <strong>Esta planilla tiene forma de carga de combustible</strong> (litros + tipo de combustible) pero no es el formato oficial de "Cargas de Combustible" (le falta "Lugar de carga") — probablemente sea el mismo gasto exportado desde otro sistema (ej. el reporte propio de una estación de servicio). <strong>No se usa para calcular el consumo real</strong>, para no contar dos veces las mismas cargas. Si en realidad trae cargas que Cargas de Combustible NO tiene, avisá para sumarlas a mano en vez de dejarlas acá sin usar.'
         : esResumenDerivable
-        ? 'ℹ️ Esto es un <strong>resumen ya calculado</strong> a partir de las mismas entregas que están en "Entregas (Loop)" — sumando el Volumen de cada equipo por mes se llega a los mismos números. No aporta datos nuevos: se conserva por si querés mirarlo, pero no hace falta volver a subirlo cada vez.'
+        ? 'ℹ️ Esto es un <strong>control de totales</strong>, no una fuente nueva: Loop lo calcula a partir de las mismas entregas que están en "Entregas (Loop)". Verificado contra datos reales: coincide exacto los meses que tienen el detalle completo, pero puede venir <strong>por encima</strong> del detalle en un mes donde el export de "Informe Entregas" quedó incompleto — cuando eso pase, la diferencia es la pista de que faltan entregas por cargar, no un error de la app. Comparalo con la suma de "Entregas (Loop)" del mismo período antes de descartar la diferencia.'
         : esEntregas
         ? `Entregas de Loop, cruzadas por N° de Remito entre "Informe Entregas" y "Exportado informe de Viajes": si dos filas del mismo remito y equipo coincidían en todo, quedaron fusionadas en una sola.${conConflicto ? ` <strong style="color:var(--accent-red,#ff453a)">⚠ ${conConflicto} filas marcadas en rojo tienen el mismo remito con datos que NO coinciden</strong> — se guardaron las dos, sin adivinar cuál es la correcta: hay que decidir contra el comprobante.` : ' No se encontraron remitos con datos contradictorios entre las dos fuentes.'}`
         : 'Registro histórico. Se muestra <strong>interno + dominio</strong> de cada fila: es la llave con la que se cruza contra el maestro. Cualquier celda se puede corregir haciendo click encima.';
@@ -885,16 +885,16 @@ async function renderMovimientos(tipo) {
             .map(c => ({ k: `datos.${c}`, label: c }));
     }
     cols.forEach(c => { if (overrides[c.k]) c.label = overrides[c.k]; });
-    columnasVisibles = ['Interno', 'Dominio', ...cols.map(c => c.label)];
+    columnasVisibles = ['Equipo', ...cols.map(c => c.label)];
 
     // Solo fecha/fecha_hasta y las columnas derivadas del GPS (_ralenti/_movimiento/_total,
     // calculadas a partir de r.horas, no un campo propio) quedan afuera de la edición directa.
     const noEditable = new Set(['_ralenti', '_movimiento', '_total', 'fuentes']);
 
-    const colspan = cols.length + 2 + (esCarga ? 2 : 0);
+    const colspan = cols.length + 1 + (esCarga ? 2 : 0);
     document.getElementById('table-header').innerHTML =
         (esCarga ? '<th class="th-sel"><input type="checkbox" id="th-sel-mov-all" title="Seleccionar todos"></th>' : '') +
-        '<th>Interno</th><th>Dominio</th>' +
+        '<th title="Común denominador entre planillas: interno+dominio cuando la fila trae los dos, o el que tenga">Equipo</th>' +
         cols.map(c => `<th>${esc(c.label)}${noEditable.has(c.k) ? '' : `
             <button class="th-rename-mov" data-tipo="${esc(tipo)}" data-col="${esc(c.k)}" data-label="${esc(c.label)}" title="Renombrar columna"><i class="fa-solid fa-pen"></i></button>`}</th>`).join('') +
         (esCarga ? '<th class="th-acciones"></th>' : '');
@@ -926,8 +926,10 @@ async function renderMovimientos(tipo) {
 
         return `<tr${rowClass ? ` class="${rowClass}"` : ''}${dataAttrs}>
             ${selTd}
-            <td class="cell-key">${esc(r.interno || '—')}</td>
-            <td class="cell-dom">${esc(r.dominio || '—')}</td>
+            <td class="cell-key">${
+                r.interno && r.dominio ? `${esc(r.interno)} <span class="cell-dom">${esc(r.dominio)}</span>`
+                : esc(r.interno || r.dominio || '—')
+            }</td>
             ${cols.map(c => {
                 let v;
                 if (c.k === '_ralenti') v = nf(h.ralenti, 1);

@@ -560,3 +560,77 @@ esperados cuando el cambio de número es intencional. Sale con código ≠ 0 si 
    el overlay del equipo y la tabla de comparación de estimaciones, siempre con la fórmula
    (`N días hábiles × X-Y hs/día`) visible junto al número — ningún resultado nuevo se agregó
    sin sus pasos de cálculo a la vista.
+
+## 03/09/2026, segunda tanda — diagnóstico que se aplica solo, y un bug propio encontrado antes de commitear
+
+1. **Nuevo: diagnóstico automático que aplica directamente lo que no tiene ambigüedad**
+   (`js/data/autocorreccion.js`, corre en cada `renderPanel()` antes de mostrar nada). Dos
+   categorías:
+   - **Cargas huérfanas** (código sin fila en el maestro): si el código tiene forma de interno
+     válida y la app sabe calcularle algo (su prefijo está en `RULE_L_100KM`, `RULE_L_HORA` o
+     `RULE_NO_TANK` de analyzer.js), se da de alta como equipo nuevo directamente. Si no tiene
+     forma de interno ni de patente (no hay más dato para resolverlo), se acepta como "así está
+     bien" automáticamente. El caso ambiguo —una patente real sin interno en el padrón, que
+     necesita que alguien identifique a mano de qué equipo se trata— se deja sin tocar, para
+     revisión manual, igual que antes.
+   - **Metas vacías**: un equipo sin meta cargada pero con consumo real medible y confiable
+     (`metaDesdeConsumoReal().confiable`) se alinea a su propio consumo real la primera vez. No
+     queda marcada `editado_manual`, a propósito: si más adelante se importa el valor real de
+     fábrica en "Consumos Estimados", tiene que poder pisar esta alineación sin que nadie
+     destilde nada primero.
+
+   Cada acción queda anotada en el nuevo store `accionesAutomaticas` (IndexedDB v11 → v12) y
+   aparece como hallazgo informativo "se aplicó sola" (severidad baja, con motivo y fecha) en
+   vez de desaparecer en silencio — es la forma de "poner para revisión" sin construir una cola
+   de aprobación previa, que hubiera vuelto todo manual otra vez.
+
+2. **Bug propio, encontrado antes de commitear por la misma disciplina de verificar contra datos
+   reales**: la primera versión de la regla de alta automática daba de alta *cualquier* código
+   con forma de interno válida, sin mirar si la app sabe calcularle algo. Corriendo el arnés
+   contra los datos reales y revisando la lista completa (no solo el conteo), aparecieron
+   `CA01`, `CL03`, `LM01`, `LM02`, `GR01`, `MT03`, `MT04` dados de alta como "equipos nuevos".
+   Cuatro de esos son legítimos (`CL03`, `MT03`, `MT04` = CALOVENTOR/MOTOCOMPRESOR, tienen regla
+   L/Hora igual que un grupo electrógeno; `CF40` = CARGADORA FRONTAL). Pero `CA01` (CALDERA) y
+   `LM01`/`LM02` (LIMPIEZA) están en `TIPO_POR_PREFIJO` —tienen nombre, son gasto real— y en
+   NINGUNA regla de cálculo: el comentario de la propia v9 de `database.js` ya los nombra como
+   "prefijos fuera de flota" (`CA = CALDERA, LM = LIMPIEZA`). Darlos de alta como equipo rodante
+   los dejaba con `tipo_calculo` sin resolver — una tarjeta rota — en vez de la clasificación
+   como gasto de planta que `clasificarNoFlota()` ya les da correctamente. `GR01` ni siquiera
+   está en `TIPO_POR_PREFIJO`: prefijo totalmente desconocido. Corregido: solo se da de alta
+   cuando el prefijo tiene una regla de cálculo real (`PREFIJOS_CALCULABLES` en
+   autocorreccion.js); lo demás queda sin tocar, para revisión manual — el default seguro
+   cuando la app no está segura, en vez de adivinar. Verificado de nuevo tras el fix: 4 altas
+   (antes 8), y `CA01`/`LM01`/`LM02`/`GR01` quedan correctamente afuera.
+
+3. **Bug real en el reclamo GPS consolidado: el botón no existía** — `mailtoReclamoConsolidado()`
+   (un solo mail con todos los reclamos abiertos, agrupados por motivo — ralentí, camionetas,
+   etc. — con la evidencia de cada unidad) estaba completamente implementada, con su listener
+   ya cableado (`modal.querySelector('.btn-reclamo-consolidado')`), pero el `<button
+   class="btn-reclamo-consolidado">` nunca se agregó al HTML del modal — el `?.` del listener
+   fallaba en silencio, así que la función existía pero era inalcanzable desde la interfaz.
+   Agregado el botón, visible cuando hay más de un reclamo abierto.
+
+4. **Base de Datos: columnas "Interno" y "Dominio" separadas → una sola columna "Equipo"**.
+   Antes cada fila mostraba las dos columnas siempre, con "—" en la que no aplicaba. Ahora
+   muestra el común denominador: `interno + dominio` cuando la fila trae los dos (ej. "MX96
+   AF809IF"), solo el interno cuando no hay dominio (ej. "CF38"), o solo el dominio cuando no
+   hay interno (ej. "AG546OW").
+
+5. **Dos afirmaciones más que no resistían los datos, corregidas** (mismo patrón que la ronda
+   anterior): el comentario de `xlsx-parser.js` sobre por qué se leen las 3 hojas de "Informe
+   Entregas Loop" ahora dice lo que se midió (Bombeado y Otros son subconjuntos, 0 remitos
+   nuevos) en vez de "dejaba afuera dos tercios de las entregas reales". El cartel de "Volumen
+   por camión" en Base de Datos ya no afirma que sumando el detalle "se llega a los mismos
+   números" (falso: difiere en los meses donde el export de Loop viene incompleto) — ahora
+   explica que es un control de totales y qué hacer cuando no coincide.
+
+## Limpieza de directorio (03/09/2026)
+
+Borrados por no aportar nada al análisis (verificado: cero referencias en el proyecto):
+`js/ui/dashboard.js`, `js/ui/cards.js`, `js/export/exporter.js` (los tres eran reexports/stubs
+obsoletos desde la unificación en `panel.js`, documentada arriba en la ronda del 13/08).
+Borrados también los 7 docs históricos de la reparación vía Roo Code
+(`.agent.md`, `.instructions.md`, `.prompt.md`, `PLAN_ROO_CODE.md`, `ROO_CODE_SETUP.md`,
+`DIAGNOSTICO_NORMALIZACION.md`, `RESUMEN_EJECUTIVO.md`) — su contenido queda superado por este
+archivo y disponible en el historial de git si hace falta. CLAUDE.md actualizado para no
+referenciarlos.

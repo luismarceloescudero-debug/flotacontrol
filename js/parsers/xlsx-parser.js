@@ -56,9 +56,10 @@ async function procesarLibro(data, filename) {
     // Bombeado, Otros: una fila de encabezado igual en cada una). El resto de los formatos se
     // queda con la primera hoja nada más — leer todas a ciegas arriesgaría, por ejemplo, sumar
     // dos veces una fila que Excel repite en dos pestañas de un archivo que no se diseñó para
-    // este cruce. Acá sí hace falta: el mismo remito puede caer en más de una hoja (una entrega
-    // con parte de hormigón y parte de bombeado), y perder Bombeado/Otros en silencio dejaba
-    // afuera dos tercios de las entregas reales.
+    // este cruce. Acá sí hace falta, aunque verificado contra datos reales Bombeado y Otros
+    // resultaron ser subconjuntos exactos de Hormigón (0 remitos nuevos, todo el volumen ya
+    // estaba en la primera hoja): se siguen leyendo las tres por seguridad ante un futuro
+    // export de Loop que sí traiga algo distinto en esas hojas — no porque hoy aporten datos.
     if (det.tipo === 'ENTREGAS_LOOP' && det.formatoEntregas === 'detalle' && workbook.SheetNames.length > 1) {
         filas.forEach(f => { f.__hoja = workbook.SheetNames[0]; });
         for (const nombreHoja of workbook.SheetNames.slice(1)) {
