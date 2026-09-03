@@ -1,0 +1,162 @@
+{
+  "generado": "2026-09-03T18:14:04.529Z",
+  "archivos": [
+    {
+      "archivo": "Cargas_Combustible_HSV_2026.xlsx",
+      "tipo": "CARGAS",
+      "filas": 4412,
+      "etiqueta": "Cargas de Combustible"
+    },
+    {
+      "archivo": "Consumos Estimados 2026.xlsx",
+      "tipo": "ESTIMADOS",
+      "filas": 134,
+      "etiqueta": "Consumos Estimados"
+    },
+    {
+      "archivo": "Equipos HSV SJ-MZA 2026.xlsx",
+      "tipo": "EQUIPOS",
+      "filas": 183,
+      "etiqueta": "Equipos"
+    },
+    {
+      "archivo": "Exportado informe de Viajes - Loop Ene-Jun 2026.xlsx",
+      "tipo": "ENTREGAS_LOOP",
+      "filas": 4893,
+      "etiqueta": "Entregas (Loop)"
+    },
+    {
+      "archivo": "Informe Entregas Loop ene-Jul 2026.xlsx",
+      "tipo": "ENTREGAS_LOOP",
+      "filas": 2144,
+      "etiqueta": "Entregas (Loop)"
+    },
+    {
+      "archivo": "Informe Volumen entregado por camión Loop Ene-Jul 2026.xlsx",
+      "tipo": "RESUMEN_VOLUMEN_LOOP",
+      "filas": 34,
+      "etiqueta": "Volumen por camión (resumen)"
+    },
+    {
+      "archivo": "Resumen de Flota - 1-1-2026, 0_00 a 31-1-2026, 24_00.xlsx",
+      "tipo": "GPS",
+      "filas": 120,
+      "etiqueta": "Resumen de Flota (GPS)"
+    },
+    {
+      "archivo": "Resumen de Flota - 1-2-2026, 0_00 a 28-2-2026, 24_00.xlsx",
+      "tipo": "GPS",
+      "filas": 120,
+      "etiqueta": "Resumen de Flota (GPS)"
+    },
+    {
+      "archivo": "Resumen de Flota - 1-3-2026, 0_00 a 31-3-2026, 24_00.xlsx",
+      "tipo": "GPS",
+      "filas": 120,
+      "etiqueta": "Resumen de Flota (GPS)"
+    },
+    {
+      "archivo": "Resumen de Flota - 1-4-2026, 0_00 a 30-4-2026, 24_00.xlsx",
+      "tipo": "GPS",
+      "filas": 120,
+      "etiqueta": "Resumen de Flota (GPS)"
+    },
+    {
+      "archivo": "Resumen de Flota - 1-5-2026, 0_00 a 31-5-2026, 24_00.xlsx",
+      "tipo": "GPS",
+      "filas": 120,
+      "etiqueta": "Resumen de Flota (GPS)"
+    },
+    {
+      "archivo": "Resumen de Flota - 1-6-2026, 0_00 a 30-6-2026, 24_00 (1).xlsx",
+      "tipo": "GPS",
+      "filas": 120,
+      "etiqueta": "Resumen de Flota (GPS)"
+    },
+    {
+      "archivo": "Resumen de Flota - 1-7-2026, 0_00 a 31-7-2026, 24_00.xlsx",
+      "tipo": "GPS",
+      "filas": 67,
+      "etiqueta": "Resumen de Flota (GPS)"
+    }
+  ],
+  "equipos_maestro": 183,
+  "cargas": {
+    "filas": 4412,
+    "litros_totales": 677281,
+    "sin_fecha": 0,
+    "sin_litros": 0
+  },
+  "gps": {
+    "filas_equipo_mes": 787,
+    "cobertura_por_mes": [
+      {
+        "mes": "2026-01",
+        "unidades": 120,
+        "pct": 66
+      },
+      {
+        "mes": "2026-02",
+        "unidades": 120,
+        "pct": 66
+      },
+      {
+        "mes": "2026-03",
+        "unidades": 120,
+        "pct": 66
+      },
+      {
+        "mes": "2026-04",
+        "unidades": 120,
+        "pct": 66
+      },
+      {
+        "mes": "2026-05",
+        "unidades": 120,
+        "pct": 66
+      },
+      {
+        "mes": "2026-06",
+        "unidades": 120,
+        "pct": 66
+      },
+      {
+        "mes": "2026-07",
+        "unidades": 67,
+        "pct": 37
+      }
+    ]
+  },
+  "entregas_loop": {
+    "registros_finales": 7037,
+    "volumen_total_m3": 55364.5,
+    "remitos_en_conflicto": 6,
+    "filas_en_conflicto": 12
+  },
+  "duplicados_exactos_detectados": 3,
+  "equipos_analizados": 183,
+  "hallazgos_generados": 21,
+  "hallazgos_por_id": {
+    "sobreconsumo": 1,
+    "meses_sin_gps": 1,
+    "ralenti": 1,
+    "ralenti_camionetas": 1,
+    "nofl_vehiculo_sin_interno": 1,
+    "subutilizacion": 1,
+    "metas": 1,
+    "sin_meta": 1,
+    "sin_medicion": 1,
+    "datos_parciales": 1,
+    "calidad_planilla": 1,
+    "entregas_conflicto_remito": 1,
+    "nofl_otros": 1,
+    "nofl_planta": 1,
+    "prefijos_nuevos": 1,
+    "ralenti_espera": 1,
+    "sin_gps_estimado": 1,
+    "anomalas": 1,
+    "bajo_uso": 1,
+    "ahorro": 1,
+    "normalizaciones": 1
+  }
+}

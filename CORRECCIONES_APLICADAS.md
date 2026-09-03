@@ -519,3 +519,44 @@ para confirmar que nada se rompió.
 7. **Badge "PENDING" en inglés al cargar archivos**: quedó de una ronda anterior que tradujo
    "LISTO"/"ERROR" pero se le pasó por alto "pending". Corregido a "PENDIENTE". Verificado en
    vivo: el badge dice "PENDIENTE" antes de procesar los archivos.
+
+## 03/09/2026 — arnés de verificación contra datos reales, y un bug real que encontró el día 1
+
+Se armó `tools/verificar-datos-reales.mjs`: no reimplementa el parseo ni el análisis, corre el
+pipeline REAL de la app (`xlsx-parser.js` → `database.js` → `analyzer.js` → `diagnostico.js`)
+sobre los 13 Excel reales de `ARCHIVOS/`, con `fake-indexeddb` en vez del IndexedDB del
+navegador (misma API, en memoria) porque Node no tiene IndexedDB. `npm run verificar` corre y
+compara contra `tools/invariantes.json`; `npm run verificar:actualizar` fija nuevos valores
+esperados cuando el cambio de número es intencional. Sale con código ≠ 0 si algo no coincide.
+
+1. **Bug real, encontrado por el arnés en su primera corrida — condición de carrera en
+   `insertEntregasLoop()` (database.js) perdía volumen de las entregas de Loop, silenciosamente**:
+   el volumen total de "Entregas (Loop)" daba **31.822 m³** en vez de los ~55.365 m³ que dan
+   tanto el detalle sumado a mano como el propio resumen oficial de Loop ("Informe Volumen
+   entregado por camión", 56.386,0 m³). Causa: cuando el mismo remito toca un registro ya
+   guardado más de una vez dentro de una misma importación (el caso típico: "Informe Entregas
+   Loop" trae el mismo remito en las hojas Hormigón, Bombeado Y Otros — son subconjuntos entre
+   sí, no entregas distintas — y además puede calzar con un registro que ya había dejado
+   "Exportado informe de Viajes"), el código encolaba un `{id, cambios}` por cada toque y al
+   final hacía un `get()` + `put()` **independiente por cada uno**. Los `get()` de los tres
+   toques se disparan antes de que el `put()` del primero resuelva, así que los tres leen la
+   MISMA foto vieja del registro (sin el volumen todavía) — el último `put()` en resolver ganaba
+   y pisaba, con esa foto vieja, el volumen que el anterior acababa de guardar. Se corrigió
+   acumulando los cambios por `id` en un `Map` antes de tocar la base, así cada registro se lee
+   y se escribe **una sola vez** con todos sus cambios ya combinados: no quedan dos escrituras
+   que puedan pisarse. Verificado con un script dirigido sobre los dos archivos de Loop: antes
+   del fix, 2.643 de 7.037 registros finales quedaban con volumen en 0 pese a tener una fuente
+   ('detalle') que sí lo traía; después del fix, solo 3 (remitos reales sin contraparte en el
+   detalle — no es un bug, es un hueco de la planilla). El total pasó de 31.822 a 55.364,5 m³.
+
+2. **Cálculo inverso, segunda fuente independiente**: `actividadImplicita()` (diagnostico.js)
+   estimaba la actividad de un equipo sin GPS dividiendo litros ÷ meta — un solo número, que
+   depende por completo de que la meta cargada sea correcta. Se agregó una segunda estimación,
+   independiente de la meta: días hábiles que el equipo *realmente* cargó combustible (nunca un
+   período inventado) × la jornada de referencia que informa la propia operación
+   (`JORNADA_REFERENCIA` en analyzer.js — ya existía, no se usaba para esto). Cuando las dos
+   estimaciones no coinciden, `estimacionCreible()` lo suma como un tercer motivo de sospecha,
+   independiente de los pares y de la potencia declarada que ya usaba. Se muestra en la tarjeta,
+   el overlay del equipo y la tabla de comparación de estimaciones, siempre con la fórmula
+   (`N días hábiles × X-Y hs/día`) visible junto al número — ningún resultado nuevo se agregó
+   sin sus pasos de cálculo a la vista.

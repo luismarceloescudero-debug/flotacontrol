@@ -411,6 +411,94 @@ export async function insertRawRecords(arr) {
 
 export function getAllRawRecords() { return readAll('raw_records'); }
 
+/**
+ * Inserta filas de "Entregas (Loop)" cruzando por N° de Remito, en vez de agregarlas todas como
+ * filas nuevas. El mismo remito puede aparecer en más de una hoja de "Informe Entregas Loop"
+ * (una entrega con parte de hormigón y parte de bombeado cae en las dos) y también en
+ * "Exportado informe de Viajes" — mismo remito, con los horarios del viaje en vez del volumen.
+ *
+ * Regla acordada con el usuario: si dos filas del mismo remito y el mismo equipo coinciden en
+ * todo lo que las dos tienen en común (fecha, volumen cuando ambas lo traen), es el mismo dato
+ * repetido — se conserva un solo registro, completado con lo que cada fuente aporta de más
+ * (ej. el volumen de una, los horarios de la otra). Si no coinciden, no se adivina cuál es el
+ * correcto: se guardan las dos filas y se marcan `_conflicto_remito` para que el diagnóstico las
+ * junte y las muestre lado a lado — la decisión queda para revisión manual.
+ */
+export async function insertEntregasLoop(filas) {
+    const existentes = (await getAllRawRecords()).filter(r => r.type === 'entrega');
+    const porRemito = new Map();
+    existentes.forEach(r => {
+        if (!porRemito.has(r.remito)) porRemito.set(r.remito, []);
+        porRemito.get(r.remito).push(r);
+    });
+
+    const nuevas = [];
+    // id -> cambios ACUMULADOS. Un mismo remito real puede tocar el mismo registro existente más
+    // de una vez dentro de esta única llamada (típico: "Informe Entregas Loop" trae el mismo
+    // remito en Hormigón, Bombeado Y Otros — son subconjuntos entre sí, no entregas distintas).
+    // Antes cada toque encolaba su propio { id, cambios } y el final hacía un get()+put() POR
+    // CADA UNO: como los tres get() se disparan antes de que el primer put() resuelva, cada uno
+    // lee la MISMA foto vieja del registro — el último put en resolver ganaba y pisaba con esa
+    // foto vieja lo que el anterior acababa de guardar (el volumen, en la práctica: measured
+    // pérdida real de 31.822 m³ sobre 55.364,5 esperados — ver tools/verificar-datos-reales.mjs).
+    // Acumulando en un Map por id se hace UN solo get()+put() por registro, con los cambios de
+    // los tres toques ya combinados — no hay dos escrituras que puedan pisarse.
+    const actualizaciones = new Map(); // id -> cambios
+
+    const acumular = (id, cambios) => {
+        if (id === undefined) return;
+        actualizaciones.set(id, { ...(actualizaciones.get(id) || {}), ...cambios });
+    };
+
+    for (const fila of filas) {
+        const grupo = porRemito.get(fila.remito) || [];
+        const compatible = grupo.find(r => {
+            if ((r.interno_key || r.interno) !== (fila.interno_key || fila.interno)) return false;
+            if (r.volumen > 0 && fila.volumen > 0 && Math.round(r.volumen * 100) !== Math.round(fila.volumen * 100)) return false;
+            if (r.fecha && fila.fecha && r.fecha !== fila.fecha) return false;
+            return true;
+        });
+
+        if (compatible) {
+            const cambios = {};
+            if (!(compatible.volumen > 0) && fila.volumen > 0) cambios.volumen = fila.volumen;
+            if (!compatible.fecha && fila.fecha) cambios.fecha = fila.fecha;
+            // Los datos originales de cada fuente se conservan los dos (sin pisarse), para no
+            // perder ninguna columna del Excel aunque el registro final sea uno solo.
+            cambios.datos = { ...(fila.datos || {}), ...(compatible.datos || {}) };
+            cambios.fuentes = [...new Set([...(compatible.fuentes || [compatible.formato]), fila.formato])];
+            Object.assign(compatible, cambios);
+            acumular(compatible.id, cambios);
+            continue; // fusionada: no se agrega como fila nueva
+        }
+
+        if (grupo.length) {
+            // Mismo remito, pero nada coincidió con ningún registro del grupo: conflicto real,
+            // no una repetición. Se guardan TODOS (los que ya había + el nuevo) marcados, en vez
+            // de quedarse con uno a ciegas.
+            grupo.forEach(r => {
+                if (!r._conflicto_remito) {
+                    r._conflicto_remito = true;
+                    acumular(r.id, { _conflicto_remito: true });
+                }
+            });
+            fila._conflicto_remito = true;
+        }
+
+        nuevas.push(fila);
+        porRemito.set(fila.remito, [...grupo, fila]);
+    }
+
+    return writeTx(['raw_records'], ([store]) => {
+        nuevas.forEach(r => store.add(r));
+        actualizaciones.forEach((cambios, id) => {
+            const req = store.get(id);
+            req.onsuccess = () => { const rec = req.result; if (rec) store.put({ ...rec, ...cambios }); };
+        });
+        return nuevas.length;
+    });
+}
+
 /** Actualiza campos puntuales de un raw_record ya almacenado (por ejemplo al corregir inline). */
 export async function updateRawRecord(id, cambios) {
     const tx = getDB().transaction(['raw_records'], 'readwrite');
@@ -458,7 +546,7 @@ export async function getTiposDeMovimiento() {
     const recs = await getAllRawRecords();
     const m = new Map();
     recs.forEach(r => {
-        if (!m.has(r.type)) m.set(r.type, { tipo: r.type, etiqueta: r.type_label || r.type, n: 0 });
+        if (!m.has(r.type)) m.set(r.type, { tipo: r.type, etiqueta: r.type_label || r.type, n: 0, posibleDuplicadoCargas: !!r._posible_duplicado_cargas, resumenDerivable: !!r._resumen_derivable });
         m.get(r.type).n++;
     });
     return [...m.values()].sort((a, b) => b.n - a.n);

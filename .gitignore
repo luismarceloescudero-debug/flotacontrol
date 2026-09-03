@@ -24,6 +24,9 @@ Consumos Estimados*.xlsx
 EQUIPOS PARA COTIZAR*.xlsx
 Equipos HSV*.xlsx
 Resumen de Flota*.xlsx
+Informe Entregas Loop*.xlsx
+Exportado informe de Viajes*.xlsx
+Informe Volumen entregado*.xlsx
 
 # Python
 __pycache__/
@@ -40,6 +43,7 @@ test_cm43.js
 # IDE / System
 .vscode/
 .idea/
+.claude/settings.local.json
 Thumbs.db
 .DS_Store
 

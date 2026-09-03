@@ -1927,7 +1927,7 @@ function abrirRevisionEstimaciones(analisis, soloDudosas) {
                                 <td>${nf(x.fila.metrics.total_litros, 1)} L</td>
                                 <td>${nf(c.meta, 2)} ${esc(x.fila.metrics.tipo_calculo)}</td>
                                 <td>${c.sugerida ? `${nf(c.sugerida.valor, 2)}<br><small style="color:var(--text-muted)">${esc(c.sugerida.base)}</small>` : '<small style="color:var(--text-muted)">sin pares medidos</small>'}</td>
-                                <td>≈ ${nf(c.implicita.valor, 1)} ${esc(c.implicita.unidad)}<br><small style="color:var(--text-muted)">${esc(c.implicita.formula)}</small></td>
+                                <td>≈ ${nf(c.implicita.valor, 1)} ${esc(c.implicita.unidad)}<br><small style="color:var(--text-muted)">${esc(c.implicita.formula)}</small>${c.implicita.referencia ? `<br><small style="color:var(--text-muted)" title="${esc(c.implicita.referencia.formula)}">${c.implicita.referencia.respalda ? '✓' : '⚠'} jornada de referencia: ${nf(c.implicita.referencia.horas_min, 0)}-${nf(c.implicita.referencia.horas_max, 0)} hs esperadas</small>` : ''}</td>
                                 <td>${c.creible
                                     ? '<span class="seg-badge seg-ok"><i class="fa-solid fa-circle-check"></i> razonable</span>'
                                     : `<span class="seg-badge seg-alta"><i class="fa-solid fa-triangle-exclamation"></i> no cierra</span><br><small style="color:var(--text-muted)">${esc(c.motivos.join(' · '))}</small>`}</td>
@@ -2567,7 +2567,7 @@ function abrirInvestigacionMeta(interno) {
                             <td><strong>${esc(f.fuente)}</strong><br><span class="seg-badge ${cls}">${esc(txt)}</span></td>
                             <td><strong style="color:var(--accent-cyan)">${nf(f.valor, 2)}</strong><br><small style="color:var(--text-muted)">${esc(f.unidad || '')}</small></td>
                             <td>${esc(f.detalle)}</td>
-                            <td><button class="btn-xs btn-inv-aplicar" data-interno="${esc(interno)}" data-valor="${f.valor}" data-unidad="${esc(f.unidad || fila.metrics.tipo_calculo)}"><i class="fa-solid fa-check"></i> Usar como meta</button></td>
+                            <td><button class="btn-xs btn-inv-aplicar" data-interno="${esc(interno)}" data-valor="${f.valor}" data-unidad="${esc(f.unidad || fila.metrics.tipo_calculo)}" data-fuente="${esc(f.fuente)}"><i class="fa-solid fa-check"></i> Usar como meta</button></td>
                         </tr>`;
                     }).join('')}
                 </tbody>
@@ -2609,9 +2609,16 @@ function abrirInvestigacionMeta(interno) {
         const valor = parseFloat(b.dataset.valor);
         const unidad = b.dataset.unidad;
         if (!(valor > 0)) return;
+        const metaAnterior = fila.equipo.meta_texto || '';
         const eq = { ...fila.equipo, meta_valor: valor, meta_unidad: unidad, meta_texto: `${valor} ${unidad === 'L/Hora' ? 'L/hora' : 'L/100km'}` };
         eq.editado_manual = [...new Set([...(eq.editado_manual || []), 'meta_valor', 'meta_unidad', 'meta_texto'])];
         await updateEquipo(eq);
+        // Mismo gap que el ajuste masivo: sin esto, "Investigar meta → Usar como meta" protegía
+        // el campo contra reimportación pero no dejaba rastro de fecha ni de qué fuente se usó.
+        await registrarEdicion({
+            tabla: 'maestro', registroId: eq.interno, etiqueta: eq.interno,
+            campo: 'meta_valor', valorAnterior: metaAnterior, valorNuevo: `${eq.meta_texto} (${b.dataset.fuente || 'investigar meta'})`
+        });
         cerrar();
         await renderPanel();
     }));
@@ -4135,6 +4142,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
                 <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>
                 <span class="stat-value ${implicita ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0)} <small class="stat-unit">${uf}</small></span>
                 ${implicita ? `<span class="stat-nota">estimado: ${esc(implicita.formula)}</span>` : ''}
+                ${implicita && implicita.referencia ? `<span class="stat-nota" title="${esc(implicita.referencia.formula)}"><i class="fa-solid ${implicita.referencia.respalda ? 'fa-check' : 'fa-triangle-exclamation'}"></i> ${implicita.referencia.respalda ? 'confirmado' : 'no confirmado'} por jornada de referencia (${esc(implicita.referencia.jornada.nota)}: ${nf(implicita.referencia.horas_min, 0)}-${nf(implicita.referencia.horas_max, 0)} hs esperadas)</span>` : ''}
                 ${!implicita && act.parcial ? `<span class="stat-nota" title="Solo se usan los meses que tienen cargas Y GPS: dividir todos los litros por la actividad de menos meses daría un consumo inflado.">de ${nf(act.total, esHora ? 1 : 0)} ${uf} del período · meses con las dos fuentes</span>` : ''}
             </div>
             <div class="stat stat-clickable" ${attrsConsumo} role="button" tabindex="0">
@@ -4271,6 +4279,7 @@ function abrirOverlayEquipo(fila, analisis) {
                 <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>
                 <span class="stat-value ${implicita ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0)} <small class="stat-unit">${uf}</small></span>
                 ${implicita ? `<span class="stat-nota">estimado: ${esc(implicita.formula)}</span>` : ''}
+                ${implicita && implicita.referencia ? `<span class="stat-nota" title="${esc(implicita.referencia.formula)}"><i class="fa-solid ${implicita.referencia.respalda ? 'fa-check' : 'fa-triangle-exclamation'}"></i> ${implicita.referencia.respalda ? 'confirmado' : 'no confirmado'} por jornada de referencia (${esc(implicita.referencia.jornada.nota)}: ${nf(implicita.referencia.horas_min, 0)}-${nf(implicita.referencia.horas_max, 0)} hs esperadas)</span>` : ''}
                 ${!implicita && act.parcial ? `<span class="stat-nota">de ${nf(act.total, esHora ? 1 : 0)} ${uf} del período — el consumo se mide solo sobre los meses que tienen cargas y GPS (${esc((m.alineacion?.meses || []).join(', '))})</span>` : ''}
               </div>
               <div class="stat">

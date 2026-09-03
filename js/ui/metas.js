@@ -10,7 +10,7 @@
  * La idea es que, mientras no exista el dato oficial de fábrica, la meta se ajuste a lo que
  * la flota realmente consume — y recién ahí se investigue a fondo lo que sigue haciendo ruido.
  */
-import { getAllEquipos, updateEquipo } from '../data/database.js';
+import { getAllEquipos, updateEquipo, registrarEdicion } from '../data/database.js';
 import { sugerirMeta, metaDesdeConsumoReal, confiabilidad } from '../data/diagnostico.js';
 
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -223,12 +223,20 @@ async function aplicar(opts = {}) {
             const eq = maestros.find(e => e.interno === f.equipo.interno);
             if (!eq) continue;
             const unidad = f.metrics.tipo_calculo;
+            const metaAnterior = eq.meta_texto || '';
             eq.meta_valor = nm.valor;
             eq.meta_unidad = unidad;
             eq.meta_texto = `${nm.valor} ${unidad === 'L/Hora' ? 'L/hora' : 'L/100km'}`;
             eq.meta_origen = nm.base;
             eq.editado_manual = [...new Set([...(eq.editado_manual || []), 'meta_valor', 'meta_unidad', 'meta_texto'])];
             await updateEquipo(eq);
+            // El ajuste masivo era el único camino de edición sin auditoría: quedaba protegida
+            // contra reimportación (editado_manual) pero sin fecha ni quién/por qué, así que en
+            // "Historial" no se podía saber cuándo se fijó ni de dónde salió ese número.
+            await registrarEdicion({
+                tabla: 'maestro', registroId: eq.interno, etiqueta: eq.interno,
+                campo: 'meta_valor', valorAnterior: metaAnterior, valorNuevo: `${eq.meta_texto} (${nm.base})`
+            });
         }
         cerrar();
         if (typeof window.renderPanel === 'function') await window.renderPanel();

@@ -465,21 +465,67 @@ export function metaDesdeConsumoReal(fila) {
 }
 
 /**
+ * Suma días hábiles reales de una lista de meses "YYYY-MM" (los meses en que el equipo REALMENTE
+ * cargó combustible — nunca un rango inventado). Cada mes se cuenta de punta a punta con
+ * diasHabiles(), que ya descuenta fines de semana y feriados.
+ */
+function diasHabilesDeMeses(meses = []) {
+    let total = 0;
+    for (const ym of meses) {
+        const [anio, mes] = String(ym).split('-').map(Number);
+        if (!anio || !mes) continue;
+        const desde = `${ym}-01`;
+        const ultimoDia = new Date(anio, mes, 0).getDate();
+        const hasta = `${ym}-${String(ultimoDia).padStart(2, '0')}`;
+        total += diasHabiles(desde, hasta).dias;
+    }
+    return total;
+}
+
+/**
  * Cálculo inverso: para equipos que cargan combustible pero no tienen GPS, la meta permite
  * estimar cuánta actividad DEBERÍAN haber tenido. No reemplaza al GPS, pero convierte un
  * "no se puede calcular" en un número con el que sí se puede trabajar.
+ *
+ * Esa estimación depende por completo de que la meta cargada sea correcta — es la única fuente
+ * que la sostiene. Cuando el equipo tiene una jornada de referencia conocida (JORNADA_REFERENCIA
+ * en analyzer.js: horas/día que informa la propia operación, no un promedio sacado de los
+ * datos), se agrega una SEGUNDA estimación independiente: días hábiles realmente cargados ×
+ * jornada esperada. Si las dos coinciden, la estimación por meta queda respaldada por una fuente
+ * que no depende de ella. Si no coinciden, es una señal de que la meta (o la actividad) no es
+ * creíble, aunque los pares y la potencia no digan nada — ver estimacionCreible().
  */
 export function actividadImplicita(fila) {
     const m = fila.metrics;
     const c = fila.confirmed;
     if (!c || !c.valor || c.valor <= 0 || m.total_litros <= 0) return null;
+    let imp = null;
     if (m.tipo_calculo === 'L/Hora') {
-        return { valor: m.total_litros / c.valor, unidad: 'horas', formula: `${fmt(m.total_litros, 1)} L ÷ ${fmt(c.valor, 2)} L/hora` };
+        imp = { valor: m.total_litros / c.valor, unidad: 'horas', formula: `${fmt(m.total_litros, 1)} L ÷ ${fmt(c.valor, 2)} L/hora` };
+    } else if (m.tipo_calculo === 'L/100Km') {
+        imp = { valor: (m.total_litros / c.valor) * 100, unidad: 'km', formula: `${fmt(m.total_litros, 1)} L ÷ ${fmt(c.valor, 2)} L/100km × 100` };
+    } else {
+        return null;
     }
-    if (m.tipo_calculo === 'L/100Km') {
-        return { valor: (m.total_litros / c.valor) * 100, unidad: 'km', formula: `${fmt(m.total_litros, 1)} L ÷ ${fmt(c.valor, 2)} L/100km × 100` };
+
+    if (imp.unidad === 'horas') {
+        const ref = jornadaEsperada(fila.equipo, fila.ubicacion);
+        const mesesCargas = (m.alineacion && m.alineacion.meses_cargas) || [];
+        if (ref && mesesCargas.length) {
+            const dh = diasHabilesDeMeses(mesesCargas);
+            if (dh > 0) {
+                const horasMin = dh * ref.min, horasMax = dh * ref.max;
+                // Tolerancia amplia (mitad del piso a el doble del techo): esto no busca precisión,
+                // busca detectar cuando el número está en otro orden de magnitud.
+                const respalda = imp.valor >= horasMin * 0.5 && imp.valor <= horasMax * 2;
+                imp.referencia = {
+                    dias_habiles: dh, horas_min: horasMin, horas_max: horasMax, jornada: ref, respalda,
+                    formula: `${dh} días hábiles cargados × ${ref.min}-${ref.max} hs/día (${ref.nota})`
+                };
+            }
+        }
     }
-    return null;
+    return imp;
 }
 
 /**
@@ -804,7 +850,15 @@ export function estimacionCreible(fila, todas = []) {
         if (imp.unidad === 'km' && imp.valor < cargas * 20) motivos.push(`daría ${fmt(imp.valor)} km para ${cargas} carga${cargas === 1 ? '' : 's'}: menos de 20 km por carga`);
     }
 
-    return { implicita: imp, meta, creible: motivos.length === 0, motivos, sugerida: sug, factorPares, completitud: comp, respaldadaPorPotencia, potencia: pot };
+    // Tercer respaldo, independiente de la meta y de los pares: cuánto DEBERÍA haber trabajado
+    // según la jornada de referencia que informa la propia operación (JORNADA_REFERENCIA), sobre
+    // los días hábiles que realmente cargó. No depende de ningún otro equipo ni de la meta —
+    // por eso, cuando contradice la estimación por meta, es la señal más fuerte de las tres.
+    if (imp.referencia && !imp.referencia.respalda) {
+        motivos.push(`daría ${fmt(imp.valor, 1)} hs, pero la jornada de referencia (${imp.referencia.jornada.nota}) espera entre ${fmt(imp.referencia.horas_min, 0)} y ${fmt(imp.referencia.horas_max, 0)} hs para los ${imp.referencia.dias_habiles} días hábiles que cargó`);
+    }
+
+    return { implicita: imp, meta, creible: motivos.length === 0, motivos, sugerida: sug, factorPares, completitud: comp, respaldadaPorPotencia, potencia: pot, respaldadaPorJornada: !!(imp.referencia && imp.referencia.respalda) };
 }
 
 /**
@@ -1644,7 +1698,9 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             equipos: estimadasOk.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.total_litros)} L`,
-                sub: `≈ ${fmt(x.implicita.valor)} ${x.implicita.unidad} implícitas  (${x.implicita.formula}) · ${x.comp.etiqueta}`,
+                sub: `≈ ${fmt(x.implicita.valor)} ${x.implicita.unidad} implícitas  (${x.implicita.formula})`
+                    + (x.implicita.referencia ? ` · ${x.implicita.referencia.respalda ? 'confirmado' : 'sin confirmar'} por jornada de referencia (${x.implicita.referencia.formula})` : '')
+                    + ` · ${x.comp.etiqueta}`,
                 completitud: x.comp.nivel
             }))
         });
@@ -2021,6 +2077,34 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     }
 
+
+    // ---------- 15 bis. Entregas de Loop con remito en conflicto ----------
+    // No es un problema de la flota, es de la planilla: el mismo N° de remito aparece más de una
+    // vez con datos que NO coinciden (otro equipo, otro volumen, otra fecha) entre "Informe
+    // Entregas" y "Exportado informe de Viajes" — o entre las propias hojas de Informe Entregas.
+    // Se guardaron las dos filas (ver insertEntregasLoop() en database.js) en vez de quedarse
+    // con una a ciegas: acá se juntan para poder decidir a mano contra el comprobante.
+    const remitosConflicto = new Map();
+    rawRecords.forEach(r => {
+        if (r.type === 'entrega' && r._conflicto_remito) {
+            if (!remitosConflicto.has(r.remito)) remitosConflicto.set(r.remito, []);
+            remitosConflicto.get(r.remito).push(r);
+        }
+    });
+    if (remitosConflicto.size) {
+        const grupos = [...remitosConflicto.values()];
+        hallazgos.push({
+            id: 'entregas_conflicto_remito', severidad: 'media', icono: 'fa-triangle-exclamation',
+            no_comparar: true,
+            titulo: `${grupos.length} remito${grupos.length === 1 ? '' : 's'} de Loop con datos que no coinciden entre sí`,
+            detalle: `El mismo N° de remito aparece más de una vez entre "Informe Entregas" y "Exportado informe de Viajes" (o entre las hojas de Informe Entregas) con <strong>datos distintos</strong>: otro equipo, otro volumen o otra fecha. No se descartó ninguna fila — las dos quedaron guardadas en "Entregas (Loop)", marcadas en rojo, para decidir a mano contra el comprobante.`,
+            equipos: grupos.slice(0, 12).map(g => ({
+                interno: g[0].interno || g[0].dominio || '—', denominacion: `remito ${g[0].remito}`,
+                texto: `${g.length} versiones`,
+                sub: g.map(r => `${r.formato === 'detalle' ? (r.hoja || 'Entregas') : 'Viajes'}: ${r.volumen > 0 ? fmt(r.volumen, 1) + ' m³' : 'sin volumen'}${r.fecha ? ' · ' + r.fecha : ''}${r.interno && r.interno !== g[0].interno ? ' · equipo ' + r.interno : ''}`).join(' vs. ')
+            }))
+        });
+    }
 
     // ---------- 16. GPS contra Informe de Ignición ----------
     const cruce = cruzarIgnicion(filas, rawRecords);

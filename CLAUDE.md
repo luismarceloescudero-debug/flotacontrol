@@ -44,17 +44,34 @@ node --input-type=module --check < js/data/analyzer.js
 ```
 
 Real spreadsheets to test against live **outside the repo**, in `../../ARCHIVOS/` (the folder
-next to `flotacontrol-repo/`): the four core files plus several monthly `Resumen de Flota` and
-a consolidated `Resumen de Flota Ene-Jul`. They are gitignored by pattern (`Cargas_Combustible_*.xlsx`,
-`Equipos HSV*.xlsx`, `Resumen de Flota*.xlsx`, `Consumos Estimados*.xlsx`) so they can be copied
-into the served directory temporarily without any risk of committing fleet data — but delete the
-copy when done.
+next to `flotacontrol-repo/`): the four core files, the three Loop logistics files, and several
+monthly `Resumen de Flota` plus a consolidated one. They are gitignored by pattern
+(`Cargas_Combustible_*.xlsx`, `Equipos HSV*.xlsx`, `Resumen de Flota*.xlsx`,
+`Consumos Estimados*.xlsx`, `Informe Entregas Loop*.xlsx`, `Exportado informe de Viajes*.xlsx`,
+`Informe Volumen entregado*.xlsx`) so they can be copied into the served directory temporarily
+without any risk of committing fleet data — but delete the copy when done.
 
 Anything touching consumption math must be verified against those files, not reasoned about:
-a wrong formula still runs and still prints a plausible number. Load them, then read the result
-out of `window.ultimoAnalisis` (published by `renderPanel`) — `.totales` for fleet figures and
-`.filas[].metrics` for per-equipment ones — and check that the card's displayed formula divides
-to the consumption it shows next to it.
+a wrong formula still runs and still prints a plausible number.
+
+**`node tools/verificar-datos-reales.mjs`** (`npm run verificar`) is the automated way to do
+that. It does not reimplement parsing or analysis — it runs the real pipeline
+(`xlsx-parser.js` → `database.js` → `analyzer.js` → `diagnostico.js`) against the real files in
+`ARCHIVOS/`, with `fake-indexeddb` standing in for the browser's IndexedDB (Node has none), and
+compares the result against `tools/invariantes.json`. `npm run verificar:actualizar` rewrites
+that file when a number changed on purpose. Run it **before** committing anything that touches
+`js/data/` or `js/parsers/` — the hook pushes on commit, there is no staging step to catch a
+regression later. This harness is what caught a real bug on its first run: a race condition in
+`insertEntregasLoop()` (see `CORRECCIONES_APLICADAS.md`, 03/09/2026) that silently dropped 43%
+of the Loop delivery volume. A hand-reasoned check of the same code would not have caught it —
+the bug only shows up when you exercise IndexedDB's actual async request ordering, which is
+exactly what this harness does and a human re-reading the code does not.
+
+For anything the harness doesn't cover yet (a specific card's rendering, an interaction), fall
+back to the browser: load the files, then read the result out of `window.ultimoAnalisis`
+(published by `renderPanel`) — `.totales` for fleet figures and `.filas[].metrics` for
+per-equipment ones — and check that the card's displayed formula divides to the consumption it
+shows next to it.
 
 **Browser module cache will lie to you.** `python -m http.server` sends no `Cache-Control`, and
 the browser keeps ES modules from a previous run of the same origin, so edits appear to have no
@@ -170,6 +187,16 @@ again by accident, so check them when touching consumption math:
    idle months. Equipment that doesn't follow a work day (generators, heaters, compressors,
    pumps) is excluded — hours/business-day is meaningless for them and produced >24 h/day.
 
+   The same `JORNADA_REFERENCIA` also backs the one inference the app is allowed to make:
+   when an equipment has no GPS at all, `actividadImplicita()` (diagnostico.js) estimates its
+   activity as litros ÷ meta — a number that lives or dies by whether the loaded meta is
+   correct. It's cross-checked against a second, independent estimate: business days the
+   equipment *actually charged fuel on* (never an invented range) × the reference hours/day for
+   that equipment or sector. `estimacionCreible()` treats a mismatch between the two as a third,
+   independent reason to distrust the estimate — on top of the existing peer-median and
+   declared-power checks. Both estimates and the comparison are always shown with their formula
+   next to the number (card, equipment overlay, and the estimation-comparison table).
+
 Consumption is exposed in **both** units (`consumo_l_hora` and `consumo_l_100km`) whenever both
 denominators exist; `consumo_real` is the one in the equipment's declared unit. Both are shown
 together because operations that mix long distances with on-site idling (Tunuyán) need both.
@@ -181,6 +208,20 @@ together because operations that mix long distances with on-site idling (Tunuyá
 `registroExcluido()` keeps those out of the analysis. Rows are kept in IndexedDB and stay
 visible in Base de Datos — nothing is deleted. This is what makes it safe to re-upload a file,
 or to keep adding new months without clearing movements first.
+
+Loop delivery rows (`type: 'entrega'`) merge across sources by remito number instead
+(`insertEntregasLoop()`, database.js) — a real remito can legitimately show up more than once
+in the same import (Hormigón/Bombeado/Otros are subsets of each other, not distinct deliveries)
+and again in the other Loop file. **When a merge touches the same already-stored record more
+than once inside one call, accumulate the changes into one `Map<id, cambios>` and do a single
+`get()`+`put()` per id at the end — never one `get()`+`put()` per touch.** IndexedDB fires the
+queued `get()`s before the first `put()` resolves, so parallel touches to the same record each
+read the same pre-update snapshot; the last `put()` to resolve wins and silently overwrites
+whatever the earlier ones had just written with fields it never saw. This is exactly how a
+race condition dropped 43% of Loop's delivery volume (31.822 m³ shown instead of ~55.365 m³)
+without a single error anywhere — `tools/verificar-datos-reales.mjs` is what caught it, see
+`CORRECCIONES_APLICADAS.md` (03/09/2026). The same rule applies to any future code that batches
+IndexedDB updates keyed by something other than the row being inserted.
 
 ### XSS convention
 

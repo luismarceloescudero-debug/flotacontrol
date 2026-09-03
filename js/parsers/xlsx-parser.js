@@ -14,7 +14,8 @@
  *     entiende (litros, km, horas...) se extraen aparte, pero nada del Excel se descarta.
  */
 import {
-    upsertEquipos, insertRawRecords, insertEstimados, insertPrecios, registrarArchivo, getMapeo
+    upsertEquipos, insertRawRecords, insertEstimados, insertPrecios, registrarArchivo, getMapeo,
+    insertEntregasLoop
 } from '../data/database.js';
 import {
     parseDate, parseNumber, normalizeString, normalizeEquipoKey, aggregateHours,
@@ -49,7 +50,28 @@ async function procesarLibro(data, filename) {
     }
 
     const headers = extraerHeaders(rawRows[det.headerRowIdx]);
-    const filas = filasComoObjetos(rawRows, det.headerRowIdx, headers);
+    let filas = filasComoObjetos(rawRows, det.headerRowIdx, headers);
+
+    // "Informe Entregas Loop" viene con el detalle repartido en varias hojas (Hormigón,
+    // Bombeado, Otros: una fila de encabezado igual en cada una). El resto de los formatos se
+    // queda con la primera hoja nada más — leer todas a ciegas arriesgaría, por ejemplo, sumar
+    // dos veces una fila que Excel repite en dos pestañas de un archivo que no se diseñó para
+    // este cruce. Acá sí hace falta: el mismo remito puede caer en más de una hoja (una entrega
+    // con parte de hormigón y parte de bombeado), y perder Bombeado/Otros en silencio dejaba
+    // afuera dos tercios de las entregas reales.
+    if (det.tipo === 'ENTREGAS_LOOP' && det.formatoEntregas === 'detalle' && workbook.SheetNames.length > 1) {
+        filas.forEach(f => { f.__hoja = workbook.SheetNames[0]; });
+        for (const nombreHoja of workbook.SheetNames.slice(1)) {
+            const rowsHoja = XLSX.utils.sheet_to_json(workbook.Sheets[nombreHoja], { header: 1, defval: '' });
+            if (!rowsHoja.length) continue;
+            const detHoja = detectarFormato(rowsHoja, filename);
+            if (detHoja.headerRowIdx === -1 || detHoja.tipo !== 'ENTREGAS_LOOP') continue; // hoja vacía o con otra forma
+            const headersHoja = extraerHeaders(rowsHoja[detHoja.headerRowIdx]);
+            const filasHoja = filasComoObjetos(rowsHoja, detHoja.headerRowIdx, headersHoja);
+            filasHoja.forEach(f => { f.__hoja = nombreHoja; });
+            filas = filas.concat(filasHoja);
+        }
+    }
 
     // Mapeo guardado por el usuario para este tipo (si corrigió alguna columna alguna vez).
     const mapeoGuardado = await getMapeo(det.tipo).catch(() => null);
@@ -61,6 +83,7 @@ async function procesarLibro(data, filename) {
     else if (det.tipo === 'CARGAS') { n = await handleCargas(filas, filename, mapeo); await handlePrecios(workbook, filename); }
     else if (det.tipo === 'GPS') n = await handleGPS(filas, filename, det.desde, det.hasta, mapeo);
     else if (det.tipo === 'IGNICION') n = await handleIgnicion(rawRows, det.headerRowIdx, filename);
+    else if (det.tipo === 'ENTREGAS_LOOP') n = await handleEntregasLoop(filas, filename, det.formatoEntregas, mapeo);
     else n = await handleGenerico(filas, filename, det, mapeo);
 
     return await registrar({
@@ -104,6 +127,19 @@ function detectarFormato(rawRows, filename) {
             else if (t.includes('LITROS') && t.includes('LUGAR DE CARGA')) { out.tipo = 'CARGAS'; out.etiqueta = 'Cargas de Combustible'; out.headerRowIdx = i; }
             else if (t.includes('TIPO') && t.includes('MARCA') && t.includes('POTENCIA') && t.includes('INTERNO')) { out.tipo = 'EQUIPOS'; out.etiqueta = 'Equipos'; out.headerRowIdx = i; }
             else if (t.includes('KILOMETROS RECORRIDOS') || t.includes('TIEMPO EN MOVIMIENTO')) { out.tipo = 'GPS'; out.etiqueta = 'Resumen de Flota (GPS)'; out.headerRowIdx = i; }
+            // Entregas de Loop (logística): dos exportaciones del mismo sistema, cruzadas por
+            // N° de Remito — "Informe Entregas" (detalle por hoja: Hormigón/Bombeado/Otros, con
+            // volumen y datos de la obra) y "Exportado informe de Viajes" (mismos remitos, con
+            // horarios del viaje). Se unifican en una sola pestaña "Entregas (Loop)" en vez de
+            // quedar como archivos sueltos que muestran las mismas entregas de dos formas
+            // distintas — ver insertEntregasLoop() en database.js para el cruce por remito.
+            else if (t.includes('REMITO') && t.includes('VEHICULO') && t.includes('VOLUMEN')) { out.tipo = 'ENTREGAS_LOOP'; out.etiqueta = 'Entregas (Loop)'; out.headerRowIdx = i; out.formatoEntregas = 'detalle'; }
+            else if (t.includes('REMITO') && t.includes('VEHICULO') && (t.includes('SALIDA PLANTA') || t.includes('TIEMPO DE VIAJE') || t.includes('EN OBRA PREVISTA'))) { out.tipo = 'ENTREGAS_LOOP'; out.etiqueta = 'Entregas (Loop)'; out.headerRowIdx = i; out.formatoEntregas = 'viaje'; }
+            // Resumen ya calculado (m³ por camión y por mes) a partir de las mismas entregas de
+            // arriba: se importa igual (por si el usuario quiere mirarlo), pero marcado como
+            // derivable — no aporta datos nuevos, es un total de lo que ya se puede sumar desde
+            // "Entregas (Loop)".
+            else if (t.includes('VEHICULO') && (t.includes('VOLUMEN TOTAL') || t.includes('M³/MES') || t.includes('M3/MES')) && !t.includes('REMITO')) { out.tipo = 'RESUMEN_VOLUMEN_LOOP'; out.etiqueta = 'Volumen por camión (resumen)'; out.headerRowIdx = i; out.esResumenDerivable = true; }
         }
         // Los metadatos de período del reporte GPS pueden estar antes o después del encabezado.
         const c0 = normalizeString(rawRows[i][0]);
@@ -122,6 +158,18 @@ function detectarFormato(rawRows, filename) {
             out.tipo = slugCampo(filename.replace(/\.(xlsx|xls|csv)$/i, '').replace(/[\d_\-.]+$/g, ''));
             out.etiqueta = tituloDesdeArchivo(filename);
             out.headerRowIdx = i;
+            // Verificado contra datos reales: un archivo con LITROS + un tipo de combustible
+            // declarado, pero SIN "LUGAR DE CARGA" (la columna que distingue al formato oficial
+            // de Cargas de Combustible), suele ser una carga de combustible exportada desde OTRO
+            // sistema — ej. el reporte propio de una estación de servicio (GRIS S.A) — que
+            // duplica filas que ya están en Cargas_Combustible_*.xlsx con otro nombre de columna.
+            // No se descarta la importación (el usuario puede querer revisarla igual), pero se
+            // marca para no confundirla con una fuente nueva: no entra al cálculo de consumo real
+            // porque no es type==='carga' (eso ya pasaba), y acá además se avisa en la pestaña.
+            const t = normalizeString(rawRows[i].join('|'));
+            if (t.includes('LITROS') && t.includes('COMBUSTIBLE') && !t.includes('LUGAR DE CARGA')) {
+                out.posibleDuplicadoCargas = true;
+            }
             return out;
         }
     }
@@ -409,11 +457,58 @@ async function handleGenerico(filas, filename, det, mapeo) {
             ...baseMovimiento(row, id, fecha, filename),
             type: det.tipo,
             type_label: det.etiqueta,
-            numericos
+            numericos,
+            ...(det.posibleDuplicadoCargas ? { _posible_duplicado_cargas: true } : {}),
+            ...(det.esResumenDerivable ? { _resumen_derivable: true } : {})
         });
     });
     if (recs.length) await insertRawRecords(recs);
     return recs.length;
+}
+
+/**
+ * Entregas de Loop: "Informe Entregas Loop" (detalle por remito, con volumen — puede venir
+ * repartido en varias hojas) y "Exportado informe de Viajes" (mismos remitos, con los horarios
+ * del viaje). Ver el comentario de detección en detectarFormato() y insertEntregasLoop() en
+ * database.js, que es donde se decide qué hacer cuando el mismo remito aparece más de una vez:
+ * si los datos comparables coinciden, se fusiona en un solo registro; si no coinciden, se
+ * guardan los dos y se marcan para revisión manual (nunca se "adivina" cuál es el correcto).
+ */
+async function handleEntregasLoop(filas, filename, formato, mapeo) {
+    const recs = [];
+    filas.forEach(row => {
+        // OJO: acá NO se puede usar identidadDeFila() genérica. "Informe Entregas Loop" trae
+        // "Código Interno" (nomenclatura propia de Loop, ej. "Indumovil 80") ADEMÁS de
+        // "Vehículo" (el código real de HSV, ej. "MX57") — y "Código Interno" matchea el
+        // candidato genérico 'INTERNO' antes de llegar a 'VEHICULO', así que identidadDeFila()
+        // devolvía "Indumovil 80" como interno. Como "Exportado informe de Viajes" no tiene
+        // columna "Código Interno", sus filas sí resolvían bien por "Vehículo" — y el mismo
+        // remito terminaba con dos "equipos" distintos entre los dos archivos, marcando como
+        // conflicto casi todos los cruces (9.401 de 11.733 en la primera prueba). Acá se
+        // clasifica el valor de "Vehículo" solo, ignorando cualquier otra columna de identidad.
+        const id = extraerIdentidad(getValFuzzy(row, ['VEHICULO']));
+        if (!id.interno && !id.dominio) return;
+
+        // getValFuzzy matchea por substring normalizado: 'REMITO' alcanza para "N˚ Remito"
+        // (Informe Entregas, con el símbolo de ordinal ˚) y para "Remitos" (Exportado de Viajes).
+        const remito = String(getValFuzzy(row, ['REMITO']) ?? '').trim();
+        if (!remito) return;
+
+        const fecha = parseDate(val(row, 'fecha', ['FECHA'], mapeo)) || '';
+        const volumen = formato === 'detalle' ? parseNumber(getValFuzzy(row, ['VOLUMEN'])) : null;
+
+        recs.push({
+            ...baseMovimiento(row, id, fecha, filename),
+            type: 'entrega',
+            type_label: 'Entregas (Loop)',
+            remito,
+            volumen: volumen || 0,
+            formato, // 'detalle' (Informe Entregas) | 'viaje' (Exportado informe de Viajes)
+            hoja: row.__hoja || null
+        });
+    });
+    if (!recs.length) return 0;
+    return await insertEntregasLoop(recs);
 }
 
 /**

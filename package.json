@@ -1,3 +1,9 @@
 {
-  "dependencies": {}
+  "scripts": {
+    "verificar": "node tools/verificar-datos-reales.mjs",
+    "verificar:actualizar": "node tools/verificar-datos-reales.mjs --actualizar"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5"
+  }
 }

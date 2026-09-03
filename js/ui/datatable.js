@@ -151,7 +151,7 @@ async function renderTabs() {
     ];
     cont.innerHTML = tabs.map(t => `
         <button class="btn-tab ${estado.tipo === t.tipo ? 'active' : ''}" data-tipo="${esc(t.tipo)}">
-            ${esc(t.etiqueta || t.tipo)} <span class="tab-n">${nf(t.n)}</span>
+            ${t.posibleDuplicadoCargas ? '<i class="fa-solid fa-triangle-exclamation" style="color:var(--accent-amber,#e0a000)" title="Parece duplicar Cargas de Combustible — no se usa en el análisis"></i> ' : ''}${t.resumenDerivable ? '<i class="fa-solid fa-circle-info" style="color:var(--text-muted)" title="Resumen ya calculable desde otra pestaña"></i> ' : ''}${esc(t.etiqueta || t.tipo)} <span class="tab-n">${nf(t.n)}</span>
         </button>`).join('');
 
     cont.querySelectorAll('.btn-tab').forEach(b => {
@@ -777,6 +777,12 @@ const COLS_MOV = {
         { k: 'distancia', label: 'Km', num: 0 },
         { k: '_ralenti', label: 'Hs ralentí', num: 1 }, { k: '_movimiento', label: 'Hs movimiento', num: 1 },
         { k: '_total', label: 'Hs total', num: 1, fuerte: true }
+    ],
+    entrega: [
+        { k: 'fecha', label: 'Fecha' }, { k: 'remito', label: 'N° Remito' },
+        { k: 'volumen', label: 'Volumen (m³)', num: 2 },
+        { k: 'datos.Planta', label: 'Planta' }, { k: 'datos.Cliente', label: 'Cliente' },
+        { k: 'fuentes', label: 'Fuente' }
     ]
 };
 
@@ -784,10 +790,20 @@ async function renderMovimientos(tipo) {
     const todos = (await getAllRawRecords()).filter(r => r.type === tipo);
     const etiqueta = todos[0]?.type_label || tipo;
     const esCarga = tipo === 'carga';
+    const esDuplicadoCargas = !esCarga && todos[0]?._posible_duplicado_cargas;
+    const esResumenDerivable = !esCarga && todos[0]?._resumen_derivable;
+    const esEntregas = tipo === 'entrega';
+    const conConflicto = esEntregas ? todos.filter(r => r._conflicto_remito).length : 0;
 
     document.getElementById('table-title').textContent = etiqueta;
     document.getElementById('table-desc').innerHTML = esCarga
         ? 'Registro histórico de cargas. Las filas marcadas en naranja tienen un interno desconocido — hacé clic en <strong>Corregir</strong> para asignarlas a un equipo o eliminarlas. Cualquier otra celda (fecha, litros, importe, lugar, centro de costo, chofer…) se edita haciendo click directo encima. La corrección se guarda y se re-aplica automáticamente al reimportar el mismo archivo.'
+        : esDuplicadoCargas
+        ? '⚠ <strong>Esta planilla tiene forma de carga de combustible</strong> (litros + tipo de combustible) pero no es el formato oficial de "Cargas de Combustible" (le falta "Lugar de carga") — probablemente sea el mismo gasto exportado desde otro sistema (ej. el reporte propio de una estación de servicio). <strong>No se usa para calcular el consumo real</strong>, para no contar dos veces las mismas cargas. Si en realidad trae cargas que Cargas de Combustible NO tiene, avisá para sumarlas a mano en vez de dejarlas acá sin usar.'
+        : esResumenDerivable
+        ? 'ℹ️ Esto es un <strong>resumen ya calculado</strong> a partir de las mismas entregas que están en "Entregas (Loop)" — sumando el Volumen de cada equipo por mes se llega a los mismos números. No aporta datos nuevos: se conserva por si querés mirarlo, pero no hace falta volver a subirlo cada vez.'
+        : esEntregas
+        ? `Entregas de Loop, cruzadas por N° de Remito entre "Informe Entregas" y "Exportado informe de Viajes": si dos filas del mismo remito y equipo coincidían en todo, quedaron fusionadas en una sola.${conConflicto ? ` <strong style="color:var(--accent-red,#ff453a)">⚠ ${conConflicto} filas marcadas en rojo tienen el mismo remito con datos que NO coinciden</strong> — se guardaron las dos, sin adivinar cuál es la correcta: hay que decidir contra el comprobante.` : ' No se encontraron remitos con datos contradictorios entre las dos fuentes.'}`
         : 'Registro histórico. Se muestra <strong>interno + dominio</strong> de cada fila: es la llave con la que se cruza contra el maestro. Cualquier celda se puede corregir haciendo click encima.';
     mostrarBotonesMaestro(false);
     mostrarBotonAjustarMetas(false);
@@ -873,7 +889,7 @@ async function renderMovimientos(tipo) {
 
     // Solo fecha/fecha_hasta y las columnas derivadas del GPS (_ralenti/_movimiento/_total,
     // calculadas a partir de r.horas, no un campo propio) quedan afuera de la edición directa.
-    const noEditable = new Set(['_ralenti', '_movimiento', '_total']);
+    const noEditable = new Set(['_ralenti', '_movimiento', '_total', 'fuentes']);
 
     const colspan = cols.length + 2 + (esCarga ? 2 : 0);
     document.getElementById('table-header').innerHTML =
@@ -897,7 +913,7 @@ async function renderMovimientos(tipo) {
             if (esHuerfana && !yaCorregida) nHuerfanas++;
         }
 
-        const rowClass = esHuerfana && !yaCorregida ? 'carga-huerfana' : (yaCorregida ? 'carga-corregida' : '');
+        const rowClass = esHuerfana && !yaCorregida ? 'carga-huerfana' : (yaCorregida ? 'carga-corregida' : (r._conflicto_remito ? 'carga-huerfana' : ''));
         const dataAttrs = ` data-recid="${r.id}"`;
         const selTd = esCarga ? `<td class="td-sel"><input type="checkbox" class="chk-fila-mov" data-recid="${r.id}" ${seleccionMasivaMov.has(r.id) ? 'checked' : ''}></td>` : '';
         const accionTd = esCarga ? `<td class="td-correc">${
@@ -919,6 +935,7 @@ async function renderMovimientos(tipo) {
                 else if (c.k === '_total') v = `<strong>${nf(h.total, 1)}</strong>`;
                 else if (c.k === 'fecha' || c.k === 'fecha_hasta') v = esc(formatFechaAR(r[c.k]));
                 else if (c.k.startsWith('datos.')) v = esc(r.datos?.[c.k.slice(6)] ?? '');
+                else if (c.k === 'fuentes') v = esc(Array.isArray(r.fuentes) ? r.fuentes.join(' + ') : (r.formato || ''));
                 else if (c.money) v = `$${nf(r[c.k], 2)}`;
                 else if (c.num !== undefined) v = nf(r[c.k], c.num);
                 else v = esc(r[c.k] ?? '');
