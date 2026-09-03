@@ -119,7 +119,17 @@ The `TIPO` column in the Equipos spreadsheet is not trustworthy (tractors are la
    monthly files give an Excel fraction of a day (`0.5` = 12 h), while a consolidated
    multi-month file gives text like `"3 days, 10:53:03"` (= 82.88 h). `parseExcelHours()` /
    `parseDuration()` handle both; a parser that only splits on `:` silently drops the whole-day
-   part, which is 72 of those 82 hours. Same trap applies to any new time column.
+   part, which is 72 of those 82 hours. Same trap applies to any new time column — **any GPS
+   column that Excel formats as `[h]:mm` (elapsed hours) is a fraction-of-a-day serial number
+   and needs `parseExcelHours()`, never `parseNumber()`**, or it comes out 24× too small.
+   Horómetro (added to the GPS export starting with the July 2026 file) once had exactly this
+   bug: verified against that real file, its raw value `1343.4488…` displays as `32242:46` in
+   Excel (`1343.4488 × 24 = 32242.77` h) but was being read with `parseNumber()`, storing the
+   day count instead of hours — silently wrong by 24× the moment anything computes with it,
+   even though nothing did yet. Fixed in `handleGPS()` (xlsx-parser.js) to use
+   `parseExcelHours()`, same as ralentí/movimiento, so every time-like field in a GPS record
+   shares one unit (hours) — Odómetro stays on `parseNumber()`, it's plain kilometers, no
+   day-serial encoding involved.
 3. `js/data/database.js` — IndexedDB wrapper. Two conceptually different stores:
    - `equipos` (the "maestro"): one row per equipment, **persists across sessions**, merges
      non-destructively on reimport (a new upload only overwrites fields it actually carries a

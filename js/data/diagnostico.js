@@ -9,7 +9,7 @@
  *  - Un consumo calculado sobre pocas cargas o un solo período no es confiable y se avisa.
  */
 
-import { getPrefijo, clasificarIdentificador, MESES, normalizeEquipoKey, TIPO_POR_PREFIJO, provinciaDeCentroCosto } from './normalizer.js';
+import { getPrefijo, clasificarIdentificador, MESES, normalizeEquipoKey, TIPO_POR_PREFIJO, provinciaDeCentroCosto, sugerirPosibleTypo } from './normalizer.js';
 import { diasHabiles, esDiaHabil } from './feriados.js';
 import { jornadaEsperada } from './analyzer.js';
 
@@ -1733,9 +1733,41 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     }
 
+    // ---------- 7 bis. Códigos huérfanos que parecen error de tipeo ----------
+    // Caso real que lo motivó: un chofer que esa semana cargó GE01, GE02 y GE03 (grupos
+    // electrógenos reales de Áridos) una sola vez escribió "GR01" — un prefijo que no existe en
+    // ningún lado de la flota. No es un equipo nuevo ni gasto ajeno: es una carga real, de un
+    // equipo real, con el código mal tipeado. Se señala aparte (nunca se corrige solo — ver
+    // sugerirPosibleTypo en normalizer.js) para que no termine ni dado de alta como equipo
+    // fantasma ni aceptado como "así está bien", perdiendo de vista que esos litros son de un
+    // equipo que sí existe.
+    const internosDelMaestro = filas.map(f => f.equipo.interno).filter(Boolean);
+    const codigosYaAceptados = new Set(noFlotaAceptados.map(a => a.codigo));
+    const posiblesTypos = (totales.huerfanos || [])
+        .filter(h => !codigosYaAceptados.has(h.interno))
+        .map(h => ({ huerfano: h, sugerido: sugerirPosibleTypo(h.interno, internosDelMaestro) }))
+        .filter(x => x.sugerido);
+
+    if (posiblesTypos.length) {
+        const litros = posiblesTypos.reduce((s, x) => s + x.huerfano.litros, 0);
+        hallazgos.push({
+            id: 'huerfanos_typo', severidad: 'media', icono: 'fa-spell-check',
+            titulo: `${posiblesTypos.length} código${posiblesTypos.length === 1 ? '' : 's'} huérfano${posiblesTypos.length === 1 ? '' : 's'} parece${posiblesTypos.length === 1 ? '' : 'n'} error de tipeo de un equipo real`,
+            detalle: `Suman <strong>${fmt(litros)} L</strong>. Cada código está a un solo carácter de un interno que sí existe en el maestro — más probable que sea la misma carga mal escrita que un equipo nuevo. No se corrige solo (adivinar cuál es el correcto no es aceptable): confirmá contra el comprobante y reasigná desde "Corregir" en Base de Datos.`,
+            equipos: posiblesTypos.slice(0, 12).map(x => ({
+                interno: x.huerfano.interno, denominacion: '',
+                texto: `¿${x.sugerido}?`,
+                sub: `${x.huerfano.cargas} carga${x.huerfano.cargas === 1 ? '' : 's'} · ${fmt(x.huerfano.litros, 1)} L${x.huerfano.dominio ? ` · dominio ${x.huerfano.dominio}` : ''}`
+            }))
+        });
+    }
+
     // ---------- 8. Consumo fuera de la flota ----------
     const codigosNoFlotaAceptados = new Set(noFlotaAceptados.map(a => a.codigo));
-    const grupos = clasificarNoFlota(totales.huerfanos || [], rawRecords, codigosNoFlotaAceptados);
+    const grupos = clasificarNoFlota(
+        (totales.huerfanos || []).filter(h => !posiblesTypos.some(x => x.huerfano === h)),
+        rawRecords, codigosNoFlotaAceptados
+    );
     grupos.forEach(g => {
         const notaExcluidos = g.excluidos
             ? ` <strong>${g.excluidos}</strong> código${g.excluidos === 1 ? '' : 's'} más (${fmt(g.excluidosLitros)} L) ${g.excluidos === 1 ? 'quedó afuera porque se marcó' : 'quedaron afuera porque se marcaron'} como "así está bien".`

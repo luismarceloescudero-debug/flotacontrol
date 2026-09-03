@@ -281,6 +281,72 @@ export function normalizeEquipoKey(interno) {
 }
 
 /**
+ * ¿"a" y "b" difieren en, como mucho, UN carácter (una sustitución, o una letra de más o de
+ * menos)? No es una distancia de edición completa (no hace falta: alcanza con distinguir
+ * "0 o 1 edición" de "2 o más"), así que corre en una sola pasada por string.
+ *
+ * Caso real que motivó esto: una carga con interno "GR01" — un chofer que esa semana cargó
+ * GE01, GE02 y GE03 (grupos electrógenos reales de Áridos) una sola vez escribió "GR01" en vez
+ * de "GE01". El maestro no tiene ningún prefijo "GR" — es del todo ajeno a la nomenclatura de
+ * la flota (ver TIPO_POR_PREFIJO) — así que no calzaba ni como "interno nuevo" ni como nada
+ * reconocible, y quedaba como huérfano genérico sin ninguna pista de qué pasó en realidad.
+ */
+function aUnaEdicion(a, b) {
+    if (a === b) return false; // idéntico no es "parecido", es el mismo
+    const la = a.length, lb = b.length;
+    if (Math.abs(la - lb) > 1) return false;
+    if (la === lb) {
+        let dif = 0;
+        for (let i = 0; i < la; i++) { if (a[i] !== b[i]) { dif++; if (dif > 1) return false; } }
+        return dif === 1;
+    }
+    const [corta, larga] = la < lb ? [a, b] : [b, a];
+    let i = 0, j = 0, edits = 0;
+    while (i < corta.length && j < larga.length) {
+        if (corta[i] === larga[j]) { i++; j++; }
+        else { edits++; if (edits > 1) return false; j++; }
+    }
+    return true;
+}
+
+/**
+ * Un código huérfano (sin equipo en el maestro) que está a un solo carácter de un interno REAL
+ * del maestro es, con mucha más probabilidad, un error de tipeo que un equipo nuevo — pero SOLO
+ * cuando su prefijo no existe en ningún lado de la flota. Si el prefijo ya tiene equipos reales
+ * (ej. "CL03" con "CL-01" y "CL-02" ya en el maestro), lo más probable es lo contrario: es el
+ * tercer equipo de esa serie, no un tipeo de uno de los dos primeros — un tipeo casi siempre
+ * cae, por azar, a una edición de distancia de OTRO número de la misma serie (todos comparten
+ * prefijo y largo parecido), así que sin este filtro cualquier alta legítima de un prefijo
+ * conocido se marcaría como sospechosa. El caso real que sí tiene que detectarse: "GR01", con
+ * un chofer que esa semana cargó GE01/GE02/GE03 y ningún "GR" existe en ningún lado de la
+ * nomenclatura de la flota (ver TIPO_POR_PREFIJO) — ahí sí, la única explicación razonable es
+ * el tipeo.
+ *
+ * "El prefijo ya existe en el maestro" no alcanza como filtro: verificado contra datos reales,
+ * "CA01" (CALDERA, 11 cargas sostenidas — consumo real, no un tipeo aislado) y "LM02" (LIMPIEZA)
+ * también se marcaban como sospechosos de "CF01"/"BM02" porque CA y LM no tienen ningún equipo
+ * dado de alta todavía — pero SÍ son categorías reconocidas (están en TIPO_POR_PREFIJO), solo
+ * que sin instancia en el maestro. El filtro correcto es más estricto: el prefijo tiene que ser
+ * desconocido en cualquier sentido, ni con equipos reales ni como categoría con nombre.
+ *
+ * Devuelve el interno real más parecido, o null si no aplica. Nunca corrige solo: es una
+ * sugerencia para que una persona confirme contra el comprobante, no una asignación automática.
+ */
+export function sugerirPosibleTypo(codigo, internosReales) {
+    const clave = normalizeEquipoKey(codigo);
+    if (!clave) return null;
+    const prefijo = getPrefijo(clave);
+    const prefijoConocido = !!TIPO_POR_PREFIJO[prefijo]
+        || internosReales.some(real => getPrefijo(normalizeEquipoKey(real)) === prefijo);
+    if (prefijoConocido) return null;
+    for (const real of internosReales) {
+        const claveReal = normalizeEquipoKey(real);
+        if (claveReal && aUnaEdicion(clave, claveReal)) return real;
+    }
+    return null;
+}
+
+/**
  * Clasifica un token suelto como DOMINIO (patente) o INTERNO.
  *
  * Patentes argentinas:

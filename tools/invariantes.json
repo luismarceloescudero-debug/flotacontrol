@@ -1,5 +1,5 @@
 {
-  "generado": "2026-09-03T19:12:17.058Z",
+  "generado": "2026-09-03T19:58:05.522Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
@@ -135,7 +135,7 @@
   },
   "duplicados_exactos_detectados": 3,
   "equipos_analizados": 187,
-  "hallazgos_generados": 21,
+  "hallazgos_generados": 22,
   "hallazgos_por_id": {
     "sobreconsumo": 1,
     "meses_sin_gps": 1,
@@ -145,6 +145,7 @@
     "subutilizacion": 1,
     "metas": 1,
     "sin_medicion": 1,
+    "huerfanos_typo": 1,
     "datos_parciales": 1,
     "calidad_planilla": 1,
     "entregas_conflicto_remito": 1,

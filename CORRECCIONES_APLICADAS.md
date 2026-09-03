@@ -634,3 +634,39 @@ Borrados también los 7 docs históricos de la reparación vía Roo Code
 `DIAGNOSTICO_NORMALIZACION.md`, `RESUMEN_EJECUTIVO.md`) — su contenido queda superado por este
 archivo y disponible en el historial de git si hace falta. CLAUDE.md actualizado para no
 referenciarlos.
+
+## 03/09/2026, tercera tanda — un bug de normalización real, y el detector de tipeo que casi se pasa de listo
+
+1. **Bug de normalización real: Horómetro se guardaba 24 veces más chico** (`handleGPS()` en
+   xlsx-parser.js). El GPS empezó a exportar esta columna en el archivo de julio 2026, con la
+   MISMA codificación que Tiempo en ralentí/movimiento (fracción de día de Excel, formato de
+   celda `[h]:mm`) — pero se leía con `parseNumber()` en vez de `parseExcelHours()`. Verificado
+   contra el archivo real: el crudo `1343.4488…` de BM-07 muestra "32242:46" en Excel
+   (`1343.4488 × 24 = 32242,77` hs) pero quedaba guardado como `1343.45` — un número que hoy no
+   alimenta ningún cálculo (Horómetro está documentado como "nunca leer como horas del período"),
+   pero que sería 24 veces menor a la primera vez que alguien lo use. Corregido para que
+   comparta la misma normalización que el resto de los campos de tiempo del GPS.
+
+2. **Detector de "código huérfano que parece error de tipeo"**, agregado a partir de un caso
+   real: una carga con interno "GR01" — un chofer que esa semana cargó GE01, GE02 y GE03 (grupos
+   electrógenos reales) escribió "GR01" una sola vez. "GR" no existe en ningún lado de la
+   nomenclatura de la flota. `sugerirPosibleTypo()` (normalizer.js) compara cada código huérfano
+   contra los internos reales del maestro; si está a un solo carácter de uno y su prefijo no es
+   reconocido en ningún sentido (ni con equipos dados de alta, ni como categoría con nombre en
+   `TIPO_POR_PREFIJO`), lo señala como sospechoso — nunca lo corrige solo. Aparece como hallazgo
+   aparte ("parece error de tipeo") y `autocorreccion.js` lo excluye tanto del alta automática
+   como de la aceptación como "así está bien", para no perder de vista que esos litros son de un
+   equipo que sí existe.
+
+   **Dos falsos positivos encontrados y corregidos antes de confiar en el detector**: la primera
+   versión solo miraba "¿el prefijo tiene algún equipo YA dado de alta?" — con esa regla, "CL03"
+   (un tercer caloventor, con CL-01 y CL-02 ya en el maestro) se marcaba como sospechoso de ser
+   un tipeo de "CL01", cuando en realidad es sencillamente el equipo siguiente de la misma serie
+   (mismo problema con "MT03"/"MT04"). Corregido excluyendo cualquier prefijo con equipos reales
+   del chequeo. Con eso solo, aparecieron dos MÁS: "CA01" (11 cargas sostenidas, 1.345 L —
+   consumo real de una caldera, no un tipeo aislado) y "LM02" se marcaban sospechosos de
+   "CF01"/"BM02" porque CA y LM no tienen ningún equipo dado de alta todavía — pero SÍ son
+   categorías reconocidas (`TIPO_POR_PREFIJO` las nombra). El filtro final exige que el prefijo
+   sea desconocido en cualquier sentido, no solo "sin equipos en el maestro". Verificado: con el
+   filtro final, de todos los huérfanos reales, únicamente GR01 queda señalado, sugiriendo
+   correctamente GE01.

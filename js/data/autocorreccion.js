@@ -19,7 +19,7 @@
  * Cada acción se aplica directamente (no pide confirmación previa — eso volvería todo manual
  * otra vez) y queda anotada en `accionesAutomaticas` para poder revisarla o deshacerla después.
  */
-import { normalizeEquipoKey, clasificarIdentificador, getPrefijo } from './normalizer.js';
+import { normalizeEquipoKey, clasificarIdentificador, getPrefijo, sugerirPosibleTypo } from './normalizer.js';
 import {
     upsertEquipos, setNoFlotaAceptado, updateEquipo, registrarEdicion, registrarAccionAutomatica
 } from './database.js';
@@ -47,9 +47,21 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
     const resultado = { altas: 0, aceptados: 0, metas: 0 };
     const internosExistentes = new Set(equipos.map(e => normalizeEquipoKey(e.interno)));
 
+    // Internos reales del maestro TAL COMO ESTÁN (no la clave normalizada): sugerirPosibleTypo
+    // normaliza los dos lados internamente, y necesita el valor original para poder devolverlo
+    // como sugerencia legible.
+    const internosReales = equipos.map(e => e.interno).filter(Boolean);
+
     for (const h of huerfanos) {
         if (codigosAceptados.has(h.interno)) continue; // ya resuelto en una pasada anterior
         const clas = clasificarIdentificador(h.interno);
+
+        // Un código a un solo tipeo de un interno real (ver GR01 vs GE01, el caso que motivó
+        // esto) no se toca en absoluto: ni se da de alta como equipo nuevo, ni se acepta como
+        // "así está bien" — las dos acciones estarían adivinando en vez de confirmar contra el
+        // comprobante. Queda como huérfano común; generarDiagnostico() lo señala aparte con la
+        // sugerencia, para que se corrija a mano desde "Corregir" en Base de Datos.
+        if (sugerirPosibleTypo(h.interno, internosReales)) continue;
 
         if (clas.tipo === 'interno' && PREFIJOS_CALCULABLES.has(getPrefijo(clas.valor))) {
             const key = normalizeEquipoKey(clas.valor);

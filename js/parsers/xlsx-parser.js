@@ -18,7 +18,7 @@ import {
     insertEntregasLoop
 } from '../data/database.js';
 import {
-    parseDate, parseNumber, normalizeString, normalizeEquipoKey, aggregateHours,
+    parseDate, parseNumber, normalizeString, normalizeEquipoKey, aggregateHours, parseExcelHours,
     getDenominacion, parseConsumoEstimado, extraerIdentidad, partesFecha, slugCampo
 } from '../data/normalizer.js';
 
@@ -423,8 +423,15 @@ async function handleGPS(filas, filename, desde, hasta, mapeo) {
             fecha_hasta: hasta || null,
             distancia: parseNumber(val(row, 'km', ['KILOMETROS RECORRIDOS', 'KILOMETROS', 'DISTANCIA'], mapeo)),
             horas,
+            // Odómetro es kilómetros llanos (parseNumber alcanza). Horómetro, en cambio, llega
+            // con la MISMA codificación que ralentí/movimiento: fracción de día de Excel con
+            // formato de celda [h]:mm — verificado contra el archivo de julio real, donde el
+            // crudo 1343.4488... muestra "32242:46" (1343.4488 × 24 = 32242,77 hs). Si se guarda
+            // con parseNumber (como ralentí/movimiento antes de aggregateHours) queda 24 veces
+            // más chico que las horas reales — un número que hoy no alimenta ningún cálculo,
+            // pero que sí lo haría el día que se use este dato para mantenimiento por horómetro.
             odometro: parseNumber(val(row, 'odometro', ['ODOMETRO'], mapeo)),
-            horometro: parseNumber(val(row, 'horometro', ['HOROMETRO'], mapeo)),
+            horometro: parseExcelHours(val(row, 'horometro', ['HOROMETRO'], mapeo)),
             grupo: normalizeString(val(row, 'grupo', ['GRUPO'], mapeo)) || ''
         });
     });
