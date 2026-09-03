@@ -1317,7 +1317,9 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         if (porTipo.meta_alineada.length) partes.push(`${porTipo.meta_alineada.length} meta${porTipo.meta_alineada.length === 1 ? '' : 's'} alineada${porTipo.meta_alineada.length === 1 ? '' : 's'} al consumo real`);
         hallazgos.push({
             id: 'acciones_automaticas', severidad: 'baja', icono: 'fa-robot', no_comparar: true,
-            titulo: `${accionesRecientes.length} corrección${accionesRecientes.length === 1 ? '' : 'es'} se aplicó sola: ${partes.join(', ')}`,
+            titulo: accionesRecientes.length === 1
+                ? `1 corrección se aplicó sola: ${partes.join(', ')}`
+                : `${accionesRecientes.length} correcciones se aplicaron solas: ${partes.join(', ')}`,
             detalle: `El diagnóstico automático resuelve solo lo que no tiene ambigüedad — nunca adivina, solo actúa donde el siguiente paso es el único posible. <strong>Equipo nuevo dado de alta:</strong> el código tenía forma de interno válida y no existía en el maestro. <strong>Aceptado "así está bien":</strong> el código no tiene forma de interno ni de patente, no hay más dato para resolverlo. <strong>Meta alineada:</strong> el equipo no tenía meta cargada, se usó su propio consumo real medido — se pisa sola en cuanto llegue el valor de fábrica real. Para deshacer cualquiera de estas: un alta se corrige desde Base de Datos, un código aceptado se destilda desde "Códigos válidos así", una meta se reemplaza desde "Ajustar metas".`,
             equipos: accionesRecientes.slice(0, 15).map(a => ({
                 interno: a.codigo, denominacion: '',
