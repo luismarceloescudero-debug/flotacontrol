@@ -90,7 +90,9 @@ function render() {
                 <button class="btn-icon" data-cerrar aria-label="Cerrar"><i class="fa-solid fa-xmark"></i></button>
             </div>
 
-            ${d.valor !== undefined ? `<div class="calc-panel-valor">${esc(d.valor)}</div>` : ''}
+            ${/* d.valor: siempre generado por la app (nf()/money()/"590.761 <small>L</small>"), nunca texto
+                libre de una planilla — escaparlo mostraba la etiqueta de unidad como texto literal. */ ''}
+            ${d.valor !== undefined ? `<div class="calc-panel-valor">${d.valor}</div>` : ''}
 
             ${pasos.length ? `
             <ol class="calc-pasos">

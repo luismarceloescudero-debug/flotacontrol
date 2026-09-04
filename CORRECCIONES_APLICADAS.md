@@ -799,3 +799,105 @@ desglose por lugar mostró los 8 lugares con los litros y combustibles correctos
 **Sigue pendiente**: diferenciar el cuerpo del reclamo GPS por categoría más allá de agrupar por
 texto de motivo; unificar los botones de acción de los hallazgos con selección múltiple; decidir
 qué hacer con el campo fantasma "Equipo asociado"; construir una vista de consumo por chofer.
+
+## 04/09/2026, cuarta tanda — feedback de uso real sobre el diagnóstico en producción
+
+Tanda grande de correcciones puntuales, todas motivadas por casos reales que el usuario vio
+usando la app con los archivos de `ARCHIVOS/` (ver equipos concretos citados abajo).
+
+1. **KPI "Sobre la meta" en 0 bloqueaba "Ajustar metas"**: `acciones` del KPI era `[]` entero
+   cuando `sobre_meta === 0`, así que no había forma de llegar a "Ajustar sus metas" desde ahí
+   aunque el usuario quisiera revisar/cargar metas sin que nadie estuviera excedido todavía.
+   Ahora "Ajustar metas" siempre está disponible (abre con filtro "todos" en vez de "excedidos"
+   cuando no hay nadie sobre la meta); "Ver estos equipos" y el zoom por equipo siguen
+   condicionados a que haya al menos uno excedido. (`panel.js`)
+
+2. **`<small>L</small>`/`<small>km</small>` se veían como texto literal al abrir el popover de
+   cálculo de un KPI**: `calcpopover.js` escapaba `d.valor` con `esc()`, pero ese valor lo arma
+   siempre la app (nunca texto libre de una planilla) y algunos KPI incluyen HTML intencional
+   para el sufijo de unidad — el mismo patrón que `<strong>`/`<code>` en `diagnostico.js` y
+   `modals.js`. Se dejó de escapar, igual que ya no se escapaba en la tarjeta del dashboard.
+
+3. **"Vehículos con patente pero sin interno en el padrón" se leía como error fijo**: la
+   severidad era `media` y el texto asumía que siempre son unidades propias que faltan dar de
+   alta. En la práctica varios son vehículos ajenos (préstamo/alquiler/tercero) que jamás van a
+   tener interno propio — no es un dato faltante. Bajada la severidad a `baja` (igual que el
+   resto de "consumo fuera de la flota") y reescrito el texto para nombrar el caso real y guiar
+   a "Así está bien" en vez de sonar a pendiente.
+
+4. **"Así está bien" no admitía selección múltiple**: para huérfanos con patente, servicios de
+   planta u "otros" solo se podía aceptar código por código. Se agregó el mismo patrón de
+   checkbox + acción en bloque que ya usa ralentí (`btn-nofl-valido-lote`, reutiliza el checkbox
+   `chk-ralenti-promedio`). Además, el hallazgo "código huérfano parece error de tipeo"
+   (`huerfanos_typo`) ahora también acepta "Así está bien" — caso real: **ST01**, un interno dado
+   de alta fuera de flota para imputar la limpieza/calibración del surtidor del lugar de carga,
+   que el detector de tipeo señalaba como posible "ST0_" real sin forma de aceptarlo.
+
+5. **Duplicados posibles no consideraban la hora**: la planilla de Cargas trae en varias filas
+   reales la fracción de hora dentro de `FECHA` (verificado: **TR32** tiene dos cargas el mismo
+   día a las 01:23 y a las 12:13, litros casi iguales, importe apenas distinto — claramente dos
+   eventos reales, no una repetida). El parser no extraía esa hora y el chequeo de "posible
+   repetida" no la usaba como campo de identidad. Se agregó `parseHoraDeFecha()`
+   (normalizer.js, devuelve `''` si la fecha no trae fracción real) y se sumó `hora` a
+   `CAMPOS_IDENTIDAD` en `auditarCalidadCargas()` — ahora aparece en "Difiere en" cuando las dos
+   cargas tienen horarios bien distintos, reforzando que no es una repetida.
+
+6. **"Declarar actividad estimada" en lote forzaba el mismo valor a todos los equipos**: al abrir
+   el modal para varios equipos (ej. un grupo de 9), guardaba el mismo rango min–max para todos.
+   Caso real: dentro de un grupo la mayoría trabaja 10-12 hs/día pero **GE04** trabaja 6. Se
+   agregó una tabla "Por equipo" (solo cuando hay más de un equipo seleccionado) con un
+   min/máximo opcional por fila que, si se completa, pisa el valor general SOLO para ese equipo;
+   el resto de los campos (unidad, período, temporada, litros, nota) se siguen compartiendo.
+   (`panel.js`)
+
+7. **"Declarar km/horas estimados" faltaba en dos hallazgos**: `datos_parciales` (equipos con
+   datos de solo una parte del período) solo ofrecía "revisar equipo por equipo", y `bajo_uso`
+   (equipos con 1-3 cargas y sin ningún registro de GPS — caso real citado: **GE04**, 6 hs/día en
+   vez del promedio del grupo) no tenía ninguna acción propuesta más que "Comparar estos
+   equipos". Agregada la acción a los dos. (No confundir con `sin_gps_estimado`, un hallazgo
+   distinto — "equipos sin GPS con actividad estimada que sí pasa el control de razonabilidad" —
+   que ya la tenía y a propósito no necesita más acción: el usuario confirmó que ese caso está
+   bien así, mejora solo con más datos con el tiempo.)
+
+8. **"Cargas anómalas" sin forma de ver el registro**: el hallazgo de cargas muy por encima de lo
+   habitual no tenía ningún botón por fila — no había manera de ir a la tabla a comparar contra
+   el resto de las cargas del equipo. Agregado "Ver y comparar cargas" (mismo botón que ya usan
+   los hallazgos de "consumo fuera de la flota").
+
+9. **"sin_medicion" sin reclamo GPS**: un equipo que carga combustible pero el GPS no reporta ni
+   un km ni una hora en todo el período es, en la práctica, el mismo tipo de problema que
+   ralentí/ignición inconsistentes — un reclamo al proveedor de GPS con el dato en la mano.
+   Sumado a `puedeReclamarGPS` (checkbox, botón por fila, "Reclamo GPS (selección)" y el listado
+   de reclamos generados), con un motivo sugerido propio (`motivoReclamoGPS()`).
+
+Syntax-check limpio en los 5 módulos tocados (`node --input-type=module --check`) y
+`npm run verificar` corrido contra los archivos reales de `ARCHIVOS/` antes de commitear.
+
+### No implementado en esta tanda (evaluado y descartado por alcance/riesgo, o pendiente de una decisión del usuario)
+
+- **Sugerir un equipo par por marca/modelo/año/potencia cuando la estimación por cálculo inverso
+  no es creíble** (caso citado: CM43 sin GPS, usar CM48 o similar como referencia — el mismo
+  criterio que ya se aplicó a mano entre CF38 y CF37). Requiere una función nueva de selección de
+  par (hoy `estimacionCreible()` compara contra la mediana del grupo por denominación, pero no
+  ofrece un equipo concreto como sustituto) y verificación contra el maestro real de qué campos
+  de marca/modelo/potencia están cargados y con qué calidad. Queda para una tanda propia.
+- **Remitos de Loop que no coinciden entre sí**: llevar al registro en la tabla y generar un
+  pedido de revisión a Loop (mismo patrón que el reclamo GPS). El hallazgo de inconsistencia ya
+  existe; falta el botón de acción y la plantilla de reclamo hacia Loop. Pendiente.
+- **Acciones extra en "correcciones que se aplicaron solas"**: agregar "eliminar registro" y
+  "marcar como fuera de flota + ignorar automáticamente cuando el código no aparece en todos los
+  archivos analizados", además del "Deshacer" que ya existe. La función de borrado
+  (`deleteRawRecord`) ya existe y se usa en duplicados; falta decidir la regla exacta de "no
+  aparece en todos los archivos" antes de automatizarla. Pendiente.
+- **Cambiar el encabezado "Denominación" por "TIPO" en Base de Datos**: no se tocó a propósito.
+  "Denominación" es el valor canónico que calcula `getDenominacion()` (prefijo del interno); el
+  "TIPO" de la planilla de Equipos está documentado como no confiable (tractores figuran como
+  "CAMION" — ver `CLAUDE.md`). Renombrar la columna a "TIPO" mostrando el valor de
+  `getDenominacion()` reintroduciría exactamente la confusión que ese documento advierte. Falta
+  confirmar con el usuario si lo que pide es ese renombre igual, o mantener ambos conceptos
+  separados y visibles (Denominación calculada + TIPO crudo de la planilla, cada uno con su
+  propia columna).
+- **"Faltan los Resumen de Flota de N meses que sí tienen cargas"**: el usuario aclaró que esto
+  no es un bug — el período analizado es la intersección común a todos los archivos cargados por
+  diseño (`alinearCargasYGps()`/`filtrarPorPeriodo()`, ver invariante 1 en `CLAUDE.md`). No se
+  tocó código; se deja constancia acá para no volver a interpretarlo como dato faltante.

@@ -193,7 +193,11 @@ const ACCIONES_PROPUESTAS = {
     ],
     datos_parciales: [
         { texto: 'Revisar y decidir equipo por equipo', icono: 'fa-list-check', accion: 'revisar_parciales' },
+        { texto: 'Declarar km/horas estimados', icono: 'fa-gauge-high', accion: 'declarar_actividad' },
         { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+    ],
+    bajo_uso: [
+        { texto: 'Declarar km/horas estimados', icono: 'fa-gauge-high', accion: 'declarar_actividad' }
     ],
     gps_vs_ignicion: [
         { texto: 'Generar reclamo GPS (selección)', icono: 'fa-satellite-dish', accion: 'reclamo_ignicion' },
@@ -777,11 +781,13 @@ function renderKPIs(el, t, fuentes) {
                     { texto: 'Desglose por equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelPorEquipo({ campo: 'total_horas', tituloBase: 'Horas de uso', etiquetaValor: 'las horas totales', formatear: v => `${nf(v, 1)} hs`, fuenteTipo: 'gps' }) }
                 ] })}
             ${kpi({ id: 'kpi-sobre', label: 'Sobre la meta', valor: String(t.sobre_meta), sub: `de ${t.con_meta} equipos con meta`, clase: t.sobre_meta > 0 ? 'kpi-alert' : '', titulo: 'Equipos sobre la meta', pasos: t.pasos.sobre_meta,
-                acciones: t.sobre_meta > 0 ? [
-                    { texto: 'Ver estos equipos', icono: 'fa-eye', primaria: true, onClick: () => filtrarPorEstado('SOBRE') },
-                    { texto: 'Ajustar sus metas', icono: 'fa-sliders', onClick: () => abrirAjusteMetas(ultimoAnalisis, 'excedidos') },
-                    { texto: 'Ver el detalle de cada equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelEquiposSobreMeta() }
-                ] : [] })}
+                acciones: [
+                    ...(t.sobre_meta > 0 ? [
+                        { texto: 'Ver estos equipos', icono: 'fa-eye', primaria: true, onClick: () => filtrarPorEstado('SOBRE') },
+                        { texto: 'Ver el detalle de cada equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelEquiposSobreMeta() }
+                    ] : []),
+                    { texto: 'Ajustar metas', icono: 'fa-sliders', primaria: t.sobre_meta === 0, onClick: () => abrirAjusteMetas(ultimoAnalisis, t.sobre_meta > 0 ? 'excedidos' : 'todos') }
+                ] })}
             ${kpi({ id: 'kpi-equipos', label: 'Equipos', valor: String(t.equipos), sub: `${t.equipos_con_datos} con actividad · ${t.huerfanos.length} códigos sin padrón`, clase: t.huerfanos.length ? 'kpi-warn' : '', titulo: 'Equipos del maestro', pasos: t.pasos.equipos,
                 acciones: [
                     { texto: 'Ver maestro de equipos', icono: 'fa-table-list', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('maestro', '') },
@@ -851,14 +857,21 @@ function renderDiagnostico(analisis, rawRecords = []) {
         // el equipo GPS con el número en la mano. gps_vs_ignicion no tiene "ralentí aceptable"
         // (no aplica el concepto), pero sí necesita poder generar el reclamo fila por fila, no
         // solo en bloque desde el botón de la barra superior.
-        const puedeReclamarGPS = esRalenti || h.id === 'gps_vs_ignicion';
+        // "sin_medicion" (carga combustible pero el GPS no reporta ni un km ni una hora) es el
+        // mismo tipo de reclamo que ralentí/ignición: pedirle al proveedor de GPS que revise el
+        // equipo, con el dato en la mano — no un problema distinto que necesite su propio botón.
+        const puedeReclamarGPS = esRalenti || h.id === 'gps_vs_ignicion' || h.id === 'sin_medicion';
         // En ralentí, "Aceptable"/"Reclamo GPS" (por fila o en selección) YA SON las dos
         // resoluciones reales — "Cómo lo resuelvo" era un tercer botón que solo repetía la
         // explicación sin resolver nada, e "Ignorar"/"Ignorar todos" esconden el hallazgo sin
         // que el problema real (posible falla de GPS) quede investigado. Se ocultan acá para
         // que la barra no ofrezca más opciones que las que de verdad cierran el caso.
         const ocultarResolverEIgnorar = esRalenti;
-        const esNoflCard = h.id.startsWith('nofl_');
+        // "huerfanos_typo" se trata igual que un "nofl_*" a los fines de "Así está bien": una vez
+        // que una persona confirmó contra el comprobante que ese código puntual no es un typo real
+        // (ej. un interno fuera de flota que se dio de alta después, o un consumo de limpieza del
+        // surtidor), debe poder salir del hallazgo sin tener que ir a reasignarlo en Base de Datos.
+        const esNoflCard = h.id.startsWith('nofl_') || h.id === 'huerfanos_typo';
         // Los equipos ya atendidos en esta sesión salen de la lista principal: el hallazgo se va
         // vaciando a medida que se trabaja en vez de quedar siempre igual de largo.
         const atendidos = diagAtendidos.get(h.id) || new Map();
@@ -889,9 +902,10 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     ${acciones.filter(a => !(ocultarResolverEIgnorar && a.accion === 'resolver')).map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
                     ${h.equipos && h.equipos.length >= 2 && !h.no_comparar ? `<button class="btn-sm btn-diag-comparar-lista" data-hallazgo="${esc(h.id)}" title="Abrir comparativa con estos equipos"><i class="fa-solid fa-code-compare"></i> Comparar estos equipos</button>` : ''}
                     ${esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.length ? `<button class="btn-sm btn-ralenti-promediar" data-hallazgo="${esc(h.id)}" title="Marca como aceptable a los equipos tildados de la lista de abajo (por defecto, los ${h.internos_bajo_promedio.length} que están en la media de ${nf(h.promedio_ralenti)} hs para abajo)"><i class="fa-solid fa-check-double"></i> Marcar aceptable (selección)</button>` : ''}
-                    ${esRalenti && h.equipos && h.equipos.length ? `<button class="btn-sm btn-ralenti-reclamo-lote" data-hallazgo="${esc(h.id)}" title="Genera un reclamo de revisión de GPS para cada equipo tildado en la lista de abajo"><i class="fa-solid fa-satellite-dish"></i> Reclamo GPS (selección)</button>` : ''}
+                    ${(esRalenti || h.id === 'sin_medicion') && h.equipos && h.equipos.length ? `<button class="btn-sm btn-ralenti-reclamo-lote" data-hallazgo="${esc(h.id)}" title="Genera un reclamo de revisión de GPS para cada equipo tildado en la lista de abajo"><i class="fa-solid fa-satellite-dish"></i> Reclamo GPS (selección)</button>` : ''}
                     ${puedeReclamarGPS ? `<button class="btn-sm btn-ver-reclamos-gps" title="Ver los reclamos de revisión de GPS generados"><i class="fa-solid fa-list-check"></i> Reclamos GPS</button>` : ''}
                     ${esRalenti && ralentiEstadosCache.some(r => r.estado === 'aceptable') ? `<button class="btn-sm btn-ver-ralenti-aceptados" title="Ver y desmarcar equipos con ralentí aceptable"><i class="fa-solid fa-list-check"></i> Ralentí aceptable (${ralentiEstadosCache.filter(r => r.estado === 'aceptable').length})</button>` : ''}
+                    ${esNoflCard && equiposPendientes.length >= 2 ? `<button class="btn-sm btn-nofl-valido-lote" data-hallazgo="${esc(h.id)}" title="Marca como 'así está bien' a todos los códigos tildados de la lista de abajo"><i class="fa-solid fa-check-double"></i> Así está bien (selección)</button>` : ''}
                     ${esNoflCard && noFlotaAceptadosCache.length ? `<button class="btn-sm btn-ver-nofl-aceptados" title="Ver y desmarcar códigos marcados como 'así está bien'"><i class="fa-solid fa-list-check"></i> Códigos válidos así (${noFlotaAceptadosCache.length})</button>` : ''}
                     <span class="diag-acciones-sep"></span>
                     ${esIgnorado
@@ -947,14 +961,15 @@ function renderDiagnostico(analisis, rawRecords = []) {
                 <ul class="diag-lista">
                     ${equiposPendientes.map(e => {
                         const enSeg = seguidos.has(e.interno);
-                        const esNofl = h.id.startsWith('nofl_');
+                        const esNofl = h.id.startsWith('nofl_') || h.id === 'huerfanos_typo';
                         const esAccionAuto = h.id === 'acciones_automaticas';
                         const esCargasExceso = h.id === 'cargas_exceden_dias_habiles';
+                        const esAnomala = h.id === 'anomalas';
                         const esBajoPromedio = esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.includes(e.interno);
                         const estadoEq = seguimientoEquiposCache.get(e.interno);
                         return `
                         <li data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" class="${enSeg ? 'diag-li-seguimiento' : ''}${esNofl ? ' diag-li-nofl' : ''}${e.completitud ? ' diag-comp-' + esc(e.completitud) : ''}">
-                            ${puedeReclamarGPS ? `<input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(e.interno)}" ${esBajoPromedio ? 'checked' : ''} title="Incluir en las acciones en bloque de este hallazgo">` : ''}
+                            ${puedeReclamarGPS || esNofl ? `<input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(e.interno)}" ${esBajoPromedio ? 'checked' : ''} title="Incluir en las acciones en bloque de este hallazgo">` : ''}
                             <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
                             <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small>${estadoEq ? `<span class="diag-estado-badge" title="${esc(estadoEq.motivo || '')}"><i class="fa-solid fa-clipboard-list"></i> ${esc(CATEGORIA_SEGUIMIENTO_LABEL[estadoEq.categoria] || 'anotado')}</span>` : ''}</span>
                             ${esNofl ? `
@@ -969,6 +984,10 @@ function renderDiagnostico(analisis, rawRecords = []) {
                             ${esCargasExceso ? `
                             <button class="btn-xs btn-ver-mes-cargas" data-interno="${esc(e.interno)}" data-anio="${esc(e.anio)}" data-mes="${esc(e.mes)}" title="Ver las cargas de ${esc(e.interno)} en ese mes en la tabla de cargas de combustible">
                                 <i class="fa-solid fa-table-list"></i> Ver cargas de ese mes
+                            </button>` : ''}
+                            ${esAnomala ? `
+                            <button class="btn-xs btn-ver-cargas" data-interno="${esc(e.interno)}" title="Ver todas las cargas de este equipo en la tabla, para comparar esta contra las demás">
+                                <i class="fa-solid fa-table-list"></i> Ver y comparar cargas
                             </button>` : ''}
                             ${esRalenti ? `
                             <button class="btn-xs btn-ralenti-aceptable" data-interno="${esc(e.interno)}" title="Investigado: el ralentí de este equipo es normal. Sale de este hallazgo de ahora en más">
@@ -1211,6 +1230,24 @@ function renderDiagnostico(analisis, rawRecords = []) {
         });
     });
 
+    // Mismo "así está bien", pero para todos los códigos tildados de la tarjeta de una sola vez —
+    // necesario cuando el hallazgo trae varios códigos ya confirmados (huérfanos con patente,
+    // servicios de planta, o un típeo que en realidad resultó ser un alta fuera de flota legítima)
+    // en vez de tener que aceptarlos uno por uno.
+    el.querySelectorAll('.btn-nofl-valido-lote').forEach(b => {
+        b.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const card = b.closest('.diag-card');
+            const codigos = card ? [...card.querySelectorAll('.chk-ralenti-promedio:checked')].map(c => c.dataset.interno) : [];
+            if (!codigos.length) { alert('No hay códigos tildados. Tildá alguno en la lista de abajo para aceptarlos juntos.'); return; }
+            if (!confirm(`¿Marcar "así está bien" a los ${codigos.length} códigos tildados? Salen de este hallazgo de ahora en más.`)) return;
+            for (const codigo of codigos) await setNoFlotaAceptado(codigo);
+            noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => !codigos.includes(r.codigo))
+                .concat(codigos.map(codigo => ({ codigo })));
+            renderDiagnostico(analisis, rawRecords);
+        });
+    });
+
     el.querySelectorAll('.btn-ver-nofl-aceptados').forEach(b => {
         b.addEventListener('click', (e) => { e.stopPropagation(); abrirNoFlotaAceptados(analisis, rawRecords); });
     });
@@ -1252,9 +1289,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
     el.querySelectorAll('.btn-ralenti-reclamo').forEach(b => {
         b.addEventListener('click', (e) => {
             e.stopPropagation();
-            const motivoSugerido = b.dataset.hallazgo === 'ralenti_inverosimil'
-                ? 'Ralentí inverosímil (posible error de datos o sensor del GPS)'
-                : 'Ralentí muy alto sostenido: pedir verificación de que el equipo GPS esté reportando bien';
+            const motivoSugerido = motivoReclamoGPS(b.dataset.hallazgo);
             abrirNuevoReclamoModal([b.dataset.interno], motivoSugerido, analisis, rawRecords, b.dataset.hallazgo);
         });
     });
@@ -1269,10 +1304,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const card = b.closest('.diag-card');
             const internos = card ? [...card.querySelectorAll('.chk-ralenti-promedio:checked')].map(c => c.dataset.interno) : [];
             if (!internos.length) { alert('No hay equipos tildados. Tildá alguno en la lista de abajo para poder reclamarlos juntos.'); return; }
-            const motivoSugerido = hid === 'ralenti_inverosimil'
-                ? 'Ralentí inverosímil (posible error de datos o sensor del GPS)'
-                : 'Ralentí alto sostenido: pedir verificación de que el equipo GPS esté reportando bien';
-            abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords, hid);
+            abrirNuevoReclamoModal(internos, motivoReclamoGPS(hid), analisis, rawRecords, hid);
         });
     });
 
@@ -1423,6 +1455,15 @@ function mailtoReclamoLote(reclamos) {
         listado, ''
     );
     abrirMailto(asunto, cuerpo);
+}
+
+/** Motivo sugerido para el reclamo de GPS, según de qué hallazgo salió — cada uno describe un
+ * problema real distinto (ralentí alto, ignición que no cierra, o cero actividad reportada) y el
+ * texto queda editable antes de guardar, así que esto es solo un punto de partida razonable. */
+function motivoReclamoGPS(hallazgoId) {
+    if (hallazgoId === 'ralenti_inverosimil') return 'Ralentí inverosímil (posible error de datos o sensor del GPS)';
+    if (hallazgoId === 'sin_medicion') return 'El equipo carga combustible pero el GPS no reporta ni un km ni una hora en todo el período: pedimos verificación de que el equipo esté transmitiendo.';
+    return 'Ralentí alto sostenido: pedir verificación de que el equipo GPS esté reportando bien';
 }
 
 /** Modal de alta de reclamo GPS: reemplaza el prompt() del navegador (difícil de leer con un
@@ -2780,7 +2821,7 @@ function abrirCorregirDuplicados(rawRecords) {
 
                     ${posibles.length ? `
                     <h4 class="consejo-sub" style="margin-top:1.5rem"><i class="fa-solid fa-circle-question"></i> Posibles repetidas — a decidir a mano</h4>
-                    <p class="modal-note">Coinciden en equipo, fecha y litros, pero difieren en algún otro campo. Puede ser una carga repetida con un dato mal tipeado, o dos cargas legítimas del mismo día. <strong>La app no las toca:</strong> mirá el campo que difiere y resolvé desde la tabla de cargas si corresponde.</p>
+                    <p class="modal-note">Coinciden en equipo, fecha y litros, pero difieren en algún otro campo — incluida la <strong>hora</strong> cuando la planilla la trae: dos cargas del mismo día con horarios bien separados son casi siempre dos eventos reales, no una repetida. Puede ser una carga repetida con un dato mal tipeado, o dos cargas legítimas del mismo día. <strong>La app no las toca:</strong> mirá el campo que difiere y resolvé desde la tabla de cargas si corresponde.</p>
                     <table class="data-table">
                         <thead><tr><th>Equipo</th><th>Fecha</th><th>Litros</th><th>Difiere en</th><th>Original</th><th>Repetida</th><th></th></tr></thead>
                         <tbody>
@@ -3093,6 +3134,19 @@ function abrirActividadEstimada(internos, analisis) {
                         <label class="correc-field-label">Nota (opcional)</label>
                         <input type="text" id="act-nota" placeholder="ej: recorrido fijo planta-obra, ida y vuelta diario">
                     </div>
+                    ${lista.length > 1 ? `
+                    <h4 class="consejo-sub" style="margin-top:1rem"><i class="fa-solid fa-sliders"></i> Por equipo <small>(no siempre es el mismo valor para todos)</small></h4>
+                    <p class="modal-note">El rango de arriba se usa como valor por defecto. Completá una fila solo para el equipo que trabaja distinto — ej. <strong>GE04 con 6 hs/día</strong> mientras el resto del grupo hace 10.</p>
+                    <table class="data-table">
+                        <thead><tr><th>Equipo</th><th>Mínimo</th><th>Máximo</th></tr></thead>
+                        <tbody>
+                            ${lista.map(i => `<tr data-interno="${esc(i)}">
+                                <td class="cell-key">${esc(i)}</td>
+                                <td><input type="number" class="act-min-eq" min="0" step="any" placeholder="usar el de arriba"></td>
+                                <td><input type="number" class="act-max-eq" min="0" step="any" placeholder="usar el de arriba"></td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>` : ''}
                     <p class="modal-note" id="act-preview"></p>
                     <div class="modal-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:0.75rem">
                         <button class="btn-secondary btn-sm" data-close>Cancelar</button>
@@ -3176,7 +3230,18 @@ function abrirActividadEstimada(internos, analisis) {
             valor_min: v.valor_min, valor_max: v.valor_max || v.valor_min,
             litros_min: v.litros_min, litros_max: v.litros_max || v.litros_min
         };
-        for (const interno of lista) await setActividadEstimada({ interno, ...reg });
+        // Cada equipo puede tener su propia fila con un valor distinto (ver tabla "Por equipo"):
+        // si la tiene y trae algo cargado, pisa el rango general SOLO para ese equipo — el resto
+        // de campos (unidad, período, temporada, litros, nota) sí se comparten entre todos.
+        for (const interno of lista) {
+            const fila = modal.querySelector(`tr[data-interno="${CSS.escape(interno)}"]`);
+            const minEq = parseFloat(fila?.querySelector('.act-min-eq')?.value) || 0;
+            const maxEq = parseFloat(fila?.querySelector('.act-max-eq')?.value) || 0;
+            const regEquipo = (minEq > 0 || maxEq > 0)
+                ? { ...reg, valor_min: minEq || maxEq, valor_max: maxEq || minEq }
+                : reg;
+            await setActividadEstimada({ interno, ...regEquipo });
+        }
         const porTxt = v.base === 'dia' ? '/día hábil' : (v.base === 'mes' ? '/mes' : ' en total');
         await registrarEdicion({
             tabla: 'equipo', registroId: lista.join(','), etiqueta: `actividad declarada · ${v.periodo}`,

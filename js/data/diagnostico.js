@@ -542,7 +542,7 @@ export function clasificarNoFlota(huerfanos = [], rawRecords = [], codigosAcepta
     });
 
     const grupos = {
-        vehiculo_sin_interno: { id: 'vehiculo_sin_interno', etiqueta: 'Vehículos con patente pero sin interno en el padrón', detalle: 'Tienen dominio válido: son unidades reales que faltan dar de alta en el maestro.', items: [], litros: 0, costo: 0 },
+        vehiculo_sin_interno: { id: 'vehiculo_sin_interno', etiqueta: 'Vehículos con patente pero sin interno en el padrón', detalle: 'Tienen dominio válido: pueden ser unidades propias que faltan dar de alta en el maestro, o vehículos ajenos a la flota (préstamo, alquiler, tercero) que cargan con esta cuenta y nunca van a tener interno propio. Marcá "Así está bien" en los que correspondan a este segundo caso — no son un dato faltante.', items: [], litros: 0, costo: 0 },
         planta: { id: 'planta', etiqueta: 'Servicios y mantenimiento de planta', detalle: 'Calderas, caloventores, limpieza y consumos fijos de planta. No son flota rodante: no se les puede calcular L/100km ni L/hora, pero son gasto y conviene seguirlos por centro de costo.', items: [], litros: 0, costo: 0 },
         otros: { id: 'otros', etiqueta: 'Otros consumos sin identificar', detalle: 'Códigos que no siguen la nomenclatura ni son patentes. Conviene normalizarlos en la planilla de cargas.', items: [], litros: 0, costo: 0 }
     };
@@ -1038,7 +1038,7 @@ export function auditarCalidadCargas(rawRecords = []) {
     // importe, otro lugar de carga, otro chofer). Ahí sí puede ser legítimo — dos cargas del
     // mismo día en surtidores distintos, o un precio corregido a mano. Eso NO se toca solo: se
     // muestra el detalle de qué campos difieren para poder decidir contra el comprobante.
-    const CAMPOS_IDENTIDAD = ['importe', 'precio_unitario', 'combustible', 'lugar_carga', 'centro_costo', 'chofer'];
+    const CAMPOS_IDENTIDAD = ['importe', 'precio_unitario', 'combustible', 'lugar_carga', 'centro_costo', 'chofer', 'hora'];
     const normCampo = (v) => String(v == null ? '' : v).trim().toUpperCase();
     const vistos = new Map();
     const duplicados = [];
@@ -1806,7 +1806,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             ? ` <strong>${g.excluidos}</strong> código${g.excluidos === 1 ? '' : 's'} más (${fmt(g.excluidosLitros)} L) ${g.excluidos === 1 ? 'quedó afuera porque se marcó' : 'quedaron afuera porque se marcaron'} como "así está bien".`
             : '';
         hallazgos.push({
-            id: 'nofl_' + g.id, severidad: g.id === 'vehiculo_sin_interno' ? 'media' : 'baja',
+            id: 'nofl_' + g.id, severidad: 'baja',
             icono: g.id === 'vehiculo_sin_interno' ? 'fa-car-side' : (g.id === 'planta' ? 'fa-industry' : 'fa-link-slash'),
             titulo: `${g.etiqueta}: ${fmt(g.litros)} L${g.costo ? ` · $${fmt(g.costo)}` : ''}`,
             detalle: g.detalle + notaExcluidos,

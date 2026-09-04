@@ -19,7 +19,7 @@ import {
 } from '../data/database.js';
 import {
     parseDate, parseNumber, normalizeString, normalizeEquipoKey, aggregateHours, parseExcelHours,
-    getDenominacion, parseConsumoEstimado, extraerIdentidad, partesFecha, slugCampo
+    getDenominacion, parseConsumoEstimado, extraerIdentidad, partesFecha, slugCampo, parseHoraDeFecha
 } from '../data/normalizer.js';
 
 // Nombres de columna que identifican al equipo, en orden de preferencia.
@@ -382,11 +382,17 @@ async function handleCargas(filas, filename, mapeo) {
         const id = identidadDeFila(row, mapeo);
         if (!id.interno && !id.dominio) return;
 
-        const fecha = parseDate(val(row, 'fecha', ['FECHA', 'DATE'], mapeo));
+        const fechaVal = val(row, 'fecha', ['FECHA', 'DATE'], mapeo);
+        const fecha = parseDate(fechaVal);
         recs.push({
             ...baseMovimiento(row, id, fecha, filename),
             type: 'carga',
             type_label: 'Cargas de Combustible',
+            // Solo algunas filas reales traen la fracción de hora en FECHA (ver
+            // parseHoraDeFecha) — cuando está, es la evidencia más clara de que dos cargas del
+            // mismo equipo, mismo día y litros parecidos son dos eventos reales separados en el
+            // tiempo, no la misma carga cargada dos veces.
+            hora: parseHoraDeFecha(fechaVal),
             litros: parseNumber(val(row, 'litros', ['LITROS', 'CANTIDAD'], mapeo)),
             importe: parseNumber(val(row, 'importe', ['COSTO TOTAL', 'IMPORTE', 'MONTO'], mapeo)),
             precio_unitario: parseNumber(val(row, 'precio', ['PRECIO UNITARIO'], mapeo)),

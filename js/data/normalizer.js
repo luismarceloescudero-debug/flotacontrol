@@ -521,6 +521,24 @@ export function parseDate(val) {
 }
 
 /**
+ * Extrae la hora del día ("HH:MM") de una fecha-serie de Excel, cuando la trae. La planilla de
+ * Cargas escribe la mayoría de las FECHA como entero (sin hora), pero varias filas reales sí
+ * llevan la fracción del día (ej. 46263.05 = 01:23, 46263.51 = 12:13) — ahí es donde dos cargas
+ * del mismo equipo, mismo día y litros parecidos dejan de verse como "la misma carga repetida"
+ * y se confirman como dos eventos reales bien separados en el tiempo. Devuelve '' si `val` no es
+ * un número de Excel o si no trae fracción (fecha sin hora registrada), nunca una hora inventada.
+ */
+export function parseHoraDeFecha(val) {
+    if (typeof val !== 'number' || !isFinite(val)) return '';
+    const frac = val - Math.floor(val);
+    if (frac < 0.0003) return ''; // < ~26 segundos: no hay hora real cargada
+    const totalMin = Math.round(frac * 24 * 60) % (24 * 60);
+    const hh = Math.floor(totalMin / 60);
+    const mm = totalMin % 60;
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+/**
  * Parsea un número de forma segura (comas a puntos, quita símbolos)
  * @param {any} val 
  * @returns {Number} Número flotante o 0
