@@ -8,6 +8,40 @@ un intento de reparación anterior (vía Roo Code) — varias de las cosas que e
 documentos daban por "ya resueltas" en realidad no estaban conectadas de punta a punta.
 Este archivo es la fuente de verdad actualizada.
 
+## Estado de la última ronda de feedback (04/09/2026) — checklist rápido
+
+Esta tabla es el resumen escaneable de la ronda de feedback más reciente sobre el diagnóstico en
+producción. El detalle completo y verificado de cada fila está en "04/09/2026, cuarta tanda" y
+"quinta tanda" más abajo. Commits: `e913214`, `f923d4d`, `f1bb172` (los tres en `origin/main`,
+verificables con `git log --oneline` o `git show <hash>`).
+
+Si algo de esto **no se ve en la app que estás mirando**, antes de asumir que no se aplicó: (1)
+confirmá si es `localhost` o la URL de Vercel — Vercel puede tardar uno o dos minutos en terminar
+el deploy después del push; (2) hacé un refresh forzado (Ctrl+Shift+R / Ctrl+F5) — el navegador
+cachea los módulos JS de una carga anterior; (3) los hallazgos del diagnóstico se recalculan al
+procesar, no solos — si no volviste a subir los archivos y darle "Procesar y Analizar" (o
+"Re-analizar") después del deploy nuevo, vas a seguir viendo el resultado calculado con el código
+viejo aunque el código nuevo ya esté corriendo.
+
+| # (feedback original) | Qué se pidió | Estado | Dónde |
+|---|---|---|---|
+| 1. "Sobre la meta" en 0 no dejaba editar | "Ajustar metas" siempre disponible, aunque nadie esté sobre la meta | ✅ Hecho | `js/ui/panel.js` línea ~789 |
+| 2. "36 sin asignar" mostrado como error fijo | Bajada severidad a "Menor", texto aclara que puede ser fuera de flota legítimo | ✅ Hecho | `js/data/diagnostico.js`, grupo `vehiculo_sin_interno` |
+| 3-4. `<small>L</small>`/`<small>km</small>` literal en el popover | Ya no se escapa el valor del cálculo | ✅ Hecho | `js/ui/calcpopover.js` línea 95 |
+| 5. Actividad estimada igual para los 9 equipos | Tabla "Por equipo" con override individual | ✅ Hecho | `js/ui/panel.js`, `abrirActividadEstimada()` |
+| 6. Reclamo masivo para equipos sin horas/km | Sumado a "sin_medicion" (checkbox + selección + reclamo) | ✅ Hecho | `js/ui/panel.js`, `puedeReclamarGPS` |
+| 7. CM43 sin GPS → usar CM48 como referencia (marca/modelo/potencia) | — | ⏳ Pendiente | requiere función nueva de par, ver más abajo |
+| 8. ST01 huérfano-tipeo, selección múltiple | "Así está bien (selección)" también en huérfanos-tipeo | ✅ Hecho | `js/ui/panel.js`, `btn-nofl-valido-lote` |
+| 9. GE04 y "datos parciales" sin declarar actividad | Acción agregada a `datos_parciales` | ✅ Hecho | `ACCIONES_PROPUESTAS.datos_parciales` |
+| 10. TR32 posible repetida, sin comparar hora | `hora` agregado a `CAMPOS_IDENTIDAD` | ✅ Hecho | `js/data/normalizer.js` `parseHoraDeFecha()`, `js/data/diagnostico.js` |
+| 11. Remitos Loop que no coinciden → llevar al registro + pedido a Loop | — | ⏳ Pendiente | falta botón de acción y plantilla de reclamo |
+| 12. GE04 y "pocas cargas sin GPS" sin declarar actividad | Acción agregada a `bajo_uso` | ✅ Hecho | `ACCIONES_PROPUESTAS.bajo_uso` |
+| 13. Cargas anómalas sin ir al registro | Botón "Ver y comparar cargas" | ✅ Hecho | `js/ui/panel.js`, `esAnomala` |
+| 14. Equipos sin GPS con estimación por cálculo inverso creíble | Confirmado por el usuario que está bien así — sin acción | ➖ No requiere cambio | — |
+| 15. Acciones extra en "se aplicaron solas" (eliminar / fuera de flota automático) | — | ⏳ Pendiente | falta definir la regla de "no aparece en todos los archivos" |
+| 16. "Faltan Resumen de Flota de N meses" | Confirmado que es diseño (intersección de períodos), no bug | ➖ No requiere cambio | ver invariante 1, `CLAUDE.md` |
+| 17. Denominación vs TIPO en Base de Datos | Resuelto: no era la columna, era el valor de TR (ahora "TRACTOR C/CABINA") | ✅ Hecho | `js/data/normalizer.js` línea 38 |
+
 ## Bugs corregidos
 
 1. **Dashboard vacío siempre**: `index.html` no tenía `id="dashboard-metrics"` en el
