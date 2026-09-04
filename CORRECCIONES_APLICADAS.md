@@ -706,3 +706,54 @@ por categoría (ralentí en camionetas vs. TR vs. otros) más allá de agrupar p
 motivo (ya lo hace `mailtoReclamoConsolidado()`); y revisar qué otros pares de hallazgos
 distintos podrían compartir una misma acción de resolución, más allá de huérfanos/alta que ya se
 resuelve solo.
+
+## 04/09/2026, segunda tanda — encabezados fieles al original, campo TIPO recuperado, Deshacer real
+
+1. **Se deshace la fusión Interno+Dominio en una sola columna "Equipo"** (decisión de la ronda
+   anterior, corregida a pedido del usuario: "deben ser todos iguales, al original"). Cargas,
+   GPS y Entregas Loop en Base de Datos vuelven a mostrar **Interno** y **Dominio** como columnas
+   separadas, más **Denominación** al lado (esa sí se mantiene — no está en el Excel original,
+   pero no reemplaza nada, se agrega).
+
+2. **Bug real encontrado: la columna TIPO de Cargas_Combustible existe en el Excel pero el
+   parser nunca la extraía** — se perdía en el `datos` crudo sin quedar como campo propio.
+   Verificado contra la planilla real: TIPO (BOMBAS/ARIDOS/PRODUCCION/MIXER/LABORATORIO/
+   CEMENTO/TALLER/VENTAS/COMPRAS/GERENCIA/BOLSAS, + algunos nombres de sede) **no es la misma
+   columna que SECTOR** — difieren en 927 de 4.412 filas (21%). Se agregó `tipo` como campo
+   extraído en `handleCargas()` (xlsx-parser.js) y ambos ("Tipo" y "Sector") como columnas
+   visibles en la tabla de Cargas. Ojo con cómo se extrajo: buscar por candidato fuzzy `'TIPO'`
+   hubiera encontrado primero "TIPO DE COMBUSTIBLE" (la contiene como substring) — se lee la
+   clave exacta del objeto en vez de usar el buscador difuso, para ese campo puntual.
+   De paso se agregó **Grupo** (columna real de Resumen de Flota, tampoco se mostraba) a la
+   tabla de GPS.
+
+3. **"Deshacer" real para el diagnóstico automático** (`deshacerAccionAutomatica()` en
+   autocorreccion.js), no solo un enlace a "andá y corregilo en otro lado" como la ronda
+   anterior. Revierte el dato real (borra el equipo dado de alta, destilda el código de "así
+   está bien", o vacía la meta alineada) y marca la fila de `accionesAutomaticas` como
+   `deshecha: true` **sin borrarla** — si se borrara, el siguiente `renderPanel()` volvería a
+   ver las mismas condiciones y aplicaría la misma acción de nuevo, y "Deshacer" no habría
+   durado ni una recarga. `aplicarCorreccionesAutomaticas()` ahora recibe las acciones previas y
+   salta cualquier código ya deshecho. Protección extra: si el equipo dado de alta ya se editó a
+   mano después, o la meta ya no es la que puso la alineación automática, el deshacer NO
+   sobrescribe ese trabajo posterior — solo marca la acción como deshecha y avisa por qué no
+   tocó el dato. Verificado en vivo en el navegador: deshacer el alta de CL03 lo borró del
+   maestro (190 → 189 equipos) y, tras un `renderPanel()` completo posterior, **no volvió a
+   aparecer** — confirma que el "no reaplicar" funciona de punta a punta, no solo en el momento.
+
+**Hallazgos de la revisión de "qué se escapa" pedida por el usuario** (verificados contra datos
+reales, sin tocar código todavía):
+- **"Equipo asociado"** en el Maestro es un campo editable que **no existe en el Excel original**
+  (no está en el header real de `Equipos HSV SJ-MZA 2026.xlsx`) y **no lo lee ninguna lógica** —
+  se puede escribir, pero hoy no hace nada. Si la idea es vincular equipos entre sí (ej. una
+  bomba con su camión, un acoplado con su tractor), falta construir esa lógica; si no, es un
+  campo fantasma que conviene sacar.
+- **Chofer** solo se usa para identidad/duplicados — no hay ninguna vista de consumo por chofer,
+  pese a haber 85 choferes distintos en las cargas reales. Es la palanca más accionable que
+  queda sin explotar: el mismo equipo con dos choferes distintos consume distinto.
+- **Precio por lugar de carga**: medido en la primera auditoría de esta serie, GRIS/ARIDOS/
+  TUNUYAN pagan ~6% más por litro que San Martín — 677.281 L de por medio. No hay ninguna
+  vista que lo muestre agrupado así hoy.
+- Pendiente de la ronda anterior, todavía sin tocar: diferenciar el cuerpo del reclamo GPS por
+  categoría más allá de agrupar por texto de motivo; unificar los botones de acción de los
+  hallazgos con selección múltiple donde tenga sentido.

@@ -721,6 +721,20 @@ export function marcarAccionRevisada(id) {
     });
 }
 
+/**
+ * Marca una acción automática como deshecha — a propósito NO se borra la fila: si se borrara,
+ * el próximo renderPanel() volvería a ver exactamente las mismas condiciones (el mismo código
+ * sin equipo, la misma meta vacía) y la aplicaría sola otra vez, haciendo que "Deshacer" no
+ * durara ni una recarga de página. `aplicarCorreccionesAutomaticas()` (autocorreccion.js) revisa
+ * `deshecha` antes de actuar y salta cualquier código que ya se deshizo a mano.
+ */
+export function marcarAccionDeshecha(id) {
+    return writeTx(['accionesAutomaticas'], ([store]) => {
+        const req = store.get(id);
+        req.onsuccess = () => { const rec = req.result; if (rec) store.put({ ...rec, deshecha: true, fecha_deshecha: new Date().toISOString() }); };
+    });
+}
+
 // ============================ EQUIPOS APARTADOS DEL ANÁLISIS ============================
 
 /**

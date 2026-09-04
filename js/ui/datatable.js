@@ -769,12 +769,12 @@ const COLS_MOV = {
     carga: [
         { k: 'fecha', label: 'Fecha' }, { k: 'litros', label: 'Litros', num: 2 },
         { k: 'importe', label: 'Importe', money: true }, { k: 'combustible', label: 'Combustible' },
-        { k: 'lugar_carga', label: 'Lugar' }, { k: 'centro_costo', label: 'Centro de costo' },
-        { k: 'chofer', label: 'Chofer' }
+        { k: 'lugar_carga', label: 'Lugar' }, { k: 'tipo', label: 'Tipo' }, { k: 'sector', label: 'Sector' },
+        { k: 'centro_costo', label: 'Centro de costo' }, { k: 'chofer', label: 'Chofer' }
     ],
     gps: [
         { k: 'fecha', label: 'Desde' }, { k: 'fecha_hasta', label: 'Hasta' },
-        { k: 'distancia', label: 'Km', num: 0 },
+        { k: 'grupo', label: 'Grupo' }, { k: 'distancia', label: 'Km', num: 0 },
         { k: '_ralenti', label: 'Hs ralentí', num: 1 }, { k: '_movimiento', label: 'Hs movimiento', num: 1 },
         { k: '_total', label: 'Hs total', num: 1, fuerte: true }
     ],
@@ -896,16 +896,16 @@ async function renderMovimientos(tipo) {
             .map(c => ({ k: `datos.${c}`, label: c }));
     }
     cols.forEach(c => { if (overrides[c.k]) c.label = overrides[c.k]; });
-    columnasVisibles = ['Equipo', 'Denominación', ...cols.map(c => c.label)];
+    columnasVisibles = ['Interno', 'Dominio', 'Denominación', ...cols.map(c => c.label)];
 
     // Solo fecha/fecha_hasta y las columnas derivadas del GPS (_ralenti/_movimiento/_total,
     // calculadas a partir de r.horas, no un campo propio) quedan afuera de la edición directa.
     const noEditable = new Set(['_ralenti', '_movimiento', '_total', 'fuentes']);
 
-    const colspan = cols.length + 2 + (esCarga ? 2 : 0);
+    const colspan = cols.length + 3 + (esCarga ? 2 : 0);
     document.getElementById('table-header').innerHTML =
         (esCarga ? '<th class="th-sel"><input type="checkbox" id="th-sel-mov-all" title="Seleccionar todos"></th>' : '') +
-        '<th title="Común denominador entre planillas: interno+dominio cuando la fila trae los dos, o el que tenga">Equipo</th><th>Denominación</th>' +
+        '<th>Interno</th><th>Dominio</th><th>Denominación</th>' +
         cols.map(c => `<th>${esc(c.label)}${noEditable.has(c.k) ? '' : `
             <button class="th-rename-mov" data-tipo="${esc(tipo)}" data-col="${esc(c.k)}" data-label="${esc(c.label)}" title="Renombrar columna"><i class="fa-solid fa-pen"></i></button>`}</th>`).join('') +
         (esCarga ? '<th class="th-acciones"></th>' : '');
@@ -937,10 +937,8 @@ async function renderMovimientos(tipo) {
 
         return `<tr${rowClass ? ` class="${rowClass}"` : ''}${dataAttrs}>
             ${selTd}
-            <td class="cell-key">${
-                r.interno && r.dominio ? `${esc(r.interno)} <span class="cell-dom">${esc(r.dominio)}</span>`
-                : esc(r.interno || r.dominio || '—')
-            }</td>
+            <td class="cell-key">${esc(r.interno || '—')}</td>
+            <td class="cell-dom">${esc(r.dominio || '—')}</td>
             <td>${esc(denominacionDe(r)) || '<span class="cell-muted">—</span>'}</td>
             ${cols.map(c => {
                 let v;

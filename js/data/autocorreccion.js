@@ -21,7 +21,8 @@
  */
 import { normalizeEquipoKey, clasificarIdentificador, getPrefijo, sugerirPosibleTypo } from './normalizer.js';
 import {
-    upsertEquipos, setNoFlotaAceptado, updateEquipo, registrarEdicion, registrarAccionAutomatica
+    upsertEquipos, setNoFlotaAceptado, quitarNoFlotaAceptado, updateEquipo, deleteEquipo,
+    registrarEdicion, registrarAccionAutomatica, marcarAccionDeshecha, getAllEquipos
 } from './database.js';
 import { metaDesdeConsumoReal } from './diagnostico.js';
 import { RULE_L_100KM, RULE_L_HORA, RULE_NO_TANK } from './analyzer.js';
@@ -41,11 +42,16 @@ const PREFIJOS_CALCULABLES = new Set([...RULE_L_100KM, ...RULE_L_HORA, ...RULE_N
  * @param {Array} huerfanos       totales.huerfanos de analizarFlota()
  * @param {Array} filas           filas de analizarFlota() (equipo + metrics + confirmed)
  * @param {Set}   codigosAceptados  códigos ya marcados "así está bien" (noFlotaAceptados)
+ * @param {Array} accionesPrevias  accionesAutomaticas ya registradas (para no repetir una que
+ *                                 alguien deshizo a mano — ver marcarAccionDeshecha)
  * @returns {{altas: number, aceptados: number, metas: number}}
  */
-export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos = [], filas = [], codigosAceptados = new Set() }) {
+export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos = [], filas = [], codigosAceptados = new Set(), accionesPrevias = [] }) {
     const resultado = { altas: 0, aceptados: 0, metas: 0 };
     const internosExistentes = new Set(equipos.map(e => normalizeEquipoKey(e.interno)));
+    // Una acción deshecha a mano NO se vuelve a aplicar aunque las condiciones que la
+    // dispararon sigan iguales — si no, "Deshacer" no duraría ni hasta el próximo render.
+    const deshechas = new Set(accionesPrevias.filter(a => a.deshecha).map(a => `${a.tipo}|${a.codigo}`));
 
     // Internos reales del maestro TAL COMO ESTÁN (no la clave normalizada): sugerirPosibleTypo
     // normaliza los dos lados internamente, y necesita el valor original para poder devolverlo
@@ -63,7 +69,7 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
         // sugerencia, para que se corrija a mano desde "Corregir" en Base de Datos.
         if (sugerirPosibleTypo(h.interno, internosReales)) continue;
 
-        if (clas.tipo === 'interno' && PREFIJOS_CALCULABLES.has(getPrefijo(clas.valor))) {
+        if (clas.tipo === 'interno' && PREFIJOS_CALCULABLES.has(getPrefijo(clas.valor)) && !deshechas.has(`alta_interno|${clas.valor}`)) {
             const key = normalizeEquipoKey(clas.valor);
             if (internosExistentes.has(key)) continue; // ya se dio de alta (misma sesión u otra)
             await upsertEquipos([{
@@ -77,7 +83,7 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
                 detalle: `${h.cargas} carga${h.cargas === 1 ? '' : 's'} · ${h.litros.toFixed(1)} L${h.dominio ? ` · dominio ${h.dominio}` : ''}`
             });
             resultado.altas++;
-        } else if (clas.tipo === 'desconocido' || clas.tipo === 'vacio') {
+        } else if ((clas.tipo === 'desconocido' || clas.tipo === 'vacio') && !deshechas.has(`aceptado_no_flota|${h.interno}`)) {
             await setNoFlotaAceptado(h.interno, 'Sin forma de interno ni de patente — aceptado automáticamente, no hay más dato para resolverlo.');
             await registrarAccionAutomatica({
                 tipo: 'aceptado_no_flota', codigo: h.interno,
@@ -94,6 +100,7 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
     for (const f of filas) {
         if (f.confirmed) continue; // ya tiene meta (de fábrica, o ya alineada antes)
         if (!['L/Hora', 'L/100Km'].includes(f.metrics.tipo_calculo)) continue;
+        if (deshechas.has(`meta_alineada|${f.equipo.interno}`)) continue;
         const sug = metaDesdeConsumoReal(f);
         if (!sug || !sug.confiable) continue;
 
@@ -123,4 +130,48 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
     }
 
     return resultado;
+}
+
+/**
+ * Deshace una acción automática puntual — revierte el dato Y marca la acción como deshecha
+ * (marcarAccionDeshecha), para que aplicarCorreccionesAutomaticas() no la vuelva a aplicar en
+ * el próximo render con las mismas condiciones. Nunca borra a ciegas: si el equipo dado de alta
+ * ya se editó a mano después (`editado_manual` tiene algo), o la meta ya no es la que puso la
+ * alineación automática (alguien la reemplazó desde "Ajustar metas" o reimportando Consumos
+ * Estimados), se deja el dato tal cual y solo se marca la acción como deshecha — no tiene
+ * sentido destruir un trabajo posterior de la persona para "deshacer" algo que la app ya dejó
+ * de sostener sola.
+ *
+ * @param {Object} accion   fila de accionesAutomaticas (id, tipo, codigo)
+ * @returns {{revertido: boolean, motivo: string}}
+ */
+export async function deshacerAccionAutomatica(accion) {
+    const { id, tipo, codigo } = accion;
+    let revertido = false, motivo = '';
+
+    if (tipo === 'alta_interno') {
+        const actual = (await getAllEquipos()).find(e => e.interno === codigo);
+        if (!actual) { motivo = 'El equipo ya no existe en el maestro.'; }
+        else if (actual.editado_manual && actual.editado_manual.length) {
+            motivo = `No se borró: el equipo ya se editó a mano (${actual.editado_manual.join(', ')}) después del alta automática. La acción queda marcada como deshecha, pero el equipo se conserva.`;
+        } else {
+            await deleteEquipo(codigo);
+            revertido = true; motivo = 'Equipo borrado del maestro.';
+        }
+    } else if (tipo === 'aceptado_no_flota') {
+        await quitarNoFlotaAceptado(codigo);
+        revertido = true; motivo = 'Código destildado de "así está bien".';
+    } else if (tipo === 'meta_alineada') {
+        const actual = (await getAllEquipos()).find(e => e.interno === codigo);
+        if (!actual) { motivo = 'El equipo ya no existe en el maestro.'; }
+        else if (!actual.meta_auto_alineada) {
+            motivo = 'La meta ya no es la que puso la alineación automática (se reemplazó desde otro lado) — no hay nada que revertir.';
+        } else {
+            await updateEquipo({ ...actual, meta_valor: 0, meta_unidad: '', meta_texto: '', meta_origen: '', meta_auto_alineada: false });
+            revertido = true; motivo = 'Meta vaciada, vuelve a quedar "sin meta".';
+        }
+    }
+
+    await marcarAccionDeshecha(id);
+    return { revertido, motivo };
 }

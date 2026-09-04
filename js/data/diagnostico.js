@@ -1320,11 +1320,12 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             titulo: accionesRecientes.length === 1
                 ? `1 corrección se aplicó sola: ${partes.join(', ')}`
                 : `${accionesRecientes.length} correcciones se aplicaron solas: ${partes.join(', ')}`,
-            detalle: `El diagnóstico automático resuelve solo lo que no tiene ambigüedad — nunca adivina, solo actúa donde el siguiente paso es el único posible. <strong>Equipo nuevo dado de alta:</strong> el código tenía forma de interno válida y no existía en el maestro. <strong>Aceptado "así está bien":</strong> el código no tiene forma de interno ni de patente, no hay más dato para resolverlo. <strong>Meta alineada:</strong> el equipo no tenía meta cargada, se usó su propio consumo real medido — se pisa sola en cuanto llegue el valor de fábrica real. Para deshacer cualquiera de estas: un alta se corrige desde Base de Datos, un código aceptado se destilda desde "Códigos válidos así", una meta se reemplaza desde "Ajustar metas".`,
+            detalle: `El diagnóstico automático resuelve solo lo que no tiene ambigüedad — nunca adivina, solo actúa donde el siguiente paso es el único posible. <strong>Equipo nuevo dado de alta:</strong> el código tenía forma de interno válida y la app sabe calcularle algo, y no existía en el maestro. <strong>Aceptado "así está bien":</strong> el código no tiene forma de interno ni de patente, no hay más dato para resolverlo. <strong>Meta alineada:</strong> el equipo no tenía meta cargada, se usó su propio consumo real medido — se pisa sola en cuanto llegue el valor de fábrica real. <strong>Deshacer</strong> revierte exactamente esa acción (borra el alta, destilda el código, o vacía la meta) y no vuelve a aplicarse sola en la próxima sesión.`,
             equipos: accionesRecientes.slice(0, 15).map(a => ({
                 interno: a.codigo, denominacion: '',
                 texto: a.tipo === 'alta_interno' ? 'equipo nuevo' : a.tipo === 'meta_alineada' ? 'meta alineada' : 'aceptado',
-                sub: `${a.motivo} ${a.detalle ? '· ' + a.detalle : ''} · ${new Date(a.fecha).toLocaleDateString('es-AR')}`
+                sub: `${a.motivo} ${a.detalle ? '· ' + a.detalle : ''} · ${new Date(a.fecha).toLocaleDateString('es-AR')}`,
+                accion_id: a.id, accion_tipo: a.tipo
             }))
         });
     }

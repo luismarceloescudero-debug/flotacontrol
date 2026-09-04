@@ -167,7 +167,22 @@ The `TIPO` column in the Equipos spreadsheet is not trustworthy (tractors are la
    re-runs `analizarFlota()` before rendering, so the fix is visible immediately, not next
    reload. The one huérfano case it deliberately never touches: a valid patente with no interno
    match (`clasificarNoFlota`'s `vehiculo_sin_interno`) — which real equipment that belongs to
-   is a judgment call only a person can make, so it stays queued for manual review.
+   is a judgment call only a person can make, so it stays queued for manual review. It also skips
+   a huérfano within one edit of a real interno whose prefix is unknown to the fleet in every
+   sense (`sugerirPosibleTypo()`, normalizer.js) — a likely typo (e.g. "GR01" for "GE01") gets its
+   own "parece error de tipeo" finding instead of being onboarded or accepted as noise. Only
+   prefixes with an actual consumption rule (`PREFIJOS_CALCULABLES`, the union of
+   `RULE_L_100KM`/`RULE_L_HORA`/`RULE_NO_TANK` in analyzer.js) get auto-onboarded — a prefix in
+   `TIPO_POR_PREFIJO` with no rule (true of CA/LM until they were added to `RULE_L_HORA`) would
+   onboard into a broken, uncalculable card, so it's left alone instead.
+
+   Undoing an automatic action (`deshacerAccionAutomatica()`) reverts the underlying data
+   (deletes the onboarded equipo, un-accepts the code, or clears the auto-set meta) and marks
+   that `accionesAutomaticas` row `deshecha: true` — never deleted, because deleting it would
+   let the same conditions re-trigger the same action on the very next `renderPanel()`.
+   `aplicarCorreccionesAutomaticas()` skips any tipo+codigo pair already marked `deshecha`. An
+   undo that would destroy later work (the equipo was hand-edited since, or the meta was already
+   replaced) refuses to touch the data and only marks the log entry.
 7. `js/ui/panel.js` (~4400 lines, the largest file) — the unified Panel: fleet KPIs, editable
    equipment cards, the diagnostic list, filters, period selection, meta-adjustment and
    equipment-comparison modals. `js/ui/datatable.js` (~2000 lines) is the separate

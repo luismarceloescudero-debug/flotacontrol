@@ -392,6 +392,15 @@ async function handleCargas(filas, filename, mapeo) {
             precio_unitario: parseNumber(val(row, 'precio', ['PRECIO UNITARIO'], mapeo)),
             combustible: normalizeString(val(row, 'combustible', ['TIPO DE COMBUSTIBLE'], mapeo)) || '',
             chofer: normalizeString(val(row, 'chofer', ['CHOFER'], mapeo)) || '',
+            // OJO: no se puede buscar por candidato fuzzy 'TIPO' acá — "TIPO DE COMBUSTIBLE"
+            // (la columna de al lado, ya extraída arriba como combustible) también CONTIENE
+            // "TIPO" como substring, así que getValFuzzy() la encontraría primero y devolvería
+            // el combustible en vez del área operativa. Se lee la clave exacta: extraerHeaders()
+            // ya normaliza el encabezado real 1 a 1 ("TIPO" se queda "TIPO"), así que no hace
+            // falta fuzzy-match para este campo. Es un dato real y distinto de SECTOR — verificado
+            // contra la planilla: difieren en 927 de 4.412 filas (21%), no son la misma columna
+            // con dos nombres.
+            tipo: normalizeString((mapeo && mapeo.tipo && row[mapeo.tipo] !== undefined) ? row[mapeo.tipo] : row['TIPO']) || '',
             sector: normalizeString(val(row, 'sector', ['SECTOR'], mapeo)) || '',
             centro_costo: normalizeString(val(row, 'centro_costo', ['CENTRO DE COSTO', 'C. COSTO'], mapeo)) || '',
             lugar_carga: normalizeString(val(row, 'lugar', ['LUGAR DE CARGA', 'LUGAR', 'SURTIDOR'], mapeo)) || ''

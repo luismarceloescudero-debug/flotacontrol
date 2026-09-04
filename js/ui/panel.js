@@ -8,7 +8,7 @@ import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarC
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
 import { generarDiagnostico, cruzarIgnicion, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
-import { aplicarCorreccionesAutomaticas } from '../data/autocorreccion.js';
+import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica } from '../data/autocorreccion.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
 import { openUnitModal } from './modals.js';
 import { abrirAjusteMetas } from './metas.js';
@@ -334,7 +334,7 @@ export async function renderPanel() {
         const codigosAceptadosSet = new Set(noFlotaAceptados.map(n => n.codigo));
         const aplicado = await aplicarCorreccionesAutomaticas({
             equipos, huerfanos: ultimoAnalisis.totales.huerfanos, filas: ultimoAnalisis.filas,
-            codigosAceptados: codigosAceptadosSet
+            codigosAceptados: codigosAceptadosSet, accionesPrevias: accionesAutomaticasCache
         });
         if (aplicado.altas || aplicado.aceptados || aplicado.metas) {
             const [equiposFrescos, noFlotaFrescos, accionesFrescas] = await Promise.all([getAllEquipos(), getNoFlotaAceptados(), getAccionesAutomaticas()]);
@@ -924,6 +924,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     ${equiposPendientes.map(e => {
                         const enSeg = seguidos.has(e.interno);
                         const esNofl = h.id.startsWith('nofl_');
+                        const esAccionAuto = h.id === 'acciones_automaticas';
                         const esCargasExceso = h.id === 'cargas_exceden_dias_habiles';
                         const esBajoPromedio = esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.includes(e.interno);
                         const estadoEq = seguimientoEquiposCache.get(e.interno);
@@ -936,6 +937,10 @@ function renderDiagnostico(analisis, rawRecords = []) {
                             <button class="btn-xs btn-ver-cargas" data-interno="${esc(e.interno)}" title="Ver en tabla de cargas"><i class="fa-solid fa-table-list"></i> Ver cargas</button>
                             <button class="btn-xs btn-nofl-valido" data-codigo="${esc(e.interno)}" title="Marcar que este código está bien así (ej. un vehículo de préstamo/demo sin interno propio): sale de este hallazgo de ahora en más">
                                 <i class="fa-solid fa-check"></i> Así está bien
+                            </button>` : ''}
+                            ${esAccionAuto ? `
+                            <button class="btn-xs btn-deshacer-auto" data-id="${esc(e.accion_id)}" title="Revertir esta corrección automática. No vuelve a aplicarse sola.">
+                                <i class="fa-solid fa-rotate-left"></i> Deshacer
                             </button>` : ''}
                             ${esCargasExceso ? `
                             <button class="btn-xs btn-ver-mes-cargas" data-interno="${esc(e.interno)}" data-anio="${esc(e.anio)}" data-mes="${esc(e.mes)}" title="Ver las cargas de ${esc(e.interno)} en ese mes en la tabla de cargas de combustible">
@@ -1003,7 +1008,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
     // --- Event listeners ---
     el.querySelectorAll('.diag-lista li[data-interno]').forEach(li => {
         li.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ver-mes-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo, .chk-ralenti-promedio, .btn-nofl-valido, .btn-estado-equipo')) return;
+            if (e.target.closest('.btn-diag-seguir, .btn-ver-cargas, .btn-ver-mes-cargas, .btn-ralenti-aceptable, .btn-ralenti-reclamo, .chk-ralenti-promedio, .btn-nofl-valido, .btn-estado-equipo, .btn-deshacer-auto')) return;
             const hallazgoId = li.dataset.hallazgo || '';
             if (hallazgoId.startsWith('nofl_')) {
                 // Para hallazgos nofl_*, navegar a tabla de cargas y buscar el valor
@@ -1184,6 +1189,24 @@ function renderDiagnostico(analisis, rawRecords = []) {
 
     el.querySelectorAll('.btn-ver-nofl-aceptados').forEach(b => {
         b.addEventListener('click', (e) => { e.stopPropagation(); abrirNoFlotaAceptados(analisis, rawRecords); });
+    });
+
+    // Deshacer una corrección automática puntual: revierte el dato (borra el alta, destilda el
+    // código, o vacía la meta) y queda marcada para que no se vuelva a aplicar sola. Cambia el
+    // maestro, así que hace falta un renderPanel() completo (re-analiza y vuelve a correr el
+    // diagnóstico automático con la lista de deshechas ya actualizada) — no alcanza con
+    // renderDiagnostico() solo, como en las acciones que no tocan equipos.
+    el.querySelectorAll('.btn-deshacer-auto').forEach(b => {
+        b.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const id = parseInt(b.dataset.id, 10);
+            if (!id) return;
+            const accion = accionesAutomaticasCache.find(a => a.id === id);
+            if (!accion) return;
+            const r = await deshacerAccionAutomatica(accion);
+            if (!r.revertido) alert(r.motivo);
+            await renderPanel();
+        });
     });
 
     // Ralentí: marcar un equipo puntual como "aceptable" — sale del hallazgo de ahora en más
