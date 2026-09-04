@@ -909,3 +909,12 @@ el **valor** de la denominación canónica de TR, que estaba genérica.
     (Scania P94CB) dice "58-CAMION HORMIGONERO", ya equivalente a "MIXER" (la denominación
     actual). Verificado con `npm run verificar` — sin cambios en los invariantes, porque ningún
     hallazgo ni cálculo compara contra el string "TRACTOR".
+    **Corrección sobre esta misma entrada**: la nota anterior decía que "TRACTOR" a secas era un
+    valor genérico incompleto. El usuario aclaró que no era eso — un TR es específicamente la
+    cabeza tractora que se combina con un semirremolque (BA/TO/CR/SR: batea, tolva, carretón,
+    semirremolque), que son los que efectivamente van remolcados y **no tienen motor ni tanque
+    propio**. Eso ya está bien modelado: `RULE_NO_TANK = ['BA', 'CR', 'SR', 'TO']`
+    (analyzer.js) los deja en `tipo_calculo: 'No Aplica'`, y sus denominaciones (BATEA, TOLVA,
+    CARRETÓN, SEMIRREMOLQUE) ya eran específicas, no genéricas. El único ajuste real seguía
+    siendo agregarle "C/CABINA" a TR para que coincida con el texto de la cédula — no se tocó
+    nada de BA/TO/CR/SR porque ya estaban correctos.
