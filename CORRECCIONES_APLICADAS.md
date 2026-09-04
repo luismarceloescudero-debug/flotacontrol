@@ -41,6 +41,9 @@ viejo aunque el código nuevo ya esté corriendo.
 | 15. Acciones extra en "se aplicaron solas" (eliminar / fuera de flota automático) | — | ⏳ Pendiente | falta definir la regla de "no aparece en todos los archivos" |
 | 16. "Faltan Resumen de Flota de N meses" | Confirmado que es diseño (intersección de períodos), no bug | ➖ No requiere cambio | ver invariante 1, `CLAUDE.md` |
 | 17. Denominación vs TIPO en Base de Datos | Resuelto: no era la columna, era el valor de TR (ahora "TRACTOR C/CABINA") | ✅ Hecho | `js/data/normalizer.js` línea 38 |
+| 18. "34 equipos bajo la jornada esperada" (`subutilizacion`) sin acción para marcar motivo en bloque | Botón de selección múltiple: "fuera de servicio" o motivo de pocas cargas, por equipo o en bloque | ⏳ Pendiente (sumado 04/09/2026) | ver detalle abajo |
+| 19. "Sin asignar" sigue apareciendo — normalizar dominio↔interno en los dos sentidos | — | ⏳ Pendiente (sumado 04/09/2026) | ver detalle abajo |
+| 20. Base de Datos: tablas totalmente editables (mover columnas, renombrar encabezados, eliminar) | — | ⏳ Pendiente (sumado 04/09/2026) | ver detalle abajo |
 
 ## Bugs corregidos
 
@@ -952,3 +955,36 @@ el **valor** de la denominación canónica de TR, que estaba genérica.
     CARRETÓN, SEMIRREMOLQUE) ya eran específicas, no genéricas. El único ajuste real seguía
     siendo agregarle "C/CABINA" a TR para que coincida con el texto de la cédula — no se tocó
     nada de BA/TO/CR/SR porque ya estaban correctos.
+
+## Pendientes sumados el 04/09/2026 (todavía sin implementar)
+
+Tres pedidos nuevos del usuario, agregados a la lista de pendientes tal cual se pidieron —
+ninguno de los tres se tocó en el código todavía.
+
+- **Acción en bloque para "equipos por debajo de la jornada esperada"** (hallazgo
+  `subutilizacion`, diagnostico.js línea ~1440). Hoy cada fila ya tiene un botón genérico
+  "Anotar el estado del equipo" (`btn-estado-equipo` → `abrirEstadoEquipo()`, panel.js) que
+  permite marcar fuera de servicio/taller/temporada baja/etc., pero **uno por uno**. Falta lo
+  mismo que se hizo para "Declarar actividad estimada" (ver quinta tanda más arriba): un botón de
+  selección múltiple que permita marcar varios equipos a la vez, y que cada uno pueda llevar un
+  motivo **distinto** en la misma tanda (no forzar el mismo motivo a todos) — mismo patrón de
+  "valor por defecto + override por fila".
+- **"Sin asignar" que persiste — normalizar dominio↔interno en los dos sentidos**. El reclamo es
+  que un código sigue apareciendo como huérfano/sin asignar aunque el equipo ya esté en el
+  maestro, porque el cruce no lo reconoce en ambos sentidos (dominio sin interno cargado, o
+  interno sin ese dominio cargado). Antes de tocar nada acá hace falta reproducir el caso
+  puntual contra los archivos reales — `normalizeEquipoKey()` e `indexarMaestro()`
+  (normalizer.js / analyzer.js) son el lugar donde se resuelve la clave hoy, pero no alcanza con
+  mirar el código: según la skill `calculos-combustible`, una afirmación sobre los datos que no
+  se verificó corriendo los archivos no se hace. Falta que el usuario indique qué código
+  concreto sigue apareciendo mal para reproducirlo.
+- **Base de Datos: tablas totalmente editables** — mover columnas de lugar, renombrar
+  encabezados, eliminar filas, en las cuatro vistas (Maestro, Cargas, GPS, Loop). Estado actual,
+  verificado en `datatable.js`: la edición de celda por celda (`contenteditable`) ya existe tanto
+  en el maestro (columnas fijas: dominio, denominación, marca, modelo, año, potencia, capacidad,
+  meta, unidad, ubicación) como en las tablas de movimientos; borrar fila existe para equipos del
+  maestro (`btn-del-row`) y para cargas puntuales dentro del flujo de corrección de duplicados/
+  asignación (`deleteRawRecord`), pero no como botón genérico en toda tabla. **No existe** hoy:
+  reordenar columnas arrastrando, ni renombrar el encabezado de una columna. Es una tanda propia
+  por el tamaño (afecta las 4 vistas de Base de Datos) — queda pendiente de una implementación
+  dedicada, no de una corrección puntual.
