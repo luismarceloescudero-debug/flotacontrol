@@ -889,15 +889,23 @@ Syntax-check limpio en los 5 módulos tocados (`node --input-type=module --check
   archivos analizados", además del "Deshacer" que ya existe. La función de borrado
   (`deleteRawRecord`) ya existe y se usa en duplicados; falta decidir la regla exacta de "no
   aparece en todos los archivos" antes de automatizarla. Pendiente.
-- **Cambiar el encabezado "Denominación" por "TIPO" en Base de Datos**: no se tocó a propósito.
-  "Denominación" es el valor canónico que calcula `getDenominacion()` (prefijo del interno); el
-  "TIPO" de la planilla de Equipos está documentado como no confiable (tractores figuran como
-  "CAMION" — ver `CLAUDE.md`). Renombrar la columna a "TIPO" mostrando el valor de
-  `getDenominacion()` reintroduciría exactamente la confusión que ese documento advierte. Falta
-  confirmar con el usuario si lo que pide es ese renombre igual, o mantener ambos conceptos
-  separados y visibles (Denominación calculada + TIPO crudo de la planilla, cada uno con su
-  propia columna).
+- ~~Cambiar el encabezado "Denominación" por "TIPO" en Base de Datos~~ — resuelto abajo, quinta
+  tanda: lo que hacía falta no era renombrar la columna sino corregir el valor de TR.
 - **"Faltan los Resumen de Flota de N meses que sí tienen cargas"**: el usuario aclaró que esto
   no es un bug — el período analizado es la intersección común a todos los archivos cargados por
   diseño (`alinearCargasYGps()`/`filtrarPorPeriodo()`, ver invariante 1 en `CLAUDE.md`). No se
   tocó código; se deja constancia acá para no volver a interpretarlo como dato faltante.
+
+## 04/09/2026, quinta tanda — denominación de TR corregida contra la cédula real
+
+El usuario aclaró la duda de la tanda anterior sobre "Denominación" vs "TIPO" trayendo la cédula
+de identificación del automotor real de tres equipos. No pedía cambiar de columna: pedía corregir
+el **valor** de la denominación canónica de TR, que estaba genérica.
+
+10. **TR pasa de "TRACTOR" a "TRACTOR C/CABINA"** (`TIPO_POR_PREFIJO`, normalizer.js): la cédula
+    real de un TR (Iveco AS490S44TT14) dice en el campo `Tipo` oficial "94-TRACTOR C/ CABINA
+    DORMITORIO". Se adopta "TRACTOR C/CABINA" (sin el detalle de "dormitorio", que es
+    equipamiento, no tipo de vehículo). Confirmado con el usuario que **MX no cambia**: su cédula
+    (Scania P94CB) dice "58-CAMION HORMIGONERO", ya equivalente a "MIXER" (la denominación
+    actual). Verificado con `npm run verificar` — sin cambios en los invariantes, porque ningún
+    hallazgo ni cálculo compara contra el string "TRACTOR".

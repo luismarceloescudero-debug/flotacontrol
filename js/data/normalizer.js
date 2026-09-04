@@ -35,7 +35,7 @@ export const TIPO_POR_PREFIJO = {
     SR: 'SEMIRREMOLQUE',
     TO: 'TOLVA',
     TP: 'TOPADOR',
-    TR: 'TRACTOR',
+    TR: 'TRACTOR C/CABINA',
     VL: 'VOLCADOR'
 };
 
