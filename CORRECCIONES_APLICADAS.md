@@ -44,6 +44,8 @@ viejo aunque el código nuevo ya esté corriendo.
 | 18. "34 equipos bajo la jornada esperada" (`subutilizacion`) sin acción para marcar motivo en bloque | Botón de selección múltiple: "fuera de servicio" o motivo de pocas cargas, por equipo o en bloque | ⏳ Pendiente (sumado 04/09/2026) | ver detalle abajo |
 | 19. "Sin asignar" sigue apareciendo — normalizar dominio↔interno en los dos sentidos | — | ⏳ Pendiente (sumado 04/09/2026) | ver detalle abajo |
 | 20. Base de Datos: tablas totalmente editables (mover columnas, renombrar encabezados, eliminar) | — | ⏳ Pendiente (sumado 04/09/2026) | ver detalle abajo |
+| 21. Editar horas/día, horas/mes desde la tarjeta del equipo | Botón "Declarar horas/km estimados" agregado a la vista de detalle (overlay) | ✅ Hecho | `js/ui/panel.js`, `abrirOverlayEquipo()` |
+| 22. Tabs de Viajes/Entregas/Por Cliente por equipo (idea tomada de una tarjeta de referencia) | — | ⏳ Pendiente, alcance a confirmar | ver detalle abajo |
 
 ## Bugs corregidos
 
@@ -955,6 +957,35 @@ el **valor** de la denominación canónica de TR, que estaba genérica.
     CARRETÓN, SEMIRREMOLQUE) ya eran específicas, no genéricas. El único ajuste real seguía
     siendo agregarle "C/CABINA" a TR para que coincida con el texto de la cédula — no se tocó
     nada de BA/TO/CR/SR porque ya estaban correctos.
+
+## 04/09/2026, sexta tanda — "Declarar horas/km estimados" también desde la vista de detalle
+
+El usuario pidió comparar dos tarjetas HTML externas de MX97 contra los datos reales (ver sesión
+anterior): ninguna de las dos resultó confiable en sus números, pero el usuario aclaró que igual
+valía la pena tomar el **tipo de información** que muestran como referencia de diseño — sin
+importar sus datos — y en particular recordó que las tarjetas reales de la app tienen que dejar
+declarar horas/día u horas/mes a mano, sin depender de que aparezca un hallazgo de diagnóstico.
+
+11. **Botón "Declarar horas/km estimados" agregado a la vista de detalle de un equipo**
+    (`abrirOverlayEquipo()`, panel.js): ya existía en la tarjeta chica (ícono en `cardHTML()`,
+    `btn-card-actividad`) pero faltaba en el overlay de pantalla completa que se abre al hacer
+    click en una tarjeta — que es la vista más parecida a las "tarjetas" que trajo el usuario.
+    Abre el mismo modal ya mejorado en la cuarta tanda (rango por equipo, período, base
+    día/mes/total). Verificado en vivo: abre correctamente con el interno correcto precargado.
+
+**Nota aparte, no relacionada con este cambio**: `npm run verificar` detectó que
+`Cargas_Combustible_HSV_2026.xlsx` ganó una fila real (4413 en vez de 4412, +190 L) entre la
+corrida anterior y esta — es una carga nueva cargada en la planilla real, no un bug. Se actualizó
+`tools/invariantes.json` con `--actualizar` para reflejar el dato real vigente.
+
+**Quedó identificado, no implementado**: la tarjeta de referencia más rigurosa (la que sí acertó
+litros y cantidad de cargas) tenía pestañas de Viajes/Entregas/Por Cliente/Por Producto/Por Día
+integrando los archivos de Loop **por equipo** — hoy esos datos existen en `raw_records` (tipo
+`entrega`) pero no se muestran agrupados por equipo en ningún lado de la app, solo agregados a
+nivel flota. Es información real y potencialmente valiosa para los MX (mixers), pero es una
+tanda de trabajo propia — antes de construirla hace falta confirmar qué recorte tiene sentido
+(¿todas las tabs del mockup, o solo un resumen?) para no repetir el problema de las tarjetas
+externas: mostrar mucho detalle con baja confianza en vez de poco con alta.
 
 ## Pendientes sumados el 04/09/2026 (todavía sin implementar)
 

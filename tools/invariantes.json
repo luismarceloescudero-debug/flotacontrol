@@ -1,10 +1,10 @@
 {
-  "generado": "2026-09-04T12:07:01.270Z",
+  "generado": "2026-09-04T20:33:57.259Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
       "tipo": "CARGAS",
-      "filas": 4412,
+      "filas": 4413,
       "etiqueta": "Cargas de Combustible"
     },
     {
@@ -20,15 +20,21 @@
       "etiqueta": "Equipos"
     },
     {
-      "archivo": "Exportado informe de Viajes - Loop Ene-Jun 2026.xlsx",
+      "archivo": "Informe de Viajes - Loop Ene-Jun 2026.xlsx",
       "tipo": "ENTREGAS_LOOP",
       "filas": 4893,
       "etiqueta": "Entregas (Loop)"
     },
     {
-      "archivo": "Informe Entregas Loop ene-Jul 2026.xlsx",
+      "archivo": "Informe de Viajes - Loop Jul 2026.xlsx",
       "tipo": "ENTREGAS_LOOP",
-      "filas": 2144,
+      "filas": 763,
+      "etiqueta": "Entregas (Loop)"
+    },
+    {
+      "archivo": "Informe Entregas Loop Ene-Jul 2026.xlsx",
+      "tipo": "ENTREGAS_LOOP",
+      "filas": 1381,
       "etiqueta": "Entregas (Loop)"
     },
     {
@@ -82,8 +88,8 @@
   ],
   "equipos_maestro": 190,
   "cargas": {
-    "filas": 4412,
-    "litros_totales": 677281,
+    "filas": 4413,
+    "litros_totales": 677471,
     "sin_fecha": 0,
     "sin_litros": 0
   },
@@ -141,7 +147,6 @@
     "meses_sin_gps": 1,
     "ralenti": 1,
     "ralenti_camionetas": 1,
-    "nofl_vehiculo_sin_interno": 1,
     "subutilizacion": 1,
     "metas": 1,
     "sin_medicion": 1,
@@ -149,6 +154,7 @@
     "datos_parciales": 1,
     "calidad_planilla": 1,
     "entregas_conflicto_remito": 1,
+    "nofl_vehiculo_sin_interno": 1,
     "prefijos_nuevos": 1,
     "acciones_automaticas": 1,
     "ralenti_espera": 1,

@@ -4501,6 +4501,9 @@ function abrirOverlayEquipo(fila, analisis) {
             </div>
 
             <div class="overlay-extra-actions">
+              <button class="btn-secondary btn-sm btn-overlay-actividad" title="Declarar km/horas estimados a mano (ej. '10-12 hs/día', '6 hs/día para este en particular') — no hace falta esperar a que aparezca un hallazgo">
+                <i class="fa-solid fa-gauge-high"></i> Declarar horas/km estimados
+              </button>
               <button class="btn-secondary btn-sm btn-overlay-compare ${enComparacion ? 'active' : ''}">
                 <i class="fa-solid ${enComparacion ? 'fa-square-check' : 'fa-code-compare'}"></i>
                 ${enComparacion ? 'Quitar de comparativa' : 'Agregar a comparativa'}
@@ -4547,6 +4550,14 @@ function abrirOverlayEquipo(fila, analisis) {
     overlay.querySelector('.btn-desalineado')?.addEventListener('click', () => {
         cerrar();
         if (typeof window.abrirTablaConBusqueda === 'function') window.abrirTablaConBusqueda('carga', eq.interno);
+    });
+
+    // Declarar horas/km estimados a mano, sin tener que pasar por un hallazgo de diagnóstico —
+    // mismo modal que ya usa el ícono de la tarjeta chica y las acciones en bloque, ahora también
+    // accesible desde la vista de detalle de un solo equipo.
+    overlay.querySelector('.btn-overlay-actividad')?.addEventListener('click', () => {
+        cerrar();
+        abrirActividadEstimada([eq.interno], analisis);
     });
 
     // Comparar
