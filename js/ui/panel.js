@@ -614,6 +614,29 @@ function nivelPorEquipo({ campo, tituloBase, etiquetaValor, formatear, fuenteTip
     };
 }
 
+/**
+ * Zoom del KPI de costo: gasto por LUGAR de carga (sede propia vs. estación de servicio de
+ * terceros), no por equipo. Cada sede/estación carga uno o más combustibles con su propio
+ * precio fijo por litro (ver getBandera/tipoLugarCarga en normalizer.js): el precio efectivo de
+ * un lugar puede diferir del de otro simplemente porque compra un producto distinto, no porque
+ * pague más caro por el mismo producto — el desglose por combustible de cada fila existe
+ * justamente para no confundir esas dos cosas.
+ */
+function nivelPorLugar() {
+    const lugares = ultimoAnalisis?.totales?.lugar_desglose || [];
+    const total = lugares.reduce((s, l) => s + l.costo, 0);
+    return {
+        titulo: 'Costo por lugar de carga',
+        valor: `${lugares.length} lugar${lugares.length === 1 ? '' : 'es'}`,
+        nota: 'Ordenados de mayor a menor gasto. El precio por litro de cada lugar depende de qué combustible(s) compra ahí, no de una tarifa distinta para el mismo producto.',
+        pasos: lugares.map(l => ({
+            texto: `${l.lugar} ${l.tipo ? `(${l.tipo})` : ''}`,
+            calculo: l.combustibles.map(c => `${cap(c.tipo)}: ${nf(c.litros, 1)} L`).join(' · '),
+            resultado: `${money(l.costo)} · ${nf(l.litros, 1)} L · $${nf(l.precio_litro, 2)}/L prom.${total > 0 ? ` · ${nf((l.costo / total) * 100, 1)}%` : ''}`
+        }))
+    };
+}
+
 /** Nivel terminal: las cargas de combustible concretas de un equipo (fecha, litros, importe, lugar, CC). */
 function nivelCargasEquipo(interno) {
     const fila = (ultimoAnalisis?.filas || []).find(f => f.equipo.interno === interno);
@@ -740,7 +763,8 @@ function renderKPIs(el, t, fuentes) {
             ${kpi({ id: 'kpi-costo', label: 'Costo total', valor: money(t.total_costo), sub: costoSubPorCombustible(t), titulo: 'Costo total del combustible', pasos: t.pasos.costo,
                 acciones: [
                     { texto: 'Ver cargas de combustible', icono: 'fa-gas-pump', primaria: true, onClick: () => window.abrirTablaConBusqueda?.('carga', '') },
-                    { texto: 'Desglose por equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelPorEquipo({ campo: 'total_costo', tituloBase: 'Costo', etiquetaValor: 'el costo total', formatear: v => money(v), fuenteTipo: 'carga' }) }
+                    { texto: 'Desglose por equipo', icono: 'fa-magnifying-glass-plus', zoom: () => nivelPorEquipo({ campo: 'total_costo', tituloBase: 'Costo', etiquetaValor: 'el costo total', formatear: v => money(v), fuenteTipo: 'carga' }) },
+                    { texto: 'Desglose por lugar de carga', icono: 'fa-map-location-dot', zoom: () => nivelPorLugar() }
                 ] })}
             ${kpi({ id: 'kpi-km', label: 'Distancia', valor: `${nf(t.total_km)} <small>km</small>`, sub: 'Según Resumen de Flota', titulo: 'Kilómetros recorridos', pasos: t.pasos.km,
                 acciones: [

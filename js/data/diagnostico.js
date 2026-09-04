@@ -1092,7 +1092,37 @@ export function auditarCalidadCargas(rawRecords = []) {
     });
     variantesCampos.sort((a, b) => b.total - a.total);
 
-    return { mesesSinGps, sinValor, variantes, variantesCampos, duplicados, duplicadosExactos, duplicadosPosibles, totalCargas: cargas.length, mesesGps: [...mesesGps].sort() };
+    // 6. Precio unitario que no coincide con el resto de las cargas del MISMO combustible.
+    // Verificado contra los datos reales: cada combustible (INFINIA DIESEL, YPF 500, X10,
+    // QUANTIUM DIESEL, QUANTIUM NAFTA, NAFTA SUPER) tiene un único precio por litro en TODA la
+    // planilla, sin excepción — no varía por lugar de carga ni por mes. Con esa base, una carga
+    // del mismo combustible a un precio distinto no es una variación de mercado (el resto de la
+    // flota prueba que el precio no se mueve): es un error de tipeo, una fila mal completada, o
+    // — si son varias y son recientes — el inicio real de un aumento de precio, que hay que
+    // confirmar a mano antes de tocar nada. Por eso esto solo detecta y junta la evidencia; no
+    // corrige nada solo.
+    const porCombustiblePrecio = new Map();
+    cargas.forEach(c => {
+        const comb = String(c.combustible || '').trim();
+        const precio = parseFloat(c.precio_unitario) || 0;
+        if (!comb || precio <= 0) return;
+        if (!porCombustiblePrecio.has(comb)) porCombustiblePrecio.set(comb, new Map());
+        const m = porCombustiblePrecio.get(comb);
+        if (!m.has(precio)) m.set(precio, []);
+        m.get(precio).push(c);
+    });
+    const preciosInconsistentes = [];
+    porCombustiblePrecio.forEach((porPrecio, comb) => {
+        if (porPrecio.size < 2) return; // un solo precio para este combustible: nada que señalar
+        const ordenados = [...porPrecio.entries()].sort((a, b) => b[1].length - a[1].length);
+        const [precioMayoritario, cargasMayoria] = ordenados[0];
+        ordenados.slice(1).forEach(([precio, cs]) => {
+            preciosInconsistentes.push({ combustible: comb, precio_esperado: precioMayoritario, precio_real: precio, cargas: cs, referencia_n: cargasMayoria.length });
+        });
+    });
+    preciosInconsistentes.sort((a, b) => b.cargas.length - a.cargas.length);
+
+    return { mesesSinGps, sinValor, variantes, variantesCampos, duplicados, duplicadosExactos, duplicadosPosibles, preciosInconsistentes, totalCargas: cargas.length, mesesGps: [...mesesGps].sort() };
 }
 
 
@@ -2136,6 +2166,28 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                     sub: `difiere en ${d.difieren.join(', ')} — hay que decidir a mano`
                 }))
             ]
+        });
+    }
+
+
+    if (cal.preciosInconsistentes.length) {
+        const totalCargasAfectadas = cal.preciosInconsistentes.reduce((s, p) => s + p.cargas.length, 0);
+        const impacto = cal.preciosInconsistentes.reduce((s, p) => {
+            const litros = p.cargas.reduce((s2, c) => s2 + (parseFloat(c.litros) || 0), 0);
+            return s + litros * Math.abs(p.precio_real - p.precio_esperado);
+        }, 0);
+        hallazgos.push({
+            id: 'precios_inconsistentes', severidad: 'alta', icono: 'fa-tag',
+            no_comparar: true, impacto_costo: impacto,
+            titulo: `${totalCargasAfectadas} carga${totalCargasAfectadas === 1 ? '' : 's'} con un precio distinto al resto del mismo combustible`,
+            detalle: `Cada combustible tiene un único precio por litro en el resto de la planilla — no cambia por lugar de carga ni por mes. Estas cargas rompen esa regla: mismo combustible, precio distinto. Puede ser una fila mal tipeada, o el arranque real de un aumento de precio — hay que confirmarlo contra el comprobante antes de tocar nada, así que <strong>no se corrige solo</strong>. Impacto si el precio esperado fuera el correcto: $${fmt(impacto)}.`,
+            equipos: cal.preciosInconsistentes.slice(0, 10).flatMap(p =>
+                p.cargas.slice(0, 3).map(c => ({
+                    interno: c.interno || c.dominio || '—', denominacion: p.combustible,
+                    texto: `$${fmt(p.precio_real, 2)}/L vs. $${fmt(p.precio_esperado, 2)}/L en las otras ${p.referencia_n}`,
+                    sub: `${c.fecha || 'sin fecha'}${c.lugar_carga ? ` · ${c.lugar_carga}` : ''}${c.fila_excel ? ` · fila ${c.fila_excel}` : ''} · ${fmt(parseFloat(c.litros) || 0, 1)} L`
+                }))
+            )
         });
     }
 

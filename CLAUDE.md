@@ -146,7 +146,13 @@ The `TIPO` column in the Equipos spreadsheet is not trustworthy (tractors are la
    correction the next time that file is re-uploaded.
 4. `js/data/analyzer.js` — core business rules: period alignment between Cargas and GPS
    (`calculateAlignedPeriod`), metric calculation (`calculateMetrics`), consumption-type
-   resolution, fleet-wide KPI aggregation.
+   resolution, fleet-wide KPI aggregation. `totales.combustible_desglose` and
+   `totales.lugar_desglose` are the two fleet-wide money breakdowns (by product/brand and by
+   physical site respectively) — both computed straight from `cargas`, both purely additive
+   (adding one never changes the other's numbers). `getBandera()`/`tipoLugarCarga()`
+   (normalizer.js) classify every combustible/lugar against an explicit list checked by hand
+   against the real file, not a name pattern — a new lugar or combustible not yet in either list
+   falls back to `''`/`'Sede'` and should be added to the list, not inferred from its name.
 5. `js/data/diagnostico.js` (~2000 lines) — the automatic diagnostic engine. Runs ~20 rule
    functions (`detectarXxx`) over the analyzed fleet and produces a `hallazgos` (findings)
    array consumed by the Panel view. Each finding has a `titulo` (escaped on render) and a
@@ -156,6 +162,13 @@ The `TIPO` column in the Equipos spreadsheet is not trustworthy (tractors are la
    through this file's local `esc()` first — the literal `<strong>` tags in the template stay
    unescaped, only the interpolated data does. This is the one recurring foot-gun in this file;
    grep for `detalle:` when adding a new finding and check what you're interpolating.
+   `auditarCalidadCargas()`'s price-consistency check (`preciosInconsistentes` →
+   `precios_inconsistentes` finding) is grounded in a real, verified fact: every combustible name
+   in `Cargas_Combustible_HSV_2026.xlsx` has exactly ONE `precio_unitario` for the entire year,
+   with zero variance by lugar or by month (checked against all ~4,400 real rows). So any future
+   carga with a different non-zero price for a combustible the fleet already has a majority price
+   for is flagged for review — it never auto-corrects, because it could just as well be the start
+   of a real price increase, which only a person can confirm against the comprobante.
 6. `js/data/autocorreccion.js` — runs once per `renderPanel()`, right after the first
    `analizarFlota()` and before anything renders. Applies the diagnostic corrections that have
    no ambiguity (onboard a charge code shaped like a valid interno that isn't in the maestro

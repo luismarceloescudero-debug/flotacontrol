@@ -751,9 +751,51 @@ reales, sin tocar código todavía):
 - **Chofer** solo se usa para identidad/duplicados — no hay ninguna vista de consumo por chofer,
   pese a haber 85 choferes distintos en las cargas reales. Es la palanca más accionable que
   queda sin explotar: el mismo equipo con dos choferes distintos consume distinto.
-- **Precio por lugar de carga**: medido en la primera auditoría de esta serie, GRIS/ARIDOS/
-  TUNUYAN pagan ~6% más por litro que San Martín — 677.281 L de por medio. No hay ninguna
-  vista que lo muestre agrupado así hoy.
+- **Precio por lugar de carga — corregido en la ronda siguiente (ver 04/09/2026, tercera
+  tanda)**: la afirmación de esta línea ("GRIS/ARIDOS/TUNUYAN pagan ~6% más que San Martín") era
+  incorrecta. Verificado contra las 4.412 cargas reales: **el precio por litro es fijo por
+  combustible en toda la planilla, sin excepción** (ni varía por lugar ni por mes). La diferencia
+  de ~6% medida en la primera auditoría no era un sobreprecio por lugar: era la mezcla de
+  productos de cada sitio (GRIS compra más Quantium Diesel, que es más caro que YPF 500) — un
+  efecto de mezcla, no de negociación. Ver el desglose real por lugar más abajo.
 - Pendiente de la ronda anterior, todavía sin tocar: diferenciar el cuerpo del reclamo GPS por
   categoría más allá de agrupar por texto de motivo; unificar los botones de acción de los
   hallazgos con selección múltiple donde tenga sentido.
+
+## 04/09/2026, tercera tanda — desglose por lugar de carga y chequeo de precio fuera de lista
+
+El usuario confirmó a mano la clasificación de marca/lugar (ARIDOS y TUNUYAN cargan Infinia
+Diesel por clima extremo; San Martín y Godoy Cruz cargan YPF 500; GRIS, EE SS Coronel Díaz y GNC
+Godoy Cruz son estaciones de terceros bandera Axion con X10/Quantium Diesel/Quantium Nafta/Nafta
+Super). Verificado contra las 4.412 cargas reales: **coincide exactamente** con lo que ya estaba
+codificado en `getBandera()`/`tipoLugarCarga()` (normalizer.js) desde una ronda anterior — no
+hubo que corregir la clasificación, solo faltaba una vista que la mostrara agrupada por lugar en
+vez de solo por combustible.
+
+1. **Nuevo desglose `totales.lugar_desglose`** (analyzer.js), igual que `combustible_desglose`
+   pero agrupado por sitio físico en vez de por producto: litros, costo, precio promedio y qué
+   combustible(s) usa cada uno. Accesible desde el KPI "Costo total" → "Desglose por lugar de
+   carga". Verificado en vivo contra los datos reales: Godoy Cruz (sede) mezcla YPF 500 (mayoría)
+   e Infinia Diesel (250 cargas, no es 100% YPF 500 puro como parecía a primera vista); Áridos y
+   Tunuyán son 100% Infinia Diesel; San Martín 100% YPF 500; Altamira es un caso de una sola
+   carga (201 L).
+2. **Confirmado con datos reales, no supuesto**: el precio por litro de cada combustible es
+   **fijo en toda la planilla** — mismo precio en los 9 meses, en los 8 lugares. Lo que hace
+   parecer "más caro" a un lugar es la mezcla de productos que compra ahí, nunca una tarifa
+   distinta para el mismo producto (esto corrige la lectura de la ronda anterior, ver arriba).
+3. **Nuevo chequeo de calidad `precios_inconsistentes`** (diagnostico.js): como el precio es fijo
+   por combustible, una carga futura con un precio distinto al del resto de ese mismo combustible
+   es evidencia de error de tipeo — o el arranque real de un aumento, que hay que confirmar contra
+   el comprobante. No corrige nada solo (a diferencia de las correcciones automáticas de
+   autocorreccion.js): solo junta la evidencia para decidir a mano. Sobre los datos reales de hoy
+   da 0 hallazgos (el precio nunca varía), que es lo esperado — queda como guardarraíz para la
+   próxima carga de datos.
+
+Verificado con el arnés (`node tools/verificar-datos-reales.mjs`: sigue OK contra
+`invariantes.json`, 20 hallazgos sin cambios — el nuevo chequeo no dispara con los datos reales
+de hoy) y en vivo en el navegador subiendo Cargas + Equipos + Consumos Estimados reales: el
+desglose por lugar mostró los 8 lugares con los litros y combustibles correctos.
+
+**Sigue pendiente**: diferenciar el cuerpo del reclamo GPS por categoría más allá de agrupar por
+texto de motivo; unificar los botones de acción de los hallazgos con selección múltiple; decidir
+qué hacer con el campo fantasma "Equipo asociado"; construir una vista de consumo por chofer.

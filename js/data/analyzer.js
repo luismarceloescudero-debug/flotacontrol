@@ -718,6 +718,29 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         .map(b => ({ ...b, precio_litro: b.litros > 0 ? b.costo / b.litros : 0 }))
         .sort((a, b) => b.litros - a.litros);
 
+    // Desglose de litros y costo por LUGAR de carga: mismo criterio que combustibleDesglose,
+    // pero agrupando por el sitio físico en vez del producto. Sirve para ver cuánto se gastó en
+    // cada sede/estación y con qué combustible(s), no solo el mix global de la flota.
+    const porLugar = new Map();
+    cargas.forEach(c => {
+        const lugar = c.lugar_carga || 'Sin dato';
+        if (!porLugar.has(lugar)) {
+            porLugar.set(lugar, { lugar, tipo: tipoLugarCarga(lugar), litros: 0, costo: 0, cargas: 0, combustibles: new Map() });
+        }
+        const l = porLugar.get(lugar);
+        l.litros += parseFloat(c.litros) || 0;
+        l.costo += parseFloat(c.importe) || 0;
+        l.cargas++;
+        const comb = c.combustible || 'Sin dato';
+        if (!l.combustibles.has(comb)) l.combustibles.set(comb, { tipo: comb, litros: 0, cargas: 0 });
+        const cb = l.combustibles.get(comb);
+        cb.litros += parseFloat(c.litros) || 0;
+        cb.cargas++;
+    });
+    const lugarDesglose = [...porLugar.values()]
+        .map(l => ({ ...l, precio_litro: l.litros > 0 ? l.costo / l.litros : 0, combustibles: [...l.combustibles.values()].sort((a, b) => b.litros - a.litros) }))
+        .sort((a, b) => b.litros - a.litros);
+
     const totales = {
         periodo_desde: start, periodo_hasta: end, criterio_periodo: criterioPeriodo,
         equipos: equipos.length,
@@ -731,6 +754,7 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         sin_calculo: filas.filter(f => f.metrics.motivo_sin_calculo && f.metrics.tipo_calculo !== 'No Aplica').length,
         costo_por_litro: litrosTot > 0 ? costoTot / litrosTot : 0,
         combustible_desglose: combustibleDesglose,
+        lugar_desglose: lugarDesglose,
         huerfanos
     };
 
