@@ -670,3 +670,39 @@ referenciarlos.
    sea desconocido en cualquier sentido, no solo "sin equipos en el maestro". Verificado: con el
    filtro final, de todos los huérfanos reales, únicamente GR01 queda señalado, sugiriendo
    correctamente GE01.
+
+## 04/09/2026 — CA/LM en L/hora, Denominación en las tablas de movimientos, actividad estimada desde la tarjeta
+
+1. **CA (CALDERA) y LM (LIMPIEZA) pasan a L/Hora** (`RULE_L_HORA` en analyzer.js). Decisión de
+   negocio, confirmada con el usuario: consumen por tiempo de uso, no por distancia, igual que
+   GE (GRUPO ELECTRÓGENO) — que tampoco tiene GPS y ya funciona por cálculo inverso. Antes
+   quedaban sin ninguna regla de unidad, así que `PREFIJOS_CALCULABLES` (autocorreccion.js) los
+   excluía del alta automática — no porque les faltara GPS, sino porque la app no sabía en qué
+   unidad medirlos. Verificado: CA01, LM01 y LM02 pasan de "huérfano sin tocar" a "equipo nuevo
+   dado de alta" (altas automáticas: 4 → 7).
+
+2. **Denominación agregada a las tablas de movimientos** (Cargas, GPS, Entregas Loop) en Base de
+   Datos — antes solo aparecía en Maestro y Consumo Real. Sale del maestro cuando el equipo
+   existe (respeta lo editado a mano); si el código es huérfano, se cae al mismo
+   prefijo-a-denominación que ya usa el resto de la app, así que un huérfano con forma de
+   interno se lee igual de claro que uno dado de alta.
+
+3. **Botón "Declarar km/horas estimados" directo en cada tarjeta**, no solo cuando lo dispara un
+   hallazgo puntual (`sin_medicion`/`sin_gps_estimado`/`estimacion_inverosimil`). El mecanismo ya
+   existía completo (`consumoDesdeActividadDeclarada`, store `actividadEstimada`, modal con rango
+   min-máx por día hábil/mes/total, vista previa en vivo) — solo faltaba el acceso directo. Sirve
+   para el caso "MT01: aproximadamente 2 hs/día" o "CL02: 6-9 hs/día" sin esperar a que la app
+   levante un hallazgo primero.
+
+**Confirmado, sin cambios**: "Consumo real" y "Cargas" en Base de Datos ya son la misma fuente —
+`consumo_real` sale de `analizarFlota()` sobre las cargas reales de Cargas_Combustible, nunca de
+un dato separado. El Maestro ya tenía las columnas Interno/Dominio/Denominación/Marca/Modelo/
+Año/Potencia/Capacidad/Ubicación/Equipo asociado completas (verificado contra
+`Equipos HSV SJ-MZA 2026.xlsx`: Marca vacía solo en 2 de 183 equipos, Año sin valores fuera de
+rango 1972-2025, Modelo vacío en 8).
+
+**Quedó pendiente, señalado como próximo paso**: diferenciar el cuerpo del email de reclamo GPS
+por categoría (ralentí en camionetas vs. TR vs. otros) más allá de agrupar por el texto del
+motivo (ya lo hace `mailtoReclamoConsolidado()`); y revisar qué otros pares de hallazgos
+distintos podrían compartir una misma acción de resolución, más allá de huérfanos/alta que ya se
+resuelve solo.

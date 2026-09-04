@@ -1,5 +1,5 @@
 {
-  "generado": "2026-09-03T19:58:05.522Z",
+  "generado": "2026-09-04T11:27:50.626Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
@@ -80,7 +80,7 @@
       "etiqueta": "Resumen de Flota (GPS)"
     }
   ],
-  "equipos_maestro": 187,
+  "equipos_maestro": 190,
   "cargas": {
     "filas": 4412,
     "litros_totales": 677281,
@@ -93,37 +93,37 @@
       {
         "mes": "2026-01",
         "unidades": 120,
-        "pct": 64
+        "pct": 63
       },
       {
         "mes": "2026-02",
         "unidades": 120,
-        "pct": 64
+        "pct": 63
       },
       {
         "mes": "2026-03",
         "unidades": 120,
-        "pct": 64
+        "pct": 63
       },
       {
         "mes": "2026-04",
         "unidades": 120,
-        "pct": 64
+        "pct": 63
       },
       {
         "mes": "2026-05",
         "unidades": 120,
-        "pct": 64
+        "pct": 63
       },
       {
         "mes": "2026-06",
         "unidades": 120,
-        "pct": 64
+        "pct": 63
       },
       {
         "mes": "2026-07",
         "unidades": 67,
-        "pct": 36
+        "pct": 35
       }
     ]
   },
@@ -134,8 +134,8 @@
     "filas_en_conflicto": 12
   },
   "duplicados_exactos_detectados": 3,
-  "equipos_analizados": 187,
-  "hallazgos_generados": 22,
+  "equipos_analizados": 190,
+  "hallazgos_generados": 20,
   "hallazgos_por_id": {
     "sobreconsumo": 1,
     "meses_sin_gps": 1,
@@ -149,8 +149,6 @@
     "datos_parciales": 1,
     "calidad_planilla": 1,
     "entregas_conflicto_remito": 1,
-    "nofl_otros": 1,
-    "nofl_planta": 1,
     "prefijos_nuevos": 1,
     "acciones_automaticas": 1,
     "ralenti_espera": 1,
@@ -161,9 +159,9 @@
     "normalizaciones": 1
   },
   "autocorreccion": {
-    "altas_interno": 4,
+    "altas_interno": 7,
     "aceptados_no_flota": 7,
     "metas_alineadas": 2
   },
-  "huerfanos_restantes": 18
+  "huerfanos_restantes": 15
 }

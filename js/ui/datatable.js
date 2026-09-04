@@ -815,12 +815,23 @@ async function renderMovimientos(tipo) {
     poblarFiltrosFecha(todos);
     sincronizarFiltroCorrec();
 
+    // Denominación por clave normalizada, para TODAS las tablas de movimientos: el maestro
+    // manda cuando el equipo existe (respeta lo editado a mano); si el código es huérfano o
+    // ajeno a la flota, se cae al mismo prefijo-a-denominación que ya usa el resto de la app
+    // (getDenominacion), así que un "CF38" sin dar de alta igual se lee como "Cargadora Frontal".
+    const equiposMaestro = await getAllEquipos();
+    const denoPorClave = new Map(equiposMaestro.map(e => [e.interno_key || normalizeEquipoKey(e.interno), e.denominacion || getDenominacion(e.interno, e.tipo)]));
+    const denominacionDe = (r) => {
+        const key = r.interno_key || normalizeEquipoKey(r.interno || r.dominio || '');
+        return denoPorClave.get(key) || getDenominacion(r.interno || key, '') || '';
+    };
+
     // Para cargas: armar el set de internos del maestro y el mapa de correcciones ya guardadas
     let equiposSet = new Set();
     let correccionesMap = new Map();
     if (esCarga) {
-        const [eqs, corrs] = await Promise.all([getAllEquipos(), getCorreccionesCargas()]);
-        eqs.forEach(e => equiposSet.add(e.interno_key || normalizeEquipoKey(e.interno)));
+        const corrs = await getCorreccionesCargas();
+        equiposMaestro.forEach(e => equiposSet.add(e.interno_key || normalizeEquipoKey(e.interno)));
         corrs.forEach(c => correccionesMap.set(c.huella, c));
     }
     const esHuerfanaDe = (r) => {
@@ -885,16 +896,16 @@ async function renderMovimientos(tipo) {
             .map(c => ({ k: `datos.${c}`, label: c }));
     }
     cols.forEach(c => { if (overrides[c.k]) c.label = overrides[c.k]; });
-    columnasVisibles = ['Equipo', ...cols.map(c => c.label)];
+    columnasVisibles = ['Equipo', 'Denominación', ...cols.map(c => c.label)];
 
     // Solo fecha/fecha_hasta y las columnas derivadas del GPS (_ralenti/_movimiento/_total,
     // calculadas a partir de r.horas, no un campo propio) quedan afuera de la edición directa.
     const noEditable = new Set(['_ralenti', '_movimiento', '_total', 'fuentes']);
 
-    const colspan = cols.length + 1 + (esCarga ? 2 : 0);
+    const colspan = cols.length + 2 + (esCarga ? 2 : 0);
     document.getElementById('table-header').innerHTML =
         (esCarga ? '<th class="th-sel"><input type="checkbox" id="th-sel-mov-all" title="Seleccionar todos"></th>' : '') +
-        '<th title="Común denominador entre planillas: interno+dominio cuando la fila trae los dos, o el que tenga">Equipo</th>' +
+        '<th title="Común denominador entre planillas: interno+dominio cuando la fila trae los dos, o el que tenga">Equipo</th><th>Denominación</th>' +
         cols.map(c => `<th>${esc(c.label)}${noEditable.has(c.k) ? '' : `
             <button class="th-rename-mov" data-tipo="${esc(tipo)}" data-col="${esc(c.k)}" data-label="${esc(c.label)}" title="Renombrar columna"><i class="fa-solid fa-pen"></i></button>`}</th>`).join('') +
         (esCarga ? '<th class="th-acciones"></th>' : '');
@@ -930,6 +941,7 @@ async function renderMovimientos(tipo) {
                 r.interno && r.dominio ? `${esc(r.interno)} <span class="cell-dom">${esc(r.dominio)}</span>`
                 : esc(r.interno || r.dominio || '—')
             }</td>
+            <td>${esc(denominacionDe(r)) || '<span class="cell-muted">—</span>'}</td>
             ${cols.map(c => {
                 let v;
                 if (c.k === '_ralenti') v = nf(h.ralenti, 1);

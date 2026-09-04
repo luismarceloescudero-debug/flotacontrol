@@ -3790,6 +3790,10 @@ function renderCards(container, analisis) {
             else comparSeleccion.add(interno);
             renderCards(container, analisis);
         });
+        card.querySelector('.btn-card-actividad')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            abrirActividadEstimada([interno], analisis);
+        });
 
         // Click en la tarjeta (fuera de botones) → abrir overlay de pantalla completa
         card.addEventListener('click', (e) => {
@@ -4214,6 +4218,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
                 </div>
                 <div class="card-actions">
                     <button class="btn-icon btn-card-compare ${enComparacion ? 'active' : ''}" title="${enComparacion ? 'Quitar de la comparativa' : 'Agregar a comparativa'}" aria-pressed="${enComparacion}"><i class="fa-solid ${enComparacion ? 'fa-square-check' : 'fa-code-compare'}"></i></button>
+                    <button class="btn-icon btn-card-actividad" title="Declarar km/horas estimados (ej. '10-12 hs/día para Áridos') — no hace falta esperar a que aparezca un hallazgo"><i class="fa-solid fa-gauge-high"></i></button>
                     <button class="btn-icon btn-card-detail" title="Ver detalle"><i class="fa-solid fa-chart-simple"></i></button>
                     <button class="btn-icon btn-card-edit" title="Editar"><i class="fa-solid ${editando ? 'fa-xmark' : 'fa-pen'}"></i></button>
                 </div>

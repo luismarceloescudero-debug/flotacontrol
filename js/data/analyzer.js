@@ -15,7 +15,12 @@
 import { normalizeEquipoKey, getPrefijo, getDenominacion, partesFecha, getProvincia, getNombreCentroCosto, tipoLugarCarga, getBandera } from './normalizer.js';
 
 export const RULE_L_100KM = ['TR', 'CM', 'CH', 'FG', 'AU'];
-export const RULE_L_HORA = ['MX', 'CF', 'EX', 'TP', 'GE', 'BM', 'VL', 'AE', 'RE', 'MC', 'MT', 'MH', 'CL', 'MS'];
+// CA (CALDERA) y LM (LIMPIEZA) se suman acá a propósito: consumen por tiempo de uso, no por
+// distancia, igual que GE (GRUPO ELECTRÓGENO) — que tampoco tiene GPS y ya funciona por cálculo
+// inverso (litros ÷ meta). Antes quedaban sin ninguna regla de unidad, así que un código nuevo
+// con ese prefijo no se podía dar de alta automáticamente (ver PREFIJOS_CALCULABLES en
+// autocorreccion.js): no era que les faltara GPS, era que la app no sabía en qué unidad medirlos.
+export const RULE_L_HORA = ['MX', 'CF', 'EX', 'TP', 'GE', 'BM', 'VL', 'AE', 'RE', 'MC', 'MT', 'MH', 'CL', 'MS', 'CA', 'LM'];
 export const RULE_NO_TANK = ['BA', 'CR', 'SR', 'TO'];
 
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
