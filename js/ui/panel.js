@@ -3729,6 +3729,15 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
     }
 }
 
+/**
+ * Fuerza el filtro de meses del panel a un conjunto dado (vacío = auto-selección).
+ * Llamado desde upload.js después de procesar archivos con período explícito.
+ */
+export function setMesesFiltro(periodos) {
+    view.meses.clear();
+    periodos.forEach(p => view.meses.add(p));
+}
+
 export function buscarEquipo(interno) {
     const input = document.getElementById('search-equip');
     if (!input) return;

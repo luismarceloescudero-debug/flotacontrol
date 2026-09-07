@@ -3,7 +3,7 @@
  */
 import { initDB, clearAllData, clearMovimientos, getDBStats } from './data/database.js';
 import { initUploadUI, renderDBStatus } from './ui/upload.js';
-import { renderPanel, initPanelControls, buscarEquipo } from './ui/panel.js';
+import { renderPanel, initPanelControls, buscarEquipo, setMesesFiltro } from './ui/panel.js';
 import { renderDataTable, initDataTableControls, exportarTablaVisible, abrirTablaConBusqueda } from './ui/datatable.js';
 import { renderSeguimiento } from './ui/seguimiento.js';
 import { initCalcPopover } from './ui/calcpopover.js';
@@ -43,6 +43,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.exportTableToXLSX = exportarTablaVisible;
     window.showDataTable = (t) => { irA('datos'); renderDataTable(t); };
     window.renderPanel = renderPanel;
+    window.setMesesFiltro = setMesesFiltro;
     // Punto único para navegar a Base de Datos con una búsqueda ya aplicada (interno/dominio),
     // usado desde los hallazgos del diagnóstico y desde las tarjetas del Panel. Antes esos
     // botones llamaban a `window.renderDataTable`, que nunca se publicó acá — por eso no hacían

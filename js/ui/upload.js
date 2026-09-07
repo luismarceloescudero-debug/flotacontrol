@@ -61,10 +61,28 @@ function handleFiles(files) {
     updateProcessButton();
 }
 
-export function removeFile(filename) {
+export async function removeFile(filename) {
+    const removido = AppState.filesQueue.find(f => f.file.name === filename);
+    const wasDone = removido?.status === 'done';
     AppState.filesQueue = AppState.filesQueue.filter(f => f.file.name !== filename);
-    renderFileList();
-    updateProcessButton();
+
+    if (wasDone) {
+        // El archivo ya había contribuido datos a IndexedDB: limpiar movimientos y
+        // re-procesar los restantes para que el análisis refleje solo los archivos que quedan.
+        const restantes = AppState.filesQueue.filter(f => f.status === 'done');
+        restantes.forEach(r => { r.status = 'pending'; r.meta = null; r.detalle = ''; });
+        window.setMesesFiltro?.([]); // reset para que la intersección recalcule
+        await clearMovimientos();
+        renderFileList();
+        updateProcessButton();
+        await renderDBStatus();
+        if (restantes.length > 0) {
+            await processAllFiles();
+        }
+    } else {
+        renderFileList();
+        updateProcessButton();
+    }
 }
 window.removeFile = removeFile;
 
@@ -158,6 +176,31 @@ export async function renderDBStatus() {
     }
 }
 
+/**
+ * Calcula la intersección de períodos de los archivos con fecha explícita
+ * (GPS, Resumen de Viaje) y devuelve el array de meses 'YYYY-MM' resultante.
+ * Los archivos sin período declarado (Cargas, Equipos, Estimados) no restringen.
+ * Si la intersección es vacía o no hay archivos con período, devuelve [].
+ */
+function calcularInterseccionPeriodos() {
+    const conPeriodo = AppState.filesQueue.filter(
+        f => f.status === 'done' && f.meta?.periodo_desde && f.meta?.periodo_hasta
+    );
+    if (!conPeriodo.length) return [];
+    const desdeMax = conPeriodo.reduce((m, f) => f.meta.periodo_desde > m ? f.meta.periodo_desde : m, conPeriodo[0].meta.periodo_desde);
+    const hastaMin = conPeriodo.reduce((m, f) => f.meta.periodo_hasta < m ? f.meta.periodo_hasta : m, conPeriodo[0].meta.periodo_hasta);
+    if (desdeMax > hastaMin) return [];
+    const meses = [];
+    let cur = desdeMax.slice(0, 7);
+    const fin = hastaMin.slice(0, 7);
+    while (cur <= fin) {
+        meses.push(cur);
+        const [y, m] = cur.split('-').map(Number);
+        cur = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+    }
+    return meses;
+}
+
 async function processAllFiles() {
     const pendientes = AppState.filesQueue.filter(f => f.status === 'pending');
     if (pendientes.length === 0) return;
@@ -216,6 +259,10 @@ async function processAllFiles() {
     await renderDBStatus();
 
     if (ok > 0) {
+        // Si hay archivos con período explícito, forzar el filtro a su intersección
+        // para que el panel muestre solo los meses comunes a todos los archivos subidos.
+        const interseccion = calcularInterseccionPeriodos();
+        if (interseccion.length > 0) window.setMesesFiltro?.(interseccion);
         irA('panel');
     } else if (errores > 0) {
         alert('Ninguno de los archivos se pudo procesar. Revisá que sean los Excel de Equipos, Cargas, Resumen de Flota o Consumos Estimados.');
