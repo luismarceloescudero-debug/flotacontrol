@@ -917,7 +917,11 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     ${esRalenti && ralentiEstadosCache.some(r => r.estado === 'aceptable') ? `<button class="btn-sm btn-ver-ralenti-aceptados" title="Ver y desmarcar equipos con ralentí aceptable"><i class="fa-solid fa-list-check"></i> Ralentí aceptable (${ralentiEstadosCache.filter(r => r.estado === 'aceptable').length})</button>` : ''}
                     ${esNoflCard && equiposPendientes.length >= 2 ? `<button class="btn-sm btn-nofl-valido-lote" data-hallazgo="${esc(h.id)}" title="Marca como 'así está bien' a todos los códigos tildados de la lista de abajo"><i class="fa-solid fa-check-double"></i> Así está bien (selección)</button>` : ''}
                     ${esNoflCard && noFlotaAceptadosCache.length ? `<button class="btn-sm btn-ver-nofl-aceptados" title="Ver y desmarcar códigos marcados como 'así está bien'"><i class="fa-solid fa-list-check"></i> Códigos válidos así (${noFlotaAceptadosCache.length})</button>` : ''}
-                    ${esEstadoEquipoBulk && equiposPendientes.length >= 2 ? `<button class="btn-sm btn-estado-eq-lote" data-hallazgo="${esc(h.id)}" title="Anotá el estado (backup, taller, sin chofer…) de los equipos tildados en la lista de abajo — en bloque, con motivo por fila"><i class="fa-solid fa-clipboard-list"></i> Marcar estado (selección)</button>` : ''}
+                    ${esEstadoEquipoBulk && equiposPendientes.length >= 2 ? `
+                        <button class="btn-sm btn-estado-eq-lote" data-hallazgo="${esc(h.id)}" title="Anotá el estado (backup, taller, sin chofer…) de los equipos tildados en la lista de abajo — en bloque, con motivo por fila"><i class="fa-solid fa-clipboard-list"></i> Marcar estado (selección)</button>
+                        <button type="button" class="btn-xs btn-chk-marcar-todos" data-hallazgo="${esc(h.id)}" title="Tildar todos">Tildar todos</button>
+                        <button type="button" class="btn-xs btn-chk-marcar-ninguno" data-hallazgo="${esc(h.id)}" title="Destildar todos">Ninguno</button>
+                    ` : ''}
                     <span class="diag-acciones-sep"></span>
                     ${esIgnorado
                         ? `<button class="btn-sm btn-diag-restaurar" data-hallazgo="${esc(h.id)}" title="Volver a mostrar este hallazgo"><i class="fa-solid fa-eye"></i> Restaurar</button>`
@@ -1271,7 +1275,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const card = b.closest('.diag-card');
             const internos = card ? [...card.querySelectorAll('.chk-ralenti-promedio:checked')].map(c => c.dataset.interno) : [];
             if (!internos.length) { alert('No hay equipos tildados. Tildá alguno en la lista de abajo para marcarlos juntos.'); return; }
-            abrirEstadoEquipoBulk(internos);
+            abrirEstadoEquipoBulk(internos, b.dataset.hallazgo || '');
         });
     });
 
@@ -3409,7 +3413,7 @@ function abrirAltaNoFlota(hallazgoId, analisis, rawRecords) {
  * El mismo patrón que "Declarar actividad estimada": categoría global arriba, tabla con
  * una columna de override por equipo para los que trabajan distinto.
  */
-function abrirEstadoEquipoBulk(internos) {
+function abrirEstadoEquipoBulk(internos, hallazgoId = '') {
     const container = document.getElementById('modals-container');
     if (!container) return;
     const lista = [...new Set(internos)].filter(Boolean);
@@ -3489,6 +3493,7 @@ function abrirEstadoEquipoBulk(internos) {
             const rangos = actual?.rangos || [];
             await setSeguimientoEquipo(interno, motivo, cat, rangos);
             seguimientoEquiposCache.set(interno, { interno, motivo, categoria: cat, fecha: new Date().toISOString(), rangos });
+            if (hallazgoId) marcarAtendido(hallazgoId, interno, CATEGORIA_SEGUIMIENTO_LABEL[cat] || cat);
         }
         cerrar();
         renderDiagnostico(ultimoAnalisis, datosCrudos?.rawRecords || []);
