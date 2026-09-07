@@ -1,5 +1,5 @@
 {
-  "generado": "2026-09-04T20:33:57.259Z",
+  "generado": "2026-09-07T16:42:51.234Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
@@ -84,6 +84,18 @@
       "tipo": "GPS",
       "filas": 67,
       "etiqueta": "Resumen de Flota (GPS)"
+    },
+    {
+      "archivo": "Resumen de Flota - 1-8-2026, 0_00 a 31-8-2026, 24_00.xlsx",
+      "tipo": "GPS",
+      "filas": 120,
+      "etiqueta": "Resumen de Flota (GPS)"
+    },
+    {
+      "archivo": "Resumen de viaje.xlsx",
+      "tipo": "GPS_RESUMEN_VIAJE",
+      "filas": 0,
+      "etiqueta": "Resumen de viaje (GPS)"
     }
   ],
   "equipos_maestro": 190,
@@ -94,7 +106,7 @@
     "sin_litros": 0
   },
   "gps": {
-    "filas_equipo_mes": 787,
+    "filas_equipo_mes": 907,
     "cobertura_por_mes": [
       {
         "mes": "2026-01",
@@ -130,6 +142,11 @@
         "mes": "2026-07",
         "unidades": 67,
         "pct": 35
+      },
+      {
+        "mes": "2026-08",
+        "unidades": 120,
+        "pct": 63
       }
     ]
   },
@@ -141,16 +158,16 @@
   },
   "duplicados_exactos_detectados": 3,
   "equipos_analizados": 190,
-  "hallazgos_generados": 20,
+  "hallazgos_generados": 21,
   "hallazgos_por_id": {
     "sobreconsumo": 1,
-    "meses_sin_gps": 1,
     "ralenti": 1,
     "ralenti_camionetas": 1,
     "subutilizacion": 1,
     "metas": 1,
     "sin_medicion": 1,
     "huerfanos_typo": 1,
+    "huerfanos_gps": 1,
     "datos_parciales": 1,
     "calidad_planilla": 1,
     "entregas_conflicto_remito": 1,
@@ -161,6 +178,7 @@
     "sin_gps_estimado": 1,
     "anomalas": 1,
     "bajo_uso": 1,
+    "meses_sin_gps": 1,
     "ahorro": 1,
     "normalizaciones": 1
   },

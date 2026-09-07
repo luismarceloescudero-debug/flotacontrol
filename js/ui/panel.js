@@ -4,9 +4,9 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas } from '../data/database.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
-import { generarDiagnostico, cruzarIgnicion, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion } from '../data/diagnostico.js';
+import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
 import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica } from '../data/autocorreccion.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
@@ -133,6 +133,17 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&
 const periodoDeAnalisis = (analisis) => ({ desde: analisis?.totales?.periodo_desde, hasta: analisis?.totales?.periodo_hasta });
 
 /**
+ * Verifica si una corrección guardada con `storedPeriodo` aplica al `actual`.
+ * Sin periodo guardado (datos anteriores a v13) → aplica siempre (backward compat).
+ * Dos períodos se solapan si A.desde ≤ B.hasta && B.desde ≤ A.hasta.
+ */
+const periodosCoinciden = (storedPeriodo, actual) => {
+    if (!storedPeriodo || !storedPeriodo.desde || !storedPeriodo.hasta) return true;
+    if (!actual || !actual.desde || !actual.hasta) return true;
+    return storedPeriodo.desde <= actual.hasta && actual.desde <= storedPeriodo.hasta;
+};
+
+/**
  * Punto de entrada para la vista "Seguimiento" (js/ui/seguimiento.js): expone el último
  * análisis + diagnóstico ya calculado para que esa vista arme su propia lista de "para
  * revisar" sin volver a analizar la flota desde cero ni duplicar las reglas de negocio que
@@ -199,13 +210,8 @@ const ACCIONES_PROPUESTAS = {
     bajo_uso: [
         { texto: 'Declarar km/horas estimados', icono: 'fa-gauge-high', accion: 'declarar_actividad' }
     ],
-    gps_vs_ignicion: [
-        { texto: 'Generar reclamo GPS (selección)', icono: 'fa-satellite-dish', accion: 'reclamo_ignicion' },
-        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
-    ],
     meses_sin_gps: [
-        { texto: 'Ir a subir los archivos que faltan', icono: 'fa-cloud-arrow-up', accion: 'ir_a_carga' },
-        { texto: 'Cómo corregir esto', icono: 'fa-lightbulb', accion: 'consejos' }
+        { texto: 'Ampliar el período de análisis', icono: 'fa-cloud-arrow-up', accion: 'ir_a_carga' }
     ],
     cargas_sin_valorizar: [
         { texto: 'Completar los precios que faltan', icono: 'fa-wand-magic-sparkles', accion: 'completar_precios' },
@@ -356,6 +362,12 @@ export async function renderPanel() {
         // investigación de meta que usan las tarjetas del Panel, sin duplicar el modal.
         window.abrirInvestigacionMeta = abrirInvestigacionMeta;
 window.abrirActividadEstimada = (internos) => abrirActividadEstimada(internos, ultimoAnalisis);
+
+        // Ítem 7: filtrar correcciones del período actual.
+        // Las grabadas sin período (anteriores a v13) aplican siempre — backward compat.
+        const periodoActual = periodoDeAnalisis(ultimoAnalisis);
+        ralentiEstadosCache = ralentiEstadosCache.filter(r => periodosCoinciden(r.periodo, periodoActual));
+        noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => periodosCoinciden(r.periodo, periodoActual));
 
         renderKPIs(kpiEl, ultimoAnalisis.totales, fuentes);
         renderDiagnostico(ultimoAnalisis, rawRecords);
@@ -852,15 +864,10 @@ function renderDiagnostico(analisis, rawRecords = []) {
         const seguidos = diagSeguimiento.get(h.id) || new Set();
         const acciones = ACCIONES_PROPUESTAS[h.id] || [];
         const esRalenti = esHallazgoRalenti(h.id);
-        // Ralentí y "GPS vs Ignición" son el mismo tipo de problema (el GPS reportando algo que
-        // no cierra) y comparten la misma resolución real: aceptar el dato tal cual, o reclamar
-        // el equipo GPS con el número en la mano. gps_vs_ignicion no tiene "ralentí aceptable"
-        // (no aplica el concepto), pero sí necesita poder generar el reclamo fila por fila, no
-        // solo en bloque desde el botón de la barra superior.
         // "sin_medicion" (carga combustible pero el GPS no reporta ni un km ni una hora) es el
-        // mismo tipo de reclamo que ralentí/ignición: pedirle al proveedor de GPS que revise el
-        // equipo, con el dato en la mano — no un problema distinto que necesite su propio botón.
-        const puedeReclamarGPS = esRalenti || h.id === 'gps_vs_ignicion' || h.id === 'sin_medicion';
+        // mismo tipo de reclamo que el ralentí: pedirle al proveedor de GPS que revise el
+        // equipo, con el dato en la mano.
+        const puedeReclamarGPS = esRalenti || h.id === 'sin_medicion';
         // En ralentí, "Aceptable"/"Reclamo GPS" (por fila o en selección) YA SON las dos
         // resoluciones reales — "Cómo lo resuelvo" era un tercer botón que solo repetía la
         // explicación sin resolver nada, e "Ignorar"/"Ignorar todos" esconden el hallazgo sin
@@ -872,6 +879,9 @@ function renderDiagnostico(analisis, rawRecords = []) {
         // (ej. un interno fuera de flota que se dio de alta después, o un consumo de limpieza del
         // surtidor), debe poder salir del hallazgo sin tener que ir a reasignarlo en Base de Datos.
         const esNoflCard = h.id.startsWith('nofl_') || h.id === 'huerfanos_typo';
+        // Hallazgos donde tiene sentido marcar estado en bloque (backup, taller, sin chofer...)
+        // para que el denominador de cobertura/utilización se ajuste a los días reales.
+        const esEstadoEquipoBulk = ['subutilizacion', 'datos_parciales', 'sin_gps_estimado', 'bajo_uso'].includes(h.id);
         // Los equipos ya atendidos en esta sesión salen de la lista principal: el hallazgo se va
         // vaciando a medida que se trabaja en vez de quedar siempre igual de largo.
         const atendidos = diagAtendidos.get(h.id) || new Map();
@@ -907,6 +917,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
                     ${esRalenti && ralentiEstadosCache.some(r => r.estado === 'aceptable') ? `<button class="btn-sm btn-ver-ralenti-aceptados" title="Ver y desmarcar equipos con ralentí aceptable"><i class="fa-solid fa-list-check"></i> Ralentí aceptable (${ralentiEstadosCache.filter(r => r.estado === 'aceptable').length})</button>` : ''}
                     ${esNoflCard && equiposPendientes.length >= 2 ? `<button class="btn-sm btn-nofl-valido-lote" data-hallazgo="${esc(h.id)}" title="Marca como 'así está bien' a todos los códigos tildados de la lista de abajo"><i class="fa-solid fa-check-double"></i> Así está bien (selección)</button>` : ''}
                     ${esNoflCard && noFlotaAceptadosCache.length ? `<button class="btn-sm btn-ver-nofl-aceptados" title="Ver y desmarcar códigos marcados como 'así está bien'"><i class="fa-solid fa-list-check"></i> Códigos válidos así (${noFlotaAceptadosCache.length})</button>` : ''}
+                    ${esEstadoEquipoBulk && equiposPendientes.length >= 2 ? `<button class="btn-sm btn-estado-eq-lote" data-hallazgo="${esc(h.id)}" title="Anotá el estado (backup, taller, sin chofer…) de los equipos tildados en la lista de abajo — en bloque, con motivo por fila"><i class="fa-solid fa-clipboard-list"></i> Marcar estado (selección)</button>` : ''}
                     <span class="diag-acciones-sep"></span>
                     ${esIgnorado
                         ? `<button class="btn-sm btn-diag-restaurar" data-hallazgo="${esc(h.id)}" title="Volver a mostrar este hallazgo"><i class="fa-solid fa-eye"></i> Restaurar</button>`
@@ -969,7 +980,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
                         const estadoEq = seguimientoEquiposCache.get(e.interno);
                         return `
                         <li data-interno="${esc(e.interno)}" data-hallazgo="${esc(h.id)}" class="${enSeg ? 'diag-li-seguimiento' : ''}${esNofl ? ' diag-li-nofl' : ''}${e.completitud ? ' diag-comp-' + esc(e.completitud) : ''}">
-                            ${puedeReclamarGPS || esNofl ? `<input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(e.interno)}" ${esBajoPromedio ? 'checked' : ''} title="Incluir en las acciones en bloque de este hallazgo">` : ''}
+                            ${puedeReclamarGPS || esNofl || esEstadoEquipoBulk ? `<input type="checkbox" class="chk-ralenti-promedio" data-interno="${esc(e.interno)}" ${(esBajoPromedio || esEstadoEquipoBulk) ? 'checked' : ''} title="Incluir en las acciones en bloque de este hallazgo">` : ''}
                             <span class="diag-eq">${esc(e.interno)}<small>${esc(e.denominacion || '')}</small></span>
                             <span class="diag-val">${esc(e.texto)}<small>${esc(e.sub || '')}</small>${estadoEq ? `<span class="diag-estado-badge" title="${esc(estadoEq.motivo || '')}"><i class="fa-solid fa-clipboard-list"></i> ${esc(CATEGORIA_SEGUIMIENTO_LABEL[estadoEq.categoria] || 'anotado')}</span>` : ''}</span>
                             ${esNofl ? `
@@ -1224,8 +1235,9 @@ function renderDiagnostico(analisis, rawRecords = []) {
         b.addEventListener('click', async (e) => {
             e.stopPropagation();
             const codigo = b.dataset.codigo;
-            await setNoFlotaAceptado(codigo);
-            noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => r.codigo !== codigo).concat([{ codigo }]);
+            const per = periodoDeAnalisis(analisis);
+            await setNoFlotaAceptado(codigo, '', per);
+            noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => r.codigo !== codigo).concat([{ codigo, periodo: per }]);
             renderDiagnostico(analisis, rawRecords);
         });
     });
@@ -1241,15 +1253,26 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const codigos = card ? [...card.querySelectorAll('.chk-ralenti-promedio:checked')].map(c => c.dataset.interno) : [];
             if (!codigos.length) { alert('No hay códigos tildados. Tildá alguno en la lista de abajo para aceptarlos juntos.'); return; }
             if (!confirm(`¿Marcar "así está bien" a los ${codigos.length} códigos tildados? Salen de este hallazgo de ahora en más.`)) return;
-            for (const codigo of codigos) await setNoFlotaAceptado(codigo);
+            const per = periodoDeAnalisis(analisis);
+            for (const codigo of codigos) await setNoFlotaAceptado(codigo, '', per);
             noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => !codigos.includes(r.codigo))
-                .concat(codigos.map(codigo => ({ codigo })));
+                .concat(codigos.map(codigo => ({ codigo, periodo: per })));
             renderDiagnostico(analisis, rawRecords);
         });
     });
 
     el.querySelectorAll('.btn-ver-nofl-aceptados').forEach(b => {
         b.addEventListener('click', (e) => { e.stopPropagation(); abrirNoFlotaAceptados(analisis, rawRecords); });
+    });
+
+    el.querySelectorAll('.btn-estado-eq-lote').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const card = b.closest('.diag-card');
+            const internos = card ? [...card.querySelectorAll('.chk-ralenti-promedio:checked')].map(c => c.dataset.interno) : [];
+            if (!internos.length) { alert('No hay equipos tildados. Tildá alguno en la lista de abajo para marcarlos juntos.'); return; }
+            abrirEstadoEquipoBulk(internos);
+        });
     });
 
     // Deshacer una corrección automática puntual: revierte el dato (borra el alta, destilda el
@@ -1276,8 +1299,9 @@ function renderDiagnostico(analisis, rawRecords = []) {
         b.addEventListener('click', async (e) => {
             e.stopPropagation();
             const interno = b.dataset.interno;
-            await setRalentiEstado(interno, 'aceptable');
-            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'aceptable' }]);
+            const per = periodoDeAnalisis(analisis);
+            await setRalentiEstado(interno, 'aceptable', '', per);
+            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'aceptable', periodo: per }]);
             marcarAtendido(b.closest('li')?.dataset.hallazgo || '', interno, 'ralentí aceptable');
             renderDiagnostico(analisis, rawRecords);
         });
@@ -1337,9 +1361,10 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const internos = card ? [...card.querySelectorAll('.chk-ralenti-promedio:checked')].map(c => c.dataset.interno) : [];
             if (!internos.length) { alert('No hay equipos tildados para promediar.'); return; }
             if (!confirm(`¿Marcar como "ralentí aceptable" a los ${internos.length} equipos tildados (de los ${(h?.internos_bajo_promedio || []).length} en la media, ${nf(h?.promedio_ralenti)} hs, para abajo)?\n\nLos que superan el promedio, y los que destildaste, siguen visibles para revisar uno por uno.`)) return;
-            for (const interno of internos) await setRalentiEstado(interno, 'aceptable');
+            const per = periodoDeAnalisis(analisis);
+            for (const interno of internos) await setRalentiEstado(interno, 'aceptable', '', per);
             ralentiEstadosCache = ralentiEstadosCache.filter(r => !internos.includes(r.interno))
-                .concat(internos.map(interno => ({ interno, estado: 'aceptable' })));
+                .concat(internos.map(interno => ({ interno, estado: 'aceptable', periodo: per })));
             renderDiagnostico(analisis, rawRecords);
         });
     });
@@ -1395,13 +1420,6 @@ function evidenciaReclamo(interno) {
     }
     if (m.total_km > 0) lin.push(`  Kilometros reportados: ${nf(m.total_km)} km`);
     if (m.cantidad_gps > 0) lin.push(`  Reportes recibidos en el periodo: ${nf(m.cantidad_gps)}`);
-    // Si hay Informe de Ignicion, el contraste entre las dos fuentes es la evidencia mas fuerte.
-    const cruce = cruzarIgnicion(ultimoAnalisis.filas, datosCrudos?.rawRecords || []);
-    const c = cruce && cruce.comparados.find(x => x.interno === interno);
-    if (c) {
-        lin.push(`  Informe de Ignicion (motor encendido) para el mismo periodo: ${nf(c.ignicion, 1)} hs en ${c.dias} dias`);
-        lin.push(`  Diferencia entre ambas fuentes: ${nf(Math.abs(c.dif), 1)} hs (${nf(Math.abs(c.pct))}% ${c.dif < 0 ? 'de MAS reportadas por el GPS' : 'de menos reportadas por el GPS'})`);
-    }
     return lin.length ? `\n\nDatos medidos por nuestro sistema:\n${lin.join('\n')}` : '';
 }
 
@@ -1526,12 +1544,7 @@ function abrirNuevoReclamoModal(internos, motivoSugerido, analisis, rawRecords, 
     });
 }
 
-/**
- * Un solo reclamo con TODOS los equipos abiertos. Antes cada hallazgo mandaba su propio mail
- * (uno por las camionetas, otro por el cruce con ignicion, otro por CH28 que aparecio despues),
- * y del otro lado llegaban tres reclamos sueltos del mismo problema. Esto junta todo lo que
- * este abierto en un unico mensaje, agrupado por motivo, con la evidencia de cada unidad.
- */
+/** Un solo reclamo con TODOS los equipos abiertos, agrupado por motivo. */
 async function mailtoReclamoConsolidado() {
     const abiertos = (await getReclamosGPS()).filter(r => r.estado !== 'cerrado');
     if (!abiertos.length) { alert('No hay reclamos abiertos para enviar.'); return; }
@@ -1863,19 +1876,6 @@ CONSEJOS.calidad_planilla = {
         'Antes de subir un archivo, verificar que ese período no se haya subido ya.'
     ]
 };
-CONSEJOS.gps_vs_ignicion = {
-    titulo: 'El GPS reporta más horas que el sistema de ignición',
-    intro: 'Tenés dos mediciones independientes de lo mismo: el Informe de Ignición (motor encendido) y el Resumen de Flota (ralentí + movimiento). Cuando difieren mucho, una de las dos está mal — y hasta ahora, con una sola fuente, no había manera de saber cuál. Ahora sí.',
-    pasos: [
-        ['Reclamar el equipo GPS con el número en la mano', 'Diferencias de ±10% entre las dos fuentes son normales: miden cosas parecidas, no idénticas. Un 60% o 70% no lo es. El reclamo ya sale redactado con la comparación concreta de ese equipo.'],
-        ['No tomar decisiones sobre esos equipos hasta que se resuelva', 'Sus horas infladas arrastran el promedio de ralentí de todo el grupo y bajan su consumo por hora, así que además distorsionan la comparación de sus pares.', { texto: 'Ver los equipos de este hallazgo', modo: 'equipos' }],
-        ['Usar la ignición como referencia mientras tanto', 'Si hay que estimar la actividad real de esos equipos para el período, el dato de ignición es el más confiable de los dos.']
-    ],
-    prevenir: [
-        'Subir el Informe de Ignición todos los meses junto con el Resumen de Flota: es lo que convierte un ralentí sospechoso en un ralentí demostrado.',
-        'Los equipos con diferencias grandes que se repiten mes a mes son candidatos a cambio de equipo GPS, no a un ajuste de configuración.'
-    ]
-};
 CONSEJOS.ralenti_camionetas = CONSEJOS.ralenti;
 CONSEJOS.ralenti_inverosimil = CONSEJOS.ralenti;
 
@@ -2169,7 +2169,10 @@ function abrirRegistrosConsejo(modo, hallazgoId) {
             if (!f || !(f.cargas || []).length) return;
             const litros = f.cargas.map(c => parseFloat(c.litros) || 0);
             const max = Math.max(...litros);
-            const med = litros.slice().sort((a, b) => a - b)[Math.floor(litros.length / 2)];
+            // mediana() importada de diagnostico.js, no una copia local: la carga "típica" que
+            // se muestra acá se compara a ojo contra la mayor de la lista para detectar un
+            // litraje mal tipeado, y tiene que ser la misma mediana que usa el resto de la app.
+            const med = mediana(litros);
             grupos.push({ interno: eq.interno, denominacion: eq.denominacion, sub: `${f.cargas.length} cargas · mayor ${nf(max, 1)} L · típica ${nf(med, 1)} L`, filas: [...f.cargas].sort((a, b) => (parseFloat(b.litros) || 0) - (parseFloat(a.litros) || 0)) });
         });
     } else if (modo === 'metas' || modo === 'pocos_datos' || modo === 'equipos' || modo.startsWith('causa:')) {
@@ -2431,8 +2434,9 @@ function abrirRevisionParciales(analisis, rawRecords) {
     modal.querySelectorAll('.btn-par-meta').forEach(b => b.addEventListener('click', () => { cerrar(); abrirInvestigacionMeta(b.dataset.interno); }));
     modal.querySelectorAll('.btn-par-seguir').forEach(b => b.addEventListener('click', async () => {
         const interno = b.dataset.interno;
-        await setRalentiEstado(interno, 'seguimiento');
-        ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'seguimiento' }]);
+        const per = periodoDeAnalisis(analisis);
+        await setRalentiEstado(interno, 'seguimiento', '', per);
+        ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'seguimiento', periodo: per }]);
         if (!diagSeguimiento.has('datos_parciales')) diagSeguimiento.set('datos_parciales', new Set());
         diagSeguimiento.get('datos_parciales').add(interno);
         marcarAtendido('datos_parciales', interno, 'en seguimiento');
@@ -2526,13 +2530,14 @@ function abrirResolucion(hallazgoId, analisis, rawRecords) {
     modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
 
     const aplicar = async (interno, accion) => {
+        const per = periodoDeAnalisis(analisis);
         if (accion === 'aceptar') {
-            await setRalentiEstado(interno, 'aceptable');
-            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'aceptable' }]);
+            await setRalentiEstado(interno, 'aceptable', '', per);
+            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'aceptable', periodo: per }]);
             marcarAtendido(hallazgoId, interno, 'ralentí aceptable');
         } else if (accion === 'seguimiento') {
-            await setRalentiEstado(interno, 'seguimiento');
-            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'seguimiento' }]);
+            await setRalentiEstado(interno, 'seguimiento', '', per);
+            ralentiEstadosCache = ralentiEstadosCache.filter(r => r.interno !== interno).concat([{ interno, estado: 'seguimiento', periodo: per }]);
             if (!diagSeguimiento.has(hallazgoId)) diagSeguimiento.set(hallazgoId, new Set());
             diagSeguimiento.get(hallazgoId).add(interno);
             marcarAtendido(hallazgoId, interno, 'en seguimiento');
@@ -3399,6 +3404,98 @@ function abrirAltaNoFlota(hallazgoId, analisis, rawRecords) {
 }
 
 /**
+ * "Marcar estado (selección)": marca en bloque el estado (backup, taller, sin chofer…)
+ * de varios equipos a la vez, con un valor por defecto + override por fila.
+ * El mismo patrón que "Declarar actividad estimada": categoría global arriba, tabla con
+ * una columna de override por equipo para los que trabajan distinto.
+ */
+function abrirEstadoEquipoBulk(internos) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const lista = [...new Set(internos)].filter(Boolean);
+    if (!lista.length) return;
+
+    const modalId = 'modal-estado-eq-bulk';
+    document.getElementById(modalId)?.remove();
+
+    const opcionesCategoria = (incluirVacia = false) =>
+        (incluirVacia ? '<option value="">— usar el de arriba —</option>' : '') +
+        CATEGORIAS_SEGUIMIENTO.map(c => `<option value="${c.id}">${esc(c.label)}</option>`).join('');
+
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Marcar estado — ${lista.length} equipo${lista.length === 1 ? '' : 's'}</h2>
+                    <p class="modal-sub">Anotar el motivo por el que tienen poca base de datos. No los excluye del análisis.<br>
+                    Los períodos fuera de servicio se cargan equipo por equipo desde "Estado" en cada tarjeta.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    <div style="display:flex;gap:1rem;align-items:flex-end;margin-bottom:1rem;flex-wrap:wrap">
+                        <div style="flex:1;min-width:200px">
+                            <label class="correc-field-label" style="display:block;margin-bottom:0.3rem">Categoría por defecto (todos)</label>
+                            <select id="bulk-cat-defecto" style="width:100%">
+                                ${opcionesCategoria(false)}
+                            </select>
+                        </div>
+                        <div style="flex:2;min-width:200px">
+                            <label class="correc-field-label" style="display:block;margin-bottom:0.3rem">Detalle por defecto (opcional)</label>
+                            <input type="text" id="bulk-motivo-defecto" style="width:100%" placeholder="Ej: baja producción temporaria">
+                        </div>
+                    </div>
+                    <p class="modal-note" style="margin-bottom:0.5rem">Completá una fila solo para el equipo con una situación distinta — el resto usa el valor de arriba.</p>
+                    <table class="data-table">
+                        <thead><tr>
+                            <th>Equipo</th>
+                            <th>Categoría (override)</th>
+                            <th>Detalle (override)</th>
+                        </tr></thead>
+                        <tbody>
+                            ${lista.map(i => {
+                                const act = seguimientoEquiposCache.get(i);
+                                return `<tr data-interno="${esc(i)}">
+                                    <td class="cell-key">${esc(i)}</td>
+                                    <td><select class="bulk-cat-eq" style="width:100%;font-size:0.82rem">${opcionesCategoria(true)}</select></td>
+                                    <td><input type="text" class="bulk-motivo-eq" style="width:100%;font-size:0.82rem" placeholder="usar el de arriba" value="${esc(act?.motivo || '')}"></td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                    <div class="modal-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1rem">
+                        <button class="btn-secondary btn-sm" data-close>Cancelar</button>
+                        <button class="btn-primary btn-sm" id="btn-bulk-eq-guardar"><i class="fa-solid fa-floppy-disk"></i> Guardar para los ${lista.length} equipos</button>
+                    </div>
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    modal.querySelector('#btn-bulk-eq-guardar').addEventListener('click', async () => {
+        const catDefecto = modal.querySelector('#bulk-cat-defecto').value || 'otro';
+        const motivoDefecto = modal.querySelector('#bulk-motivo-defecto').value.trim();
+        const filas = [...modal.querySelectorAll('tbody tr[data-interno]')];
+        for (const fila of filas) {
+            const interno = fila.dataset.interno;
+            const catOverride = fila.querySelector('.bulk-cat-eq').value;
+            const motivoOverride = fila.querySelector('.bulk-motivo-eq').value.trim();
+            const cat = catOverride || catDefecto;
+            const motivo = motivoOverride || motivoDefecto;
+            const actual = seguimientoEquiposCache.get(interno);
+            const rangos = actual?.rangos || [];
+            await setSeguimientoEquipo(interno, motivo, cat, rangos);
+            seguimientoEquiposCache.set(interno, { interno, motivo, categoria: cat, fecha: new Date().toISOString(), rangos });
+        }
+        cerrar();
+        renderDiagnostico(ultimoAnalisis, datosCrudos?.rawRecords || []);
+    });
+}
+
+/**
  * "Estado del equipo": modal chico para anotar por qué un equipo tiene poca base o datos raros
  * (fuera de servicio, taller, temporada baja, sin chofer, backup) sin excluirlo del análisis —
  * mismo store `seguimientoEquipos` que usa Consumo Real en Base de Datos, para no duplicar el
@@ -3410,24 +3507,75 @@ function abrirEstadoEquipo(interno) {
     const container = document.getElementById('modals-container');
     if (!container) return;
     const actual = seguimientoEquiposCache.get(interno);
+    // Rangos de fechas fuera de servicio: se editan en vivo (sin necesidad de guardar).
+    let rangos = [...(actual?.rangos || [])];
+
     const modalId = 'modal-estado-equipo';
     document.getElementById(modalId)?.remove();
+
+    const opcionesCategoria = CATEGORIAS_SEGUIMIENTO.map(c => `<option value="${c.id}">${esc(c.label)}</option>`).join('');
+
+    const renderRangos = () => {
+        const tbody = modal.querySelector('#tabla-rangos-body');
+        if (!tbody) return;
+        if (!rangos.length) {
+            tbody.innerHTML = `<tr><td colspan="4" style="color:var(--text-muted);font-size:0.8rem;padding:0.4rem 0">Sin períodos marcados — los días hábiles del período analizado se usan íntegros como denominador.</td></tr>`;
+            return;
+        }
+        tbody.innerHTML = rangos.map((r, i) => `
+            <tr>
+                <td><input type="date" class="rango-desde" data-idx="${i}" value="${esc(r.desde || '')}" style="font-size:0.8rem;padding:2px 4px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"></td>
+                <td><input type="date" class="rango-hasta" data-idx="${i}" value="${esc(r.hasta || '')}" style="font-size:0.8rem;padding:2px 4px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"></td>
+                <td><select class="rango-cat" data-idx="${i}" style="font-size:0.8rem;padding:2px 4px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">${CATEGORIAS_SEGUIMIENTO.map(c => `<option value="${c.id}" ${r.categoria === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select></td>
+                <td><button class="btn-icon rango-borrar" data-idx="${i}" title="Quitar rango"><i class="fa-solid fa-trash"></i></button></td>
+            </tr>`).join('');
+        // Edición inline en la tabla
+        tbody.querySelectorAll('.rango-desde').forEach(inp => inp.addEventListener('change', e => { rangos[+e.target.dataset.idx].desde = e.target.value; }));
+        tbody.querySelectorAll('.rango-hasta').forEach(inp => inp.addEventListener('change', e => { rangos[+e.target.dataset.idx].hasta = e.target.value; }));
+        tbody.querySelectorAll('.rango-cat').forEach(sel => sel.addEventListener('change', e => { rangos[+e.target.dataset.idx].categoria = e.target.value; }));
+        tbody.querySelectorAll('.rango-borrar').forEach(btn => btn.addEventListener('click', e => {
+            rangos.splice(+e.currentTarget.dataset.idx, 1);
+            renderRangos();
+        }));
+    };
+
     container.insertAdjacentHTML('beforeend', `
         <div class="modal-overlay active" id="${modalId}">
-            <div class="modal-content">
+            <div class="modal-content" style="max-width:600px">
                 <div class="modal-header">
                     <div><h2>Estado de ${esc(interno)}</h2>
                     <p class="modal-sub">No excluye al equipo del análisis — solo queda anotado por qué tiene poca base o datos raros, para no reinvestigarlo la próxima vez.</p></div>
                     <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <div class="modal-body">
-                    <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Categoría</label>
+                    <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Categoría general</label>
                     <select class="estado-eq-categoria" style="width:100%;margin-bottom:0.75rem">
                         <option value="">— Sin anotar —</option>
                         ${CATEGORIAS_SEGUIMIENTO.map(c => `<option value="${c.id}" ${actual?.categoria === c.id ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
                     </select>
                     <label class="correc-field-label" style="display:block;text-align:left;margin-bottom:0.3rem">Detalle (opcional)</label>
-                    <textarea class="estado-eq-motivo" rows="3" placeholder="Ej: en taller marzo-abril, cambio de sucursal a San Juan en mayo...">${esc(actual?.motivo || '')}</textarea>
+                    <textarea class="estado-eq-motivo" rows="2" placeholder="Ej: en taller marzo-abril, cambio de sucursal a San Juan en mayo...">${esc(actual?.motivo || '')}</textarea>
+
+                    <div style="margin-top:1.2rem;border-top:1px solid var(--border-color);padding-top:1rem">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
+                            <label class="correc-field-label" style="margin:0">Períodos fuera de servicio</label>
+                            <button class="btn-secondary btn-sm" id="btn-agregar-rango"><i class="fa-solid fa-plus"></i> Agregar período</button>
+                        </div>
+                        <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.5rem">
+                            Cada rango descuenta sus días hábiles del denominador de cobertura — la tarjeta mostrará
+                            "X de Y <em>días trabajados</em>" en lugar de "X de Y días hábiles".
+                        </p>
+                        <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+                            <thead><tr>
+                                <th style="text-align:left;padding:0 4px 4px;color:var(--text-muted);font-weight:500">Desde</th>
+                                <th style="text-align:left;padding:0 4px 4px;color:var(--text-muted);font-weight:500">Hasta</th>
+                                <th style="text-align:left;padding:0 4px 4px;color:var(--text-muted);font-weight:500">Motivo</th>
+                                <th></th>
+                            </tr></thead>
+                            <tbody id="tabla-rangos-body"></tbody>
+                        </table>
+                    </div>
+
                     <div class="modal-actions" style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:0.75rem">
                         <button class="btn-secondary btn-sm" data-close>Cancelar</button>
                         ${actual ? '<button class="btn-secondary btn-sm" id="btn-estado-eq-quitar"><i class="fa-solid fa-trash"></i> Quitar anotación</button>' : ''}
@@ -3436,24 +3584,45 @@ function abrirEstadoEquipo(interno) {
                 </div>
             </div>
         </div>`);
+
     const modal = document.getElementById(modalId);
+    renderRangos();
+
     const cerrar = () => modal.remove();
     modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
     modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    modal.querySelector('#btn-agregar-rango').addEventListener('click', () => {
+        rangos.push({ desde: '', hasta: '', categoria: 'fuera_servicio' });
+        renderRangos();
+        // Dar foco al input de fecha del nuevo rango
+        modal.querySelectorAll('.rango-desde').forEach((el, i, arr) => { if (i === arr.length - 1) el.focus(); });
+    });
+
     modal.querySelector('#btn-estado-eq-guardar').addEventListener('click', async () => {
         const categoria = modal.querySelector('.estado-eq-categoria').value;
         const motivo = modal.querySelector('.estado-eq-motivo').value.trim();
-        if (!categoria && !motivo) { alert('Elegí una categoría o escribí un detalle.'); return; }
-        await setSeguimientoEquipo(interno, motivo, categoria || 'otro');
-        seguimientoEquiposCache.set(interno, { interno, motivo, categoria: categoria || 'otro', fecha: new Date().toISOString() });
+        // Validar rangos: si hay alguno incompleto, avisar
+        const rangosValidos = rangos.filter(r => r.desde && r.hasta);
+        const rangosIncompletos = rangos.filter(r => !r.desde || !r.hasta);
+        if (rangosIncompletos.length) {
+            if (!confirm(`Hay ${rangosIncompletos.length} período(s) sin fecha de inicio o fin. Se descartarán. ¿Continuar?`)) return;
+        }
+        if (!categoria && !motivo && !rangosValidos.length) {
+            alert('Elegí una categoría, escribí un detalle o agregá al menos un período fuera de servicio.');
+            return;
+        }
+        await setSeguimientoEquipo(interno, motivo, categoria || 'otro', rangosValidos);
+        seguimientoEquiposCache.set(interno, { interno, motivo, categoria: categoria || 'otro', fecha: new Date().toISOString(), rangos: rangosValidos });
         cerrar();
-        renderDiagnostico(ultimoAnalisis, datosCrudos?.rawRecords || []);
+        renderPanel();
     });
+
     modal.querySelector('#btn-estado-eq-quitar')?.addEventListener('click', async () => {
         await quitarSeguimientoEquipo(interno);
         seguimientoEquiposCache.delete(interno);
         cerrar();
-        renderDiagnostico(ultimoAnalisis, datosCrudos?.rawRecords || []);
+        renderPanel();
     });
 }
 
@@ -3525,14 +3694,6 @@ function ejecutarAccionPropuesta(accion, hallazgoId, analisis) {
         case 'resolver':
             abrirResolucion(hallazgoId, ultimoAnalisis, datosCrudos?.rawRecords || []);
             break;
-        case 'reclamo_ignicion': {
-            const lista = (h && h.equipos ? h.equipos.map(e => e.interno) : []);
-            if (!lista.length) break;
-            abrirNuevoReclamoModal(lista,
-                'El Informe de Ignicion y el Resumen de Flota no coinciden: el GPS reporta muchas mas horas de las que el motor estuvo encendido, y esas horas se imputan como ralenti. Solicitamos revision del equipo GPS.',
-                analisis, [], hallazgoId);
-            break;
-        }
         case 'ir_a_carga':
             // Los meses que faltan no se arreglan dentro del Panel: hay que subir el archivo.
             if (typeof window.irA === 'function') window.irA('upload');
@@ -4073,16 +4234,27 @@ function cardPeriodoInfo(f, m, ubi, ralentiTag) {
     // "cargas_exceden_dias_habiles" del diagnóstico automático.
     let coberturaHtml = '';
     const periodoFlota = ultimoAnalisis ? { desde: ultimoAnalisis.totales.periodo_desde, hasta: ultimoAnalisis.totales.periodo_hasta } : null;
-    const cob = coberturaEquipo(f, periodoFlota);
+    const seguimientoEq = seguimientoEquiposCache.get(f.equipo.interno);
+    const rangosEq = seguimientoEq?.rangos || [];
+    const cob = coberturaEquipo(f, periodoFlota, rangosEq);
     if (cob) {
-        const { pct, diasHabiles: dias, totalCorridos, completo, diasConCarga, cargas } = cob;
+        const { pct, diasHabiles: dias, diasTrabajados, diasFueraServicio, totalCorridos, completo, diasConCarga, cargas } = cob;
         const cls = pct > 100 ? 'cobertura-exceso' : (pct >= 40 ? 'cobertura-ok' : (pct >= 20 ? 'cobertura-media' : 'cobertura-baja'));
-        const tituloExceso = pct > 100 ? ` · ⚠ cargó en más días hábiles de los que tuvo el período: revisar duplicados o el período` : '';
+        const tituloExceso = pct > 100 ? ` · ⚠ cargó en más días trabajados de los que tuvo el período: revisar duplicados o el período` : '';
         const notaCargas = cargas > diasConCarga ? ` (${cargas} cargas en total: hubo días con más de una)` : '';
-        coberturaHtml = `<div class="card-cobertura ${cls}" title="Cargó combustible en ${diasConCarga} de los ${dias} días hábiles del período analizado${completo ? '' : ' (sin feriados móviles confirmados)'}, sobre ${totalCorridos} días corridos${notaCargas} → ${pct}% de cobertura${tituloExceso}">
+        // Cuando hay días marcados fuera de servicio, el denominador es "días trabajados";
+        // si no, se muestra "días hábiles" (la misma cifra, sin la distinción que no aporta nada).
+        const denominador = diasFueraServicio > 0 ? diasTrabajados : dias;
+        const labelDenom = diasFueraServicio > 0
+            ? `días trabajados`
+            : `días hábiles`;
+        const notaFuera = diasFueraServicio > 0
+            ? ` · ${diasFueraServicio} días fuera de servicio descontados de ${dias} hábiles`
+            : '';
+        coberturaHtml = `<div class="card-cobertura ${cls}" title="Cargó combustible en ${diasConCarga} de ${denominador} ${labelDenom} del período analizado${completo ? '' : ' (sin feriados móviles confirmados)'}, sobre ${totalCorridos} días corridos${notaFuera}${notaCargas ? ' · ' + notaCargas.slice(2) : ''} → ${pct}%${tituloExceso}">
             <span class="cobertura-num"><i class="fa-solid fa-gas-pump"></i> ${diasConCarga}</span>
             <span class="cobertura-sep">de</span>
-            <span class="cobertura-num"><i class="fa-solid fa-calendar-days"></i> ${dias} días hábiles</span>
+            <span class="cobertura-num"><i class="fa-solid fa-calendar-days"></i> ${denominador} ${labelDenom}</span>
             <span class="cobertura-pct">${pct > 100 ? `<i class="fa-solid fa-triangle-exclamation"></i> ${pct}%` : `${pct}%`}</span>
         </div>`;
     }
@@ -4298,6 +4470,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
             <div class="stat stat-clickable" ${attrsConsumo} role="button" tabindex="0">
                 <span class="stat-label">Consumo real <i class="fa-solid fa-calculator"></i></span>
                 <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? `${nf(m.consumo_real, 2)} <small class="stat-unit">${esc(unidadConsumoLabel(m.tipo_calculo))}</small>` : '—'}</span>
+                ${m.consumo_real > 0 && m.alineacion && m.alineacion.meses.length < m.alineacion.meses_cargas.length ? `<span class="stat-nota" title="El consumo se calcula sobre ${m.alineacion.meses.length} mes${m.alineacion.meses.length !== 1 ? 'es' : ''} con datos de Cargas Y GPS a la vez. El equipo cargó en ${m.alineacion.meses_cargas.length} mes${m.alineacion.meses_cargas.length !== 1 ? 'es' : ''} en total.">${m.alineacion.meses.length} de ${m.alineacion.meses_cargas.length} meses</span>` : ''}
             </div>
         </div>
         ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? `<div class="card-cross-check" title="Las dos unidades, calculadas sobre la misma base (${nf(m.litros_alineados || m.total_litros, 1)} L, ${nf(m.horas_alineadas || m.total_horas, 1)} hs, ${nf(m.km_alineados || m.total_km)} km). No son alternativas: donde las distancias son largas pero además hay ralentí en obra —Tunuyán es el caso típico— hace falta mirar las dos para entender el consumo.">

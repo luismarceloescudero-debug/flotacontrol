@@ -83,7 +83,7 @@ async function procesarLibro(data, filename) {
     else if (det.tipo === 'ESTIMADOS') n = await handleEstimados(filas, filename, mapeo);
     else if (det.tipo === 'CARGAS') { n = await handleCargas(filas, filename, mapeo); await handlePrecios(workbook, filename); }
     else if (det.tipo === 'GPS') n = await handleGPS(filas, filename, det.desde, det.hasta, mapeo);
-    else if (det.tipo === 'IGNICION') n = await handleIgnicion(rawRows, det.headerRowIdx, filename);
+    else if (det.tipo === 'GPS_RESUMEN_VIAJE') n = await handleGPSResumenViaje(rawRows, det.desde, det.hasta, det.unidad, filename);
     else if (det.tipo === 'ENTREGAS_LOOP') n = await handleEntregasLoop(filas, filename, det.formatoEntregas, mapeo);
     else n = await handleGenerico(filas, filename, det, mapeo);
 
@@ -107,17 +107,20 @@ function detectarFormato(rawRows, filename) {
     const out = { tipo: 'UNKNOWN', etiqueta: '', headerRowIdx: -1, desde: null, hasta: null };
     const limite = Math.min(15, rawRows.length);
 
-    // Informe de ignición: formato ANCHO, no tabular. Una fila con las fechas y debajo bloques
-    // repetidos "Vehículo | Comienzo | Fin | Total", un bloque por día. No se puede leer con el
-    // lector genérico de filas-objeto, así que se detecta acá y se procesa aparte.
-    for (let i = 0; i < limite; i++) {
-        const t = normalizeString(rawRows[i].join('|'));
-        if (t.includes('VEHICULO') && t.includes('COMIENZO') && t.includes('TOTAL')) {
-            out.tipo = 'IGNICION';
-            out.etiqueta = 'Informe de Ignición';
-            out.headerRowIdx = i;
-            return out;
+    // Resumen de viaje: formato vertical para un solo equipo (clave: valor), sin desglose mensual.
+    // Wara lo genera por unidad y período personalizado. No tiene encabezado tabular: la fila [0]
+    // dice "INFORME RESUMEN DE VIAJE" y el equipo aparece en la fila "Unidad:".
+    if (rawRows.length > 0 && normalizeString(rawRows[0][0]).includes('INFORME RESUMEN DE VIAJE')) {
+        out.tipo = 'GPS_RESUMEN_VIAJE';
+        out.etiqueta = 'Resumen de viaje (GPS)';
+        out.headerRowIdx = 0;
+        for (let i = 0; i < Math.min(10, rawRows.length); i++) {
+            const c0 = normalizeString(rawRows[i][0]);
+            if (c0.includes('DESDE')) out.desde = parseDate(rawRows[i][1]);
+            if (c0.includes('HASTA')) out.hasta = parseDate(rawRows[i][1]);
+            if (c0.replace(/[:\s]+$/, '') === 'UNIDAD') out.unidad = String(rawRows[i][1] || '').trim();
         }
+        return out;
     }
 
     for (let i = 0; i < limite; i++) {
@@ -438,15 +441,6 @@ async function handleGPS(filas, filename, desde, hasta, mapeo) {
             fecha_hasta: hasta || null,
             distancia: parseNumber(val(row, 'km', ['KILOMETROS RECORRIDOS', 'KILOMETROS', 'DISTANCIA'], mapeo)),
             horas,
-            // Odómetro es kilómetros llanos (parseNumber alcanza). Horómetro, en cambio, llega
-            // con la MISMA codificación que ralentí/movimiento: fracción de día de Excel con
-            // formato de celda [h]:mm — verificado contra el archivo de julio real, donde el
-            // crudo 1343.4488... muestra "32242:46" (1343.4488 × 24 = 32242,77 hs). Si se guarda
-            // con parseNumber (como ralentí/movimiento antes de aggregateHours) queda 24 veces
-            // más chico que las horas reales — un número que hoy no alimenta ningún cálculo,
-            // pero que sí lo haría el día que se use este dato para mantenimiento por horómetro.
-            odometro: parseNumber(val(row, 'odometro', ['ODOMETRO'], mapeo)),
-            horometro: parseExcelHours(val(row, 'horometro', ['HOROMETRO'], mapeo)),
             grupo: normalizeString(val(row, 'grupo', ['GRUPO'], mapeo)) || ''
         });
     });
@@ -535,42 +529,37 @@ async function handleEntregasLoop(filas, filename, formato, mapeo) {
 }
 
 /**
- * Informe de ignición: horas de motor encendido por vehículo y por día, en formato ancho.
- * Fila de fechas arriba, y debajo bloques "Comienzo | Fin | Total" repetidos, uno por día.
- *
- * Es una SEGUNDA fuente independiente de la actividad del equipo, y ahí está su valor: el
- * Resumen de Flota dice cuántas horas estuvo en ralentí y en movimiento, este dice cuántas horas
- * estuvo el motor encendido. Cuando los dos no coinciden, uno de los dos está mal — y eso es
- * exactamente lo que no se puede saber con una sola fuente.
+ * Resumen de viaje (formato vertical, un solo equipo, período completo sin desglose mensual).
+ * Wara lo genera por unidad con rango personalizado. Extrae km y ralentí del bloque clave-valor.
+ * Se guarda como un único registro con fecha=desde y fecha_hasta=hasta; el analyzer lo trata
+ * como dato de referencia (no entra en el cálculo mensual por falta de desglose por mes).
  */
-async function handleIgnicion(rawRows, headerRowIdx, filename) {
-    const filaFechas = rawRows[headerRowIdx - 1] || [];
-    const filaSub = rawRows[headerRowIdx] || [];
-    const recs = [];
-
-    for (let col = 0; col < filaSub.length; col++) {
-        if (normalizeString(filaSub[col]) !== 'TOTAL') continue;
-        // La fecha del bloque vive en la columna de "Comienzo", dos a la izquierda del "Total".
-        const fecha = parseDate(filaFechas[col - 2]) || parseDate(filaFechas[col - 1]) || parseDate(filaFechas[col]);
-        if (!fecha) continue;
-        for (let f = headerRowIdx + 1; f < rawRows.length; f++) {
-            const interno = normalizeString(rawRows[f][0]);
-            if (!interno) continue;
-            const horas = parseNumber(rawRows[f][col]);
-            if (!horas || horas <= 0) continue;
-            const id = { interno, interno_key: normalizeEquipoKey(interno), dominio: '', dominio_key: '' };
-            recs.push({
-                ...baseMovimiento({}, id, fecha, filename),
-                type: 'ignicion',
-                type_label: 'Informe de Ignición',
-                horas_ignicion: horas,
-                comienzo: String(rawRows[f][col - 2] ?? ''),
-                fin: String(rawRows[f][col - 1] ?? '')
-            });
-        }
-    }
-    if (recs.length) await insertRawRecords(recs);
-    return recs.length;
+async function handleGPSResumenViaje(rawRows, desde, hasta, unidad, filename) {
+    if (!unidad) return 0;
+    const kv = {};
+    rawRows.forEach(r => {
+        const k = normalizeString(r[0]);
+        if (k) kv[k] = r[1];
+    });
+    const km = parseNumber(kv['KILOMETROS RECORRIDOS']);
+    const ralentiDias = parseNumber(kv['TIEMPO EN RALENTI']);
+    // Nota: "Tiempo en movimiento" en este reporte es el período total de monitoreo
+    // (días con GPS activo), NO las horas de movimiento real — por eso no se usa.
+    const horas = { ralenti: ralentiDias > 0 ? ralentiDias * 24 : 0, movimiento: 0, parado: 0, total: ralentiDias > 0 ? ralentiDias * 24 : 0 };
+    if (!km && !horas.total) return 0;
+    const id = { interno: unidad, interno_key: normalizeEquipoKey(unidad), dominio: '', dominio_key: '' };
+    const rec = {
+        ...baseMovimiento({}, id, desde || '', filename),
+        type: 'gps',
+        type_label: 'Resumen de viaje (GPS)',
+        fecha_hasta: hasta || null,
+        distancia: km || 0,
+        horas,
+        grupo: '',
+        es_resumen_periodo: true
+    };
+    await insertRawRecords([rec]);
+    return 1;
 }
 
 async function handlePrecios(workbook, filename) {

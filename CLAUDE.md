@@ -67,6 +67,31 @@ of the Loop delivery volume. A hand-reasoned check of the same code would not ha
 the bug only shows up when you exercise IndexedDB's actual async request ordering, which is
 exactly what this harness does and a human re-reading the code does not.
 
+**`node tools/auditar-calculos.mjs`** is the second harness, and it answers a different
+question. `verificar-datos-reales.mjs` asks *"do the totals still match yesterday's?"* — it
+compares against a frozen `invariantes.json`, so it catches a number that **changed**, never a
+formula that was **wrong from day one**. `auditar-calculos.mjs` recomputes every number from its
+own definition and confronts it with what the pipeline produced: ~3.300 checks covering
+per-equipment metrics (the ratio really is `litros_alineados ÷ actividad_alineada`), the
+traceability steps (the `450,2 ÷ 51,3` shown to the user must actually produce the number on the
+card, with the aligned operands — not merely land on the same result), fleet aggregation
+(**every KPI must equal Σ cards + `totales.sin_asignar`, exactly**), reconciliation against the
+spreadsheet (`total_litros + fuera_de_periodo.litros` = the file's liters), the diagnostic layer
+(coverage, utilization, excess-vs-target, implicit activity), and master-key collisions that
+`indexarMaestro()` would silently swallow. Run **both** before committing anything in
+`js/data/`: they fail on different things and neither subsumes the other. On its first run this
+one found four real defects (see `CORRECCIONES_APLICADAS.md`, 07/09/2026), including
+`calcularExceso()` comparing all of the period's liters against only the GPS months' activity —
+a violation of invariant 1 that had been shifting the headline "sobreconsumo" figure by millions
+of pesos while every regression check stayed green.
+
+**Both harnesses take several minutes, and that is `fake-indexeddb`, not the app.** Measured:
+`fake-indexeddb` maintains each index linearly on `put()`, so 1.381 `get()`+`put()` on a store
+with `raw_records`' four indexes take **25,6 s**, against **58 ms** on the same store with no
+indexes — a 440× penalty a browser's B-tree-backed IndexedDB does not pay. The merge loop inside
+`insertEntregasLoop()` is 1 ms for those same rows. Don't "optimize" the import code chasing
+this.
+
 For anything the harness doesn't cover yet (a specific card's rendering, an interaction), fall
 back to the browser: load the files, then read the result out of `window.ultimoAnalisis`
 (published by `renderPanel`) — `.totales` for fleet figures and `.filas[].metrics` for
@@ -206,8 +231,16 @@ The `TIPO` column in the Equipos spreadsheet is not trustworthy (tractors are la
 These were added after an audit found each one being violated somewhere. They're easy to break
 again by accident, so check them when touching consumption math:
 
-1. **Same period on both sides of a ratio.** A consumption rate divides liters by activity, so
-   both must come from the same months. `alinearCargasYGps()` (analyzer.js) intersects each
+1. **Same period on both sides of a ratio — and of any subtraction against a target.** A
+   consumption rate divides liters by activity, so both must come from the same months. The same
+   applies to `calcularExceso()` (diagnostico.js), which subtracts "liters the target predicts
+   for the measured activity" from the liters actually burned: it uses the **aligned** base for
+   both sides. It did not, until 07/09/2026 — it compared all of the period's liters against the
+   activity of only the months with GPS, so the fuel of unmeasured months was counted as excess.
+   That fed the headline `sobreconsumo` and `ahorro` figures for 26 equipment. Any new
+   comparison against a meta must take its liters and its activity from the same `alineacion`.
+
+   `alinearCargasYGps()` (analyzer.js) intersects each
    equipment's charge-months with its GPS-months and the rate is computed from that subset
    only (`litros_alineados` / `km_alineados` / `horas_alineadas`). The full-period totals
    (`total_litros`, `total_km`, `total_horas`) stay untouched — they're real spend/activity and
@@ -224,11 +257,32 @@ again by accident, so check them when touching consumption math:
    attribute a record to a month; `periodo` alone is only safe for charges, which are
    point-in-time.
 
+1b. **Every fleet KPI must equal Σ cards + what is not assigned to any card.** Records that
+   match no equipment (`totales.huerfanos`) still feed the fleet totals, so they must be
+   accumulated in full — not just their liters. Until 07/09/2026 they weren't: a GPS unit named
+   `PORTATIL` contributed 6.903 km and 3.180 h with zero liters, so it was invisible in every
+   finding (the non-fleet one groups by liters) while the km KPI read 6.903 higher than the sum
+   of the cards, with nothing to explain the gap. `totales.sin_asignar` now publishes
+   `{litros, km, horas, codigos}` and the km/hours traceability steps name it. Anything new that
+   lands in a fleet total needs the same treatment, and `auditar-calculos.mjs` enforces it.
+
+   The other half of the same rule: what falls **outside** the analyzed period. The period is
+   the Cargas∩GPS overlap, so months with charges and no GPS are excluded from the KPIs —
+   correct for the ratio, invisible to whoever compares the panel against the spreadsheet.
+   `totales.fuera_de_periodo` publishes those liters, cost and months; the liters KPI has a step
+   for it and the `meses_sin_gps` finding says it in words. In the real 2026 files that is
+   86.439 L, 12,8% of the year's fuel.
+
 2. **One definition per concept.** Coverage lives only in `coberturaEquipo()` (distinct days
    with a charge ÷ business days of the analyzed period) and is used by the card, the detail
    modal, Seguimiento and the meta-adjustment gate. `mediana()` is exported from diagnostico.js
    and imported where needed. Both existed twice with different formulas and the same label,
-   producing two different numbers for the same equipment.
+   producing two different numbers for the same equipment. It happened twice more and was caught
+   on 07/09/2026: `ratioPotenciaFlota()` (diagnostico.js) and panel.js's "typical charge" each
+   wrote `arr.sort()[Math.floor(n/2)]` inline — which returns the upper of the two middle values
+   on an even-sized set instead of their average — and panel.js already had `mediana` imported
+   at the top of the file. **Never write a median, a coverage figure or a business-day count
+   inline; import the one that already exists.**
 
 3. **A low number needs its context before it's a conclusion.** `utilizacion()` compares hours
    per business day against `JORNADA_REFERENCIA` (analyzer.js: 10-12 h for áridos and mixers,
@@ -317,6 +371,213 @@ problem is real, and add to it when you fix something non-trivial.
 Roo Code and described several things as "still to fix" that were already fixed by the time
 anyone read them again — removed 03/09/2026, their content is superseded by this file and by
 git history if it's ever needed.)
+
+
+## Roadmap acordado con el usuario (07/09/2026)
+
+Esta sección es el plan vigente, acordado punto por punto. Está en castellano a propósito: la
+escribe y la lee el dueño del proyecto. **Antes de empezar cualquier ítem, releerla** — varias
+entradas existen porque una suposición razonable resultó equivocada al medirla.
+
+### Decisiones cerradas (no volver a discutirlas)
+
+1. **Que falte un mes NO es un error.** El análisis se hace sobre el período que comparten los
+   archivos subidos. Si el usuario quiere analizar solo julio, sube solo el Resumen de Flota de
+   julio. En la tabla de Cargas se muestran **todos** los meses, incluidos los incompletos; el
+   cálculo se hace sobre el período común y **se declara cuál es**. Nunca se le informa al usuario
+   "falta el mes X" como si fuera un problema suyo. El hallazgo `meses_sin_gps` está mal
+   encuadrado (dice "Faltan…" con severidad alta) y hay que bajarlo a informativo — ver ítem 0.
+
+2. **Odómetro y horómetro de Wara quedan FUERA del alcance.** ✅ Hecho 07/09/2026. Ya no se
+   leen ni se guardan en `handleGPS()` (xlsx-parser.js). De Wara solo se extrae: km recorridos,
+   horas de ralentí y horas de movimiento.
+
+3. **El cruce con el Informe de Ignición está eliminado del código.** ✅ Hecho 07/09/2026.
+   `cruzarIgnicion()`, `handleIgnicion()`, el hallazgo `gps_vs_ignicion`, el case
+   `reclamo_ignicion` y `CONSEJOS.gps_vs_ignicion` eliminados de los tres archivos. El control
+   que ese cruce buscaba dar ahora sale del **ciclo de Loop** (ítem 9).
+
+4. **`Informe Entregas` (Loop) e `Informe de Viajes` (Loop) se conservan y suman dato real.**
+   Entregas: m³, remitos, planta, obra, ciclo — fuente primaria para L/m³ (ítem 10) y remitos en
+   conflicto (ítem 13). Viajes: "Parada Prohibida" (494 filas, 163 hs) — detención no autorizada
+   medida por Loop, independiente del GPS. El único informe de Loop eliminado es el de Ignición
+   (no tiene archivo fuente). Cualquier informe futuro que no aporte dato nuevo ni sirva de control
+   de totales, no se importa.
+
+5. **`Informe Volumen entregado por camión` se conserva, pero solo como control de totales.** No
+   aporta dato primario (es un agregado de lo que ya está en `Informe Entregas`), pero detectó una
+   diferencia real de 1.021,5 m³ contra el detalle en may–jul. Queda marcado como derivable, como
+   está hoy. Cualquier otro informe futuro que no sume dato nuevo ni sirva de control, no se
+   importa.
+
+5. **Los kilómetros de Loop nunca se usan como denominador.** Ya estaba en la skill
+   `calculos-combustible` y se reconfirma: 110.858 km contra 215.658 km del GPS en los mismos
+   equipos y meses (51%). Es distancia de viaje cargado, no recorrido total. Lo que se descartó en
+   su momento fue **esa columna**, no el archivo de Loop entero — distinción importante, porque el
+   `Ciclo` del mismo archivo sí sirve.
+
+### Reglas permanentes — no volver a discutirlas
+
+- **INTERNO SIN DOMINIO no es un error. DOMINIO SIN INTERNO no es un error.** Nunca se marca
+  como advertencia ni se le pide al usuario que corrija. El análisis avanza con lo que hay.
+- **Subir 3 meses o subir el año completo no es un error.** Se analiza la intersección de los
+  meses que tienen datos en ambas fuentes, aunque sea un solo mes. Nunca se informa "falta el mes
+  X" ni se pide subir los meses restantes.
+
+### Pendiente de implementación
+
+- **Botón "Actualizar meta al consumo actual" por equipo.** Decisión acordada 07/09/2026: la
+  autocorrección alinea **solo las metas vacías** (comportamiento actual). El botón explícito por
+  equipo permite mover la línea base cuando el usuario quiera — sin alinear todas de golpe
+  (eso silenciaría el sobreconsumo por construcción).
+
+### El orden del pipeline, tal como lo definió el usuario
+
+```
+1. NORMALIZAR       duplicados fuera · formatos corregidos y convertidos
+                    cruce por INTERNO + DOMINIO (las dos únicas columnas comunes
+                    a las cuatro planillas; el resto es diferencial por planilla)
+2. ALINEAR PERÍODOS intersección de meses, por equipo
+3. CORRECCIONES     buscar las guardadas y aplicarlas
+4. TABLAS           columnas comunes primero, después las diferenciales
+5. BADGES           qué aporta cada planilla, por separado
+6. CRUCES           Loop contra Resumen de Flota
+7. SECUNDARIOS      m³, L/m³, por chofer, por obra
+```
+
+### Plan, en orden de ejecución
+
+**0 · Reencuadrar `meses_sin_gps`** ✅ **HECHO (07/09/2026).** Severidad bajó a 'baja', título
+"Período analizado: N meses en común", frase "Ojo con los totales" eliminada. El dato está:
+`totales.fuera_de_periodo` y el paso del KPI de litros intactos. Arnés de coherencia actualizado
+para verificar el nuevo texto.
+
+**1 · Corregir el maestro cuando se asigna un dominio a un interno** (tanda corta). Es el caso
+`vehiculo_sin_interno` / "sin asignar": cargas con dominio (patente) que no tiene interno
+asociado en el maestro. Hoy la corrección se guarda por huella **de esa carga**; el maestro no
+se entera y el mismo dominio vuelve a salir huérfano en la próxima planilla. Lo correcto: al
+asignar interno a un dominio, escribir ese dominio en la fila del equipo — y desde ahí cruza
+solo para siempre. **Quedan 15 códigos por 5.085,8 L, de los cuales 4.914 L son patentes sin
+interno.** Ya se verificó que no hay colisiones de claves en el maestro.
+
+**2 · Días trabajados como denominador** (tanda corta-media). Es la pieza que habilita los ítems 3
+y 8, y la pidió el usuario así: *"19 cargas / 22 días laborales o trabajados"*. Hoy el denominador
+de cobertura y utilización son los **días hábiles** del calendario. Tiene que pasar a ser:
+
+```
+días trabajados = días hábiles − días marcados como fuera de servicio / taller /
+                  sin chofer / backup / temporada baja
+```
+
+Las siete categorías **ya existen** (`CATEGORIAS_SEGUIMIENTO` en panel.js: fuera_servicio,
+taller_ext, taller_int, temporada_baja, sin_chofer, backup, otro) y el store `seguimientoEquipos`
+las guarda. Lo que falta es que lleven **rango de fechas** — hoy es una fila por interno, sin
+fechas, y el usuario necesita marcar "operativo pero sin chofer **en los días que no cargó**". Con
+eso, un equipo con 19 cargas en 22 días trabajados deja de parecer un equipo con 19 cargas en 142
+días hábiles.
+
+**3 · Selección múltiple en todos los hallazgos, con motivo por fila** (tanda corta). Hoy los
+checkboxes solo aparecen en los hallazgos de ralentí y `sin_medicion`, y en los de fuera de flota
+(`puedeReclamarGPS || esNofl`, panel.js ~línea 972). Faltan en **subutilización (34 equipos)**,
+`datos_parciales`, `sin_gps_estimado` y `bajo_uso`, que son justamente donde hay que marcar en
+bloque backup / taller / sin chofer. Y cada equipo tiene que poder llevar un **motivo
+distinto** en la misma tanda: valor por defecto + override por fila, el mismo patrón que ya se usó
+en "Declarar actividad estimada".
+
+**4 · Tramo alineado visible en la tarjeta** (tanda corta). 26 equipos calculan su consumo sobre
+menos meses de los que cargaron. Hoy eso solo se ve abriendo "ver cálculo"; tiene que decirlo al
+lado del número — "6 de 7 meses" — porque cambia cómo se lee ese consumo y ahora también cambia su
+exceso valorizado.
+
+**5 · Columnas comunes vs diferenciales, explícito** (tanda corta). INTERNO y DOMINIO primero en
+las cuatro vistas; después lo propio de cada planilla. Hoy el criterio existe implícito y disperso
+(`COLS_MOV` en datatable.js). Es la base de los ítems 6 y 12.
+
+**6 · Badges por planilla** (tanda corta-media). Qué aporta cada archivo, de un vistazo: horas y km
+del Resumen de Flota · litros, combustible y precios de Cargas · m³, remitos y clientes de Loop ·
+metas de Consumos Estimados. Todo ya está calculado; es presentación.
+
+**7 · Arranque limpio y correcciones con período** (tanda propia, toca el esquema). Pedido textual:
+la app arranca sin datos precargados; desde el segundo análisis se aplican los cambios guardados
+**si los archivos o al menos el período coinciden**; al cambiar el período solo persisten algunas
+cosas. Hoy los movimientos se limpian en cada carga (bien) pero el **maestro persiste completo** y
+las correcciones se guardan por huella, sin período. Hay que agregarle período a las correcciones y
+clasificar cada tipo:
+
+- **permanente**: alta de interno, dominio asociado al equipo, unidad de cálculo, denominación.
+- **del período**: actividad declarada, estado del equipo (backup/taller/sin chofer), aceptación de
+  ralentí, aceptación de código fuera de flota.
+
+**8 · Equipo par por marca + modelo** (tanda corta-media). Verificado contra el maestro real, ya no
+hace falta investigarlo antes. La regla **no es "mismo año"**:
+
+```
+mismo marca + modelo  →  de esos, los que TENGAN datos medidos  →  el año más cercano
+```
+
+Verificado: `CM-43` (TOYOTA / HILUX 4X4 DC SR 2.8 TDI 6 MT / 2022, sin GPS) tiene a `CM-46` con
+año exacto — pero CM-46 **tampoco tiene GPS**, así que el único par utilizable es `CM-48` (2023,
+con GPS), que es justamente el que el usuario venía usando a mano. **Para comparar CM-43 vs CM-48
+en igualdad de período, el usuario subirá el Resumen de Viaje de un mes específico de CM-43
+(un mes reciente que también esté cubierto por el Resumen de Flota de CM-48).** `CF-38` (HYUNDAI / 757 / 2017)
+tiene dos pares exactos con datos: `CF-36` y `CF-37`. `CM-35` **sí tiene GPS** y no necesita par —
+no confundirlo con CM-43. Calidad del maestro: 193 equipos, 191 con marca, 185 con modelo, 182 con
+año, y 32 grupos de marca+modelo con 2 o más equipos.
+
+**9 · Banda ciclo/motor de Loop como control del ralentí** (tanda media). Medido el 07/09 sobre 146
+pares equipo-mes de 25 mixers:
+
+```
+TOTAL    Loop 9.527 hs de ciclo   ·   Wara 24.081 hs de motor   ·   39,6%
+por par  p10 6%  ·  mediana 45%  ·  p90 57%  ·  máx 61%
+pares donde Loop supera a Wara (imposible):  0
+MX100    ene 45% · feb 51% · mar 56% · abr 53% · may 56% · jun 54% · jul 49%
+```
+
+**El ciclo NO reemplaza a las horas del GPS** — mide de inicio de carga a vuelta a planta, el motor
+está encendido bastante más, y 40% es coherente, no un error. **Sí sirve como control**: la
+relación es muy estable por equipo, y el que se sale de su propia banda está reportando horas que
+no existieron o trabajando sin remito. Dos límites a respetar: **1.378 de 7.035 filas no tienen
+ciclo legible** (20%), y los pares de p10 son meses con pocas entregas donde el ratio no significa
+nada — exigir un mínimo de entregas antes de emitir el hallazgo.
+
+Extra del mismo archivo: `Parada Prohibida (min)` del Informe de Viajes tiene **494 filas con valor,
+163 horas** en total. Es detención no autorizada medida por Loop, independiente del GPS. Y los dos
+archivos de Viajes cubren ene–jun **y julio**, no solo ene–jun.
+
+**10 · L/m³ por mixer, comparable** (tanda media). Ya está sancionado por la skill
+`calculos-combustible` (solo mixers, mismo período, variación medida 18%, es **contexto** y no
+reemplaza a L/hora). 55.364,5 m³ y 25 mixers con entregas. Requisito que puso el usuario: no
+comparar equipos sueltos sino **mismo período y mismas circunstancias** — de ahí que el ítem 2 sea
+previo. La comparación se expresa siempre normalizada: `19 cargas / 22 días trabajados`, no `19
+cargas` a secas.
+
+**11 · Consumo por chofer** (tanda media). `CHOFER` está en Cargas y `Conductor` en los dos
+archivos de Loop; hoy no se cruzan. Comparar el **mismo equipo con distintos choferes** es la única
+forma de separar un problema mecánico de uno de conducción, y hoy no se puede hacer.
+
+**12 · Tablas totalmente editables** (tanda propia, la más grande). Ya existe: edición celda por
+celda en las cuatro vistas, borrar filas del maestro, corregir/asignar cargas huérfanas individual
+y en lote, columnas propias. **No existe**: mover columnas arrastrando, renombrar encabezados,
+borrar fila como botón genérico en toda tabla. Es el ítem más grande y el que menos mueve los
+números — por eso va después de los que sí los mueven.
+
+**13 · Remitos de Loop que no coinciden → registro y reclamo** (tanda corta). Son 6 remitos. El
+hallazgo ya los detecta; falta el botón que lleva a la tabla y la plantilla de pedido de revisión
+hacia Loop, con el mismo patrón que el reclamo de GPS.
+
+**14 · Consumo por obra / cliente / planta** (tanda media, secundario). Loop trae Planta, Cliente,
+Proyecto, Obra, Localidad, Provincia. Permite ver qué obra sale cara en combustible.
+
+### Ya está hecho — no volver a plantearlo
+
+- **Mail de reclamo único y agrupado.** Botón "Guardar y sumar al reclamo único": junta todos los
+  reclamos abiertos, **los agrupa por motivo**, incluye la evidencia medida de cada unidad y abre
+  el mail dirigido a `soportewara@waragps.com`.
+- **Declarar horas/km estimados**, desde la tarjeta chica y desde la vista de detalle, con rango,
+  período y base día/mes/total.
+- **Revisar y decidir equipo por equipo**, en todos los hallazgos.
+- **Omitir duplicados, convertir formatos, aplicar correcciones guardadas al reimportar.**
 
 ## Deployment — and why `git commit` is not a local-only action here
 

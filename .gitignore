@@ -49,3 +49,8 @@ Thumbs.db
 
 # Antigravity agent artifacts
 implementation_plan.md
+
+# Copia temporal de las planillas reales para probar en el navegador (ver CLAUDE.md).
+# Nunca se commitea: son datos de flota.
+_datos_prueba/
+Informe de Viajes*.xlsx

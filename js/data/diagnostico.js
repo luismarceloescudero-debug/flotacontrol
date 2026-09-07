@@ -348,7 +348,23 @@ export function utilizacion(fila, periodo = null, ubicacion = null) {
     };
 }
 
-export function coberturaEquipo(fila, periodo = null) {
+/**
+ * Calcula cuántos días hábiles dentro de [desde, hasta] caen en alguno de los rangos
+ * marcados como fuera de servicio. Los rangos se recortan al período analizado.
+ */
+function diasHabilesEnRangos(rangos, desde, hasta) {
+    let total = 0;
+    for (const r of (rangos || [])) {
+        if (!r.desde || !r.hasta) continue;
+        const rDesde = r.desde > desde ? r.desde : desde;
+        const rHasta = r.hasta < hasta ? r.hasta : hasta;
+        if (rDesde > rHasta) continue;
+        total += diasHabiles(rDesde, rHasta).dias;
+    }
+    return total;
+}
+
+export function coberturaEquipo(fila, periodo = null, rangos = []) {
     // Se cuentan DÍAS DISTINTOS con carga, no cantidad de cargas: cargar dos veces el mismo
     // día (doble turno, carga parcial y después completa) es normal y no es "más cobertura".
     // Es la misma cuenta que hace confiabilidad(), a propósito: antes esta función contaba
@@ -372,33 +388,76 @@ export function coberturaEquipo(fila, periodo = null) {
 
     const dh = diasHabiles(desde, hasta);
     if (!dh || dh.totalCorridos <= 0 || dh.dias <= 0) return null;
-    const pct = Math.round((diasConCarga / dh.dias) * 100);
-    // Pasarse de 100% (cargó en más días hábiles de los que tuvo el período) sigue siendo
+
+    // Días hábiles marcados como fuera de servicio, taller, sin chofer, etc.
+    const diasFueraServicio = rangos.length ? diasHabilesEnRangos(rangos, desde, hasta) : 0;
+    // Denominador efectivo: nunca cae a 0 para evitar división por cero.
+    const diasTrabajados = Math.max(1, dh.dias - diasFueraServicio);
+    const pct = Math.round((diasConCarga / diasTrabajados) * 100);
+
+    // Pasarse de 100% (cargó en más días trabajados de los que tuvo el período) sigue siendo
     // detectable: ahí sí hay algo mal en el dato, no una carga doble legítima.
     return {
         cargas: fila.metrics.cantidad_cargas, diasConCarga,
-        diasHabiles: dh.dias, totalCorridos: dh.totalCorridos, completo: dh.completo,
+        diasHabiles: dh.dias, diasTrabajados, diasFueraServicio,
+        totalCorridos: dh.totalCorridos, completo: dh.completo,
         pct, exceso: pct > 100
     };
 }
 
+/**
+ * Cuántos litros de más (o de menos) gastó el equipo respecto de lo que su meta predice para
+ * la actividad que realmente midió.
+ *
+ * Los dos lados de la resta tienen que salir del MISMO tramo de meses — es el invariante 1
+ * (ver CLAUDE.md), el mismo que ya respeta `consumo_real`. Por eso se usa la BASE ALINEADA
+ * (`litros_alineados` / `km_alineados` / `horas_alineadas`: los meses que tienen cargas Y GPS)
+ * y no los totales del período. Restar todos los litros del semestre menos lo esperado para
+ * los meses que sí tienen GPS cuenta como "exceso" el combustible de meses que nadie midió:
+ * en los datos reales de 2026 eso afectaba a 26 equipos, y en CF37 la diferencia entre una
+ * base y la otra era de 1.437 L (2.474 L de exceso informado contra 3.911 L reales sobre el
+ * tramo medido). No es un ajuste cosmético: `exceso_costo` es el número que encabeza el
+ * hallazgo de sobreconsumo y el de ahorro.
+ *
+ * `litros_periodo` se devuelve aparte para poder decir cuánto gasto quedó FUERA de la
+ * comparación — ese combustible existió y sigue contando en los totales de la flota, lo que
+ * no se puede hacer es medirlo contra una actividad que no se registró.
+ */
 export function calcularExceso(fila) {
     const { metrics: m, confirmed } = fila;
     if (!confirmed || !confirmed.valor || confirmed.valor <= 0) return null;
     if (!m.consumo_real || m.consumo_real <= 0) return null;
 
-    let litrosEsperados;
+    const litrosBase = m.litros_alineados > 0 ? m.litros_alineados : m.total_litros;
+    let litrosEsperados, actividad, unidadActividad;
     if (m.tipo_calculo === 'L/100Km') {
-        if (m.total_km <= 0) return null;
-        litrosEsperados = (confirmed.valor * m.total_km) / 100;
+        actividad = m.km_alineados > 0 ? m.km_alineados : m.total_km;
+        if (actividad <= 0) return null;
+        litrosEsperados = (confirmed.valor * actividad) / 100;
+        unidadActividad = 'km';
     } else if (m.tipo_calculo === 'L/Hora') {
-        if (m.total_horas <= 0) return null;
-        litrosEsperados = confirmed.valor * m.total_horas;
+        actividad = m.horas_alineadas > 0 ? m.horas_alineadas : m.total_horas;
+        if (actividad <= 0) return null;
+        litrosEsperados = confirmed.valor * actividad;
+        unidadActividad = 'hs';
     } else return null;
 
-    const excesoLitros = m.total_litros - litrosEsperados;
+    const excesoLitros = litrosBase - litrosEsperados;
+    // Precio por litro del período completo: es un promedio de precio, no una tasa de consumo,
+    // así que no depende del tramo y usar todas las cargas lo hace más estable.
     const precioLitro = m.total_litros > 0 ? m.total_costo / m.total_litros : 0;
-    return { litros_esperados: litrosEsperados, exceso_litros: excesoLitros, exceso_costo: excesoLitros * precioLitro, precio_litro: precioLitro };
+    return {
+        litros_esperados: litrosEsperados,
+        exceso_litros: excesoLitros,
+        exceso_costo: excesoLitros * precioLitro,
+        precio_litro: precioLitro,
+        litros_base: litrosBase,
+        litros_periodo: m.total_litros,
+        litros_fuera_de_base: Math.max(0, m.total_litros - litrosBase),
+        actividad, unidad_actividad: unidadActividad,
+        meses_base: (m.alineacion && m.alineacion.meses) || [],
+        base_alineada: m.litros_alineados > 0
+    };
 }
 
 /**
@@ -1127,60 +1186,6 @@ export function auditarCalidadCargas(rawRecords = []) {
 
 
 /**
- * Cruce entre el Resumen de Flota y el Informe de Ignición: dos mediciones independientes de la
- * misma actividad. El Resumen dice cuántas horas el equipo estuvo en ralentí y en movimiento;
- * el Informe de Ignición dice cuántas horas estuvo el motor encendido. Deberían parecerse.
- *
- * Cuando el GPS reporta MUCHO más que la ignición, no es que el equipo trabajó de más: es que el
- * GPS está contando horas que nunca existieron — el caso clásico del sensor que queda trabado y
- * dispara un "ralentí inverosímil" que hasta ahora solo se podía sospechar. Con las dos fuentes
- * se puede afirmar, que es lo que hace falta para reclamarle al proveedor con un número.
- */
-export function cruzarIgnicion(filas = [], rawRecords = []) {
-    const ign = rawRecords.filter(r => r.type === 'ignicion');
-    if (!ign.length) return null;
-
-    const porEquipo = new Map();
-    ign.forEach(r => {
-        const k = r.interno_key || r.interno;
-        if (!k) return;
-        if (!porEquipo.has(k)) porEquipo.set(k, { horas: 0, dias: new Set(), meses: new Set() });
-        const e = porEquipo.get(k);
-        e.horas += parseFloat(r.horas_ignicion) || 0;
-        if (r.fecha) e.dias.add(r.fecha);
-        if (r.periodo) e.meses.add(r.periodo);
-    });
-
-    const comparados = [];
-    filas.forEach(f => {
-        const k = f.equipo.interno_key || f.equipo.interno;
-        const e = porEquipo.get(k);
-        if (!e) return;
-        const gpsHoras = f.metrics.total_horas || 0;
-        // Solo se comparan los meses que están en las dos fuentes: si la ignición cubre enero a
-        // junio y el GPS enero a agosto, comparar los totales completos daría una diferencia
-        // falsa que no tiene nada que ver con la medición.
-        const mesesGps = new Set((f.gps || []).map(g => g.periodo).filter(Boolean));
-        const mesesComunes = [...e.meses].filter(m => mesesGps.has(m));
-        if (!mesesComunes.length || gpsHoras <= 0) return;
-        const dif = e.horas - gpsHoras;
-        const pct = (dif / gpsHoras) * 100;
-        comparados.push({
-            fila: f, interno: f.equipo.interno, denominacion: f.equipo.denominacion,
-            ignicion: e.horas, gps: gpsHoras, ralenti: f.metrics.horas_ralenti || 0,
-            dias: e.dias.size, meses: mesesComunes.length, dif, pct
-        });
-    });
-
-    comparados.sort((a, b) => a.pct - b.pct);
-    // Umbral: el GPS reporta más del 30% por encima de la ignición. Diferencias de ±10% son
-    // normales (miden cosas parecidas pero no idénticas); un 60% o 70% no lo es.
-    const inflados = comparados.filter(c => c.pct <= -30);
-    return { comparados, inflados, totalIgnicion: comparados.reduce((s, c) => s + c.ignicion, 0), totalGps: comparados.reduce((s, c) => s + c.gps, 0) };
-}
-
-
-/**
  * Potencia declarada del equipo, normalizada. El maestro la trae como "440 KVA" o "180 HP".
  * Sirve para comparar equipos de distinto tamaño: 85 L/hora es altísimo para un grupo de 120 KVA
  * y perfectamente normal para uno de 440. Sin normalizar por potencia, la comparación contra
@@ -1208,8 +1213,10 @@ export function ratioPotenciaFlota(filas = [], unidad = 'KVA') {
         if (p && p.unidad === unidad && meta > 0) puntos.push({ interno: f.equipo.interno, potencia: p.valor, meta, ratio: meta / p.valor });
     });
     if (puntos.length < 2) return null;
-    const rs = puntos.map(p => p.ratio).sort((a, b) => a - b);
-    return { ratio: rs[Math.floor(rs.length / 2)], n: puntos.length, unidad, puntos: puntos.sort((a, b) => a.potencia - b.potencia) };
+    // mediana() compartida, no una copia local: con una cantidad par de puntos el elemento
+    // "del medio" devuelve el de arriba en vez del promedio de los dos centrales, y este ratio
+    // decide si una meta queda respaldada por la potencia declarada (estimacionCreible).
+    return { ratio: mediana(puntos.map(p => p.ratio)), n: puntos.length, unidad, puntos: puntos.sort((a, b) => a.potencia - b.potencia) };
 }
 
 /**
@@ -1371,10 +1378,14 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         const costo = excedidos.reduce((s, x) => s + x.exceso.exceso_costo, 0);
         const dudosos = excedidos.filter(x => !x.conf.confiable).length;
         const ajustados = excedidos.filter(x => x.fila.confirmed.source === 'Maestro').length;
+        // Combustible que quedó FUERA de la comparación por no tener GPS del mismo mes: no es
+        // un error, pero es gasto real que este número no está midiendo y conviene decirlo.
+        const litrosFuera = excedidos.reduce((s, x) => s + (x.exceso.litros_fuera_de_base || 0), 0);
         hallazgos.push({
             id: 'sobreconsumo', severidad: 'alta', icono: 'fa-fire',
             titulo: `${excedidos.length} equipos consumieron ${fmt(litros)} L por encima de su meta`,
-            detalle: `Equivale a <strong>$${fmt(costo)}</strong> en el período. Se comparan los litros realmente cargados contra los que corresponderían a la meta según la actividad (km u horas) del GPS.` +
+            detalle: `Equivale a <strong>$${fmt(costo)}</strong> en el período. Se comparan los litros realmente cargados contra los que corresponderían a la meta según la actividad (km u horas) del GPS, <strong>sobre los meses que tienen las dos fuentes</strong> — la misma base con la que se calcula el consumo.` +
+                (litrosFuera > 1 ? ` Quedan <strong>${fmt(litrosFuera)} L</strong> fuera de esta comparación (meses con cargas pero sin GPS): son gasto real, pero no hay actividad medida contra la cual compararlos.` : '') +
                 (ajustados ? ` <em>${ajustados} de ellos usan una meta ajustada manualmente; si aún exceden, puede ser un desvío puntual de ese período.</em>` : '') +
                 (dudosos ? ` <em>${dudosos} de estos casos se apoyan en pocos datos: conviene confirmarlos antes de accionar.</em>` : ''),
             impacto_costo: costo,
@@ -1823,6 +1834,40 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     });
 
+    // ---------- 8a. Unidades de GPS que no cruzan con ningún equipo ----------
+    // Los huérfanos se venían mirando SOLO por sus litros, y un código que aporta 0 L pero
+    // miles de km y de horas quedaba invisible: no aparecía en "Consumo fuera de la flota"
+    // (que agrupa por cargas) ni en ningún otro lado, mientras sus km y horas SÍ sumaban a los
+    // KPI de la flota. Verificado contra los archivos reales de 2026: la unidad "PORTATIL"
+    // metía 6.903 km y 3.180 hs en el total sin pertenecer a ningún equipo, y la suma de las
+    // tarjetas no cerraba contra el KPI sin que nada lo dijera.
+    // `panel.js` ya tenía las acciones de este hallazgo registradas (ACCIONES_PROPUESTAS
+    // .huerfanos_gps) desde antes — lo que faltaba era emitirlo.
+    const gpsHuerfanos = (totales.huerfanos || [])
+        .filter(h => (h.gps || 0) > 0 && ((h.km || 0) > 0 || (h.horas || 0) > 0))
+        .sort((a, b) => (b.km || 0) - (a.km || 0));
+    if (gpsHuerfanos.length) {
+        const km = gpsHuerfanos.reduce((s, h) => s + (h.km || 0), 0);
+        const hs = gpsHuerfanos.reduce((s, h) => s + (h.horas || 0), 0);
+        const sinCargas = gpsHuerfanos.filter(h => !(h.cargas > 0)).length;
+        hallazgos.push({
+            id: 'huerfanos_gps', severidad: 'media', icono: 'fa-satellite-dish',
+            titulo: `${gpsHuerfanos.length} unidad${gpsHuerfanos.length === 1 ? '' : 'es'} del GPS sin equipo en el maestro (${fmt(km)} km · ${fmt(hs, 1)} hs)`,
+            detalle: `Esa actividad <strong>sí suma</strong> a los km y horas totales de la flota, pero no pertenece a ninguna tarjeta: por eso el KPI de la flota da más que la suma de los equipos. ` +
+                (sinCargas
+                    ? (gpsHuerfanos.length === 1
+                        ? `No tiene ninguna carga asociada, así que tampoco aparece en "Consumo fuera de la flota" (ese hallazgo agrupa por litros). `
+                        : `${sinCargas} de ellas no tienen ninguna carga asociada, así que no aparecen en "Consumo fuera de la flota" (ese hallazgo agrupa por litros). `)
+                    : '') +
+                `Si es un equipo real, darlo de alta en el maestro con su interno hace que su actividad se impute donde corresponde; si es un rastreador portátil o un equipo de otra empresa, conviene sacarlo del reporte de GPS en origen.`,
+            equipos: gpsHuerfanos.slice(0, 12).map(h => ({
+                interno: h.interno, denominacion: h.dominio ? `dominio ${h.dominio}` : 'sin dominio',
+                texto: `${fmt(h.km)} km · ${fmt(h.horas, 1)} hs`,
+                sub: `${h.gps} registro${h.gps === 1 ? '' : 's'} de Resumen de Flota · ${h.cargas ? `${h.cargas} carga${h.cargas === 1 ? '' : 's'} (${fmt(h.litros, 1)} L)` : 'sin cargas registradas'}`
+            }))
+        });
+    }
+
     // ---------- 8b. Prefijos nuevos de Mendoza, para dar de alta en la base oficial ----------
     // Distinto del hallazgo anterior: ese agrupa TODO lo huérfano (incluidos vehículos con
     // patente y prefijos ya conocidos como CL o MT que solo faltan en el padrón); este filtra
@@ -2067,15 +2112,15 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         const nCargas = cal.mesesSinGps.reduce((s, m) => s + m.cargas, 0);
         const pct = cal.totalCargas ? Math.round((nCargas / cal.totalCargas) * 100) : 0;
         hallazgos.push({
-            id: 'meses_sin_gps', severidad: 'alta', icono: 'fa-calendar-xmark',
+            id: 'meses_sin_gps', severidad: 'baja', icono: 'fa-calendar-days',
             no_comparar: true,
-            titulo: `Faltan los Resumen de Flota de ${cal.mesesSinGps.length} mes${cal.mesesSinGps.length === 1 ? '' : 'es'} que sí tienen cargas`,
-            detalle: `Hay <strong>${fmt(nCargas)} cargas</strong> (${pct}% del total, ${fmt(litros)} L, $${fmt(costo)}) en meses de los que <strong>no se subió el archivo de GPS</strong>. Para esos meses no hay km ni horas, así que no se puede calcular consumo de nada: los equipos aparecen como "sin dato de actividad", con "períodos desalineados" y con la cobertura baja, sin que ninguno de ellos tenga un problema real. Subir esos Resumen de Flota es lo que más limpia el diagnóstico de una sola vez. Meses con GPS cargado: ${cal.mesesGps.join(', ') || '—'}.`,
-            impacto_costo: costo,
+            titulo: `Período analizado: ${cal.mesesGps.length} mes${cal.mesesGps.length === 1 ? '' : 'es'} en común entre Cargas y GPS`,
+            detalle: `El análisis de consumo se hace sobre los meses que tienen datos en <strong>ambas fuentes</strong> (Cargas y Resumen de Flota). Es así por diseño: dividir litros de un período por actividad de otro daría un número sin sentido. Los ${cal.mesesSinGps.length} mes${cal.mesesSinGps.length === 1 ? '' : 'es'} sin Resumen de Flota tienen <strong>${fmt(nCargas)} cargas (${fmt(litros)} L, $${fmt(costo)})</strong> que se muestran en la tabla de cargas pero quedan fuera del período analizado — el desglose del KPI de litros lo detalla. Meses con GPS: ${cal.mesesGps.join(', ') || '—'}.`,
+            impacto_costo: 0,
             equipos: cal.mesesSinGps.map(m => ({
-                interno: m.periodo, denominacion: `${m.equipos} equipos afectados`,
+                interno: m.periodo, denominacion: `${m.equipos} equipos con cargas`,
                 texto: `${fmt(m.cargas)} cargas · ${fmt(m.litros)} L`,
-                sub: `$${fmt(m.costo)} sin poder controlar · falta el Resumen de Flota de ese mes`
+                sub: `$${fmt(m.costo)} · sin Resumen de Flota → fuera del período analizado`
             }))
         });
     }
@@ -2220,24 +2265,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     }
 
-    // ---------- 16. GPS contra Informe de Ignición ----------
-    const cruce = cruzarIgnicion(filas, rawRecords);
-    if (cruce && cruce.inflados.length) {
-        const hsFantasma = cruce.inflados.reduce((s, c) => s - c.dif, 0);
-        hallazgos.push({
-            id: 'gps_vs_ignicion', severidad: 'alta', icono: 'fa-scale-unbalanced',
-            no_comparar: true,
-            titulo: `${cruce.inflados.length} equipo${cruce.inflados.length === 1 ? '' : 's'} donde el GPS reporta muchas más horas que el sistema de ignición`,
-            detalle: `Dos fuentes independientes miden lo mismo y no coinciden: el <strong>Informe de Ignición</strong> (reporte de Loop, nuestro sistema de logística, que toma los datos de Wara por API) dice cuántas horas estuvo el motor encendido, y el <strong>Resumen de Flota</strong> (reporte mensual de Wara, directo) cuántas horas hubo entre ralentí y movimiento. Acá el GPS reporta <strong>${fmt(hsFantasma)} horas de más</strong> que la ignición nunca vio. No es que estos equipos trabajaran más: el GPS está contando horas que no existieron, y esas horas fantasma van casi todas a la cuenta del ralentí. Con las dos fuentes ya no es una sospecha — es un número para reclamarle al proveedor (el reclamo generado desde acá cita ambas fuentes por su nombre). Se comparan solo los meses presentes en ambas fuentes.`,
-            equipos: cruce.inflados.slice(0, 12).map(c => ({
-                interno: c.interno, denominacion: c.denominacion,
-                texto: `GPS ${fmt(c.gps)} hs vs ignición ${fmt(c.ignicion)} hs`,
-                sub: `el GPS reporta ${fmt(Math.abs(c.pct))}% de más (${fmt(-c.dif)} hs que no existieron) · de ellas ${fmt(c.ralenti)} hs figuran como ralentí · ${c.dias} días con ignición en ${c.meses} meses comparados`
-            }))
-        });
-    }
-
-    // ---------- 17. Gasto de los equipos dados de alta como NO FLOTA ----------
+    // ---------- 16. Gasto de los equipos dados de alta como NO FLOTA ----------
     // No es un problema: es la contracara de haberlos normalizado. Antes estos litros vivían en
     // "códigos sin padrón" (un hallazgo de severidad media que nunca se cerraba); una vez dados
     // de alta salen de ahí, y este bloque confirma que el gasto no se perdió — dice cuánto es y

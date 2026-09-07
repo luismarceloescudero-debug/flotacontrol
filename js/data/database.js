@@ -36,7 +36,10 @@ const DB_NAME = 'FlotaControlDB';
 // que no se puede resolver más, alinear una meta vacía al consumo real la primera vez) — ver
 // js/data/autocorreccion.js. No pide permiso antes de aplicar, pero queda registrado para que
 // se pueda revisar y deshacer.
-const DB_VERSION = 12;
+// v13 — correcciones del período: ralentiEstados y noFlotaAceptados llevan {periodo:{desde,hasta}}
+// opcional, para que en futuros períodos el sistema sepa si una aceptación sigue vigente o hay
+// que revisarla. Sin migración: registros sin periodo siguen aplicando siempre (backward compat).
+const DB_VERSION = 13;
 
 let dbInstance = null;
 
@@ -668,9 +671,12 @@ export async function setColLabelMov(tipo, campoKey, label) {
  * motivo, fecha }. No borra ni modifica ningún dato de origen, solo cómo se interpreta.
  */
 export function getRalentiEstados() { return readAll('ralentiEstados'); }
-export function setRalentiEstado(interno, estado, motivo = '') {
+/** periodo: {desde, hasta} (ISO strings) del análisis activo al momento de guardar. */
+export function setRalentiEstado(interno, estado, motivo = '', periodo = null) {
     return writeTx(['ralentiEstados'], ([store]) => {
-        store.put({ interno, estado, motivo, fecha: new Date().toISOString() });
+        const rec = { interno, estado, motivo, fecha: new Date().toISOString() };
+        if (periodo && periodo.desde && periodo.hasta) rec.periodo = periodo;
+        store.put(rec);
     });
 }
 export function quitarRalentiEstado(interno) {
@@ -687,9 +693,12 @@ export function quitarRalentiEstado(interno) {
  * hallazgo (el interno/dominio huérfano), no un interno real del maestro.
  */
 export function getNoFlotaAceptados() { return readAll('noFlotaAceptados'); }
-export function setNoFlotaAceptado(codigo, motivo = '') {
+/** periodo: {desde, hasta} (ISO strings) del análisis activo. Null = aplica siempre. */
+export function setNoFlotaAceptado(codigo, motivo = '', periodo = null) {
     return writeTx(['noFlotaAceptados'], ([store]) => {
-        store.put({ codigo, motivo, fecha: new Date().toISOString() });
+        const rec = { codigo, motivo, fecha: new Date().toISOString() };
+        if (periodo && periodo.desde && periodo.hasta) rec.periodo = periodo;
+        store.put(rec);
     });
 }
 export function quitarNoFlotaAceptado(codigo) {
@@ -787,9 +796,26 @@ export function quitarPrefijoNoFlota(prefijo) {
  * { interno, motivo, categoria, fecha }
  */
 export function getSeguimientoEquipos() { return readAll('seguimientoEquipos'); }
-export function setSeguimientoEquipo(interno, motivo = '', categoria = 'otro') {
+export function setSeguimientoEquipo(interno, motivo = '', categoria = 'otro', rangos) {
     return writeTx(['seguimientoEquipos'], ([store]) => {
-        store.put({ interno, motivo, categoria, fecha: new Date().toISOString() });
+        // Lee primero para preservar rangos existentes cuando no se los pasa.
+        const req = store.get(interno);
+        req.onsuccess = () => {
+            const actual = req.result || {};
+            store.put({
+                ...actual,
+                interno, motivo, categoria, fecha: new Date().toISOString(),
+                ...(rangos !== undefined ? { rangos } : {})
+            });
+        };
+    });
+}
+/** Actualiza solo el array de rangos de un equipo sin tocar categoria/motivo. */
+export async function setSeguimientoRangos(interno, rangos) {
+    const todos = await readAll('seguimientoEquipos');
+    const actual = todos.find(r => r.interno === interno) || { interno, motivo: '', categoria: 'otro', fecha: new Date().toISOString() };
+    return writeTx(['seguimientoEquipos'], ([store]) => {
+        store.put({ ...actual, rangos });
     });
 }
 export function quitarSeguimientoEquipo(interno) {

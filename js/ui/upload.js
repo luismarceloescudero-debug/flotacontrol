@@ -8,6 +8,18 @@ import { clearMovimientos, getDBStats, getArchivosProcesados } from '../data/dat
 // innerHTML sin pasar por esto antes.
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+// Ítem 6: qué aporta cada tipo de planilla de un vistazo, para mostrar en el badge
+// después de procesar. Solo columnas DIFERENCIALES (las comunes —interno/dominio— son
+// implícitas en todos). Clave = meta.tipo del parser.
+const APORTES_PLANILLA = {
+    EQUIPOS:          ['padrón', 'marca/modelo', 'potencia'],
+    CARGAS:           ['litros', 'combustible', 'precios', 'lugar', 'chofer'],
+    GPS:              ['km', 'hs motor', 'ralentí'],
+    GPS_RESUMEN_VIAJE:['km', 'hs motor'],
+    ESTIMADOS:        ['metas', 'unidad (L/h o L/100km)'],
+    ENTREGAS_LOOP:    ['m³', 'remitos', 'clientes']
+};
+
 export function initUploadUI() {
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
@@ -83,12 +95,21 @@ function renderFileList() {
         if (f.type === 'excel') iconClass = 'fa-file-excel';
         if (f.type === 'csv') iconClass = 'fa-file-csv';
 
+        const aporteChips = (() => {
+            if (f.status !== 'done' || !f.meta?.tipo) return '';
+            const items = APORTES_PLANILLA[f.meta.tipo];
+            if (!items) return '';
+            return '<div class="file-aportes">' +
+                items.map(a => `<span class="chip-aporte">${esc(a)}</span>`).join('') +
+                '</div>';
+        })();
         item.innerHTML = `
             <div class="file-info">
                 <i class="fa-solid ${iconClass} file-icon ${f.type}"></i>
                 <div class="file-details">
                     <h4>${esc(f.file.name)}</h4>
                     <p>${(f.file.size / 1024 / 1024).toFixed(2)} MB${f.detalle ? ' · ' + esc(f.detalle) : ''}</p>
+                    ${aporteChips}
                 </div>
             </div>
             <div class="file-status">
@@ -167,6 +188,7 @@ async function processAllFiles() {
         try {
             const meta = await dispatchFileParser(f.file);
             f.status = 'done';
+            f.meta = meta || null;
             f.detalle = meta && meta.tipo ? `${meta.tipo} · ${meta.filas} filas` : '';
             if (meta && meta.tipo === 'DESCONOCIDO') {
                 f.status = 'error';

@@ -658,6 +658,37 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         criterioPeriodo = 'superposición automática entre Cargas y GPS';
     }
 
+    // Cargas que quedaron FUERA del período analizado. Con el criterio automático el período es
+    // la superposición entre Cargas y GPS, así que un mes con cargas pero sin Resumen de Flota
+    // no entra — y sus litros y su costo desaparecen del KPI de la flota sin dejar rastro.
+    // Verificado contra los archivos reales de 2026: agosto y septiembre tienen 86.440 L
+    // cargados y ningún GPS, o sea el 12,8% del combustible del año quedaba afuera del total
+    // que muestra el panel, mientras la planilla de Cargas dice otro número. Que el ratio se
+    // calcule sobre la intersección es correcto (invariante 1); lo que faltaba era DECIR cuánto
+    // gasto real quedó sin medir, en vez de dejar que la diferencia aparezca recién cuando
+    // alguien compara el panel contra el Excel a mano.
+    const dentroSet = new Set(cargas);   // Set, no includes(): con 4.400 cargas el filtro por
+    const gpsDentroSet = new Set(gps);   // includes() es cuadrático y corre en cada re-análisis.
+    const cargasFueraPeriodo = allCargas.filter(c => !dentroSet.has(c));
+    const mesesFuera = [...new Set(cargasFueraPeriodo.map(c => mesDe(c)).filter(Boolean))].sort();
+    // De esos meses que quedaron afuera, cuáles no tienen NINGÚN GPS: son los que no podrían
+    // entrar aunque se los seleccionara a mano. Distinguirlos importa para el texto que ve el
+    // usuario — "no lo elegiste" y "no hay con qué medirlo" son dos situaciones distintas, y el
+    // panel preselecciona solo los meses cruzados, así que casi siempre es la segunda aunque
+    // técnicamente haya un filtro aplicado.
+    const mesesConGps = new Set();
+    allGps.forEach(g => mesesDeRegistro(g).forEach(m => mesesConGps.add(m)));
+    const mesesSinGps = mesesFuera.filter(m => !mesesConGps.has(m));
+    const fueraDePeriodo = {
+        cargas: cargasFueraPeriodo.length,
+        litros: cargasFueraPeriodo.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0),
+        costo: cargasFueraPeriodo.reduce((s, c) => s + (parseFloat(c.importe) || 0), 0),
+        meses: mesesFuera,
+        meses_sin_gps: mesesSinGps,
+        gps_fuera: allGps.filter(g => !gpsDentroSet.has(g)).length,
+        automatico: !usaFiltroManual
+    };
+
     // Agrupar movimientos por equipo del maestro, resolviendo por interno O por dominio.
     const porEquipo = new Map();      // clave del maestro -> {cargas, gps, otros}
     const huerfanosMap = new Map();   // registros que no matchean ningún equipo
@@ -671,11 +702,26 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         } else {
             const k = registro.interno_key || registro.dominio_key || '?';
             if (!huerfanosMap.has(k)) {
-                huerfanosMap.set(k, { interno: registro.interno || registro.dominio || k, dominio: registro.dominio || '', cargas: 0, gps: 0, otros: 0, litros: 0 });
+                huerfanosMap.set(k, { interno: registro.interno || registro.dominio || k, dominio: registro.dominio || '', cargas: 0, gps: 0, otros: 0, litros: 0, costo: 0, km: 0, horas: 0 });
             }
             const h = huerfanosMap.get(k);
             h[campo]++;
-            if (campo === 'cargas') h.litros += parseFloat(registro.litros) || 0;
+            if (campo === 'cargas') {
+                h.litros += parseFloat(registro.litros) || 0;
+                h.costo += parseFloat(registro.importe) || 0;
+            }
+            // Un GPS huérfano también aporta km y horas a los KPI de la flota. Sin acumularlos
+            // acá, `total_km` y `total_horas` incluyen actividad que no pertenece a ningún
+            // equipo del maestro y la suma de las tarjetas no cierra contra el KPI, sin que
+            // nada lo avise: en los archivos reales de 2026 una unidad llamada "PORTATIL"
+            // metía 6.903 km y 3.180 hs invisibles ahí. El hallazgo de huérfanos solo hablaba
+            // de litros, así que un código con 0 L y miles de km parecía inofensivo.
+            if (campo === 'gps') {
+                h.km += parseFloat(registro.distancia) || 0;
+                h.horas += (registro.horas && typeof registro.horas === 'object')
+                    ? (registro.horas.total || 0)
+                    : (parseFloat(registro.horas) || 0);
+            }
         }
     };
     cargas.forEach(r => asignar(r, 'cargas'));
@@ -696,6 +742,11 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
     });
 
     const huerfanos = [...huerfanosMap.values()].sort((a, b) => b.litros - a.litros);
+    // Actividad que entra a los KPI de la flota sin pertenecer a ningún equipo. Se publica en
+    // `totales` para que la suma de las tarjetas + esto reconstruya exactamente el KPI.
+    const litrosHuerfanos = huerfanos.reduce((s, h) => s + (h.litros || 0), 0);
+    const kmHuerfanos = huerfanos.reduce((s, h) => s + (h.km || 0), 0);
+    const horasHuerfanas = huerfanos.reduce((s, h) => s + (h.horas || 0), 0);
 
     const litrosTot = cargas.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0);
     const costoTot = cargas.reduce((s, c) => s + (parseFloat(c.importe) || 0), 0);
@@ -747,7 +798,11 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         equipos_con_datos: filas.filter(f => f.metrics.cantidad_cargas > 0 || f.metrics.cantidad_gps > 0).length,
         registros_descartados: descartados,
         total_litros: litrosTot, total_costo: costoTot, total_km: kmTot,
-        total_horas: hs.total, horas_ralenti: hs.ralenti, horas_movimiento: hs.movimiento,
+        total_horas: hs.total, horas_ralenti: hs.ralenti, horas_movimiento: hs.movimiento, horas_parado: hs.parado,
+        // Parte de los totales de arriba que NO cae en ninguna tarjeta (registros huérfanos).
+        // KPI = Σ tarjetas + esto, exactamente.
+        sin_asignar: { litros: litrosHuerfanos, km: kmHuerfanos, horas: horasHuerfanas, codigos: huerfanos.length },
+        fuera_de_periodo: fueraDePeriodo,
         cantidad_cargas: cargas.length, cantidad_gps: gps.length, cantidad_otros: otros.length,
         con_meta: filas.filter(f => f.confirmed).length,
         sobre_meta: filas.filter(f => f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15).length,
@@ -768,6 +823,14 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         ],
         litros: [
             paso('Filtrar las cargas al período', `${allCargas.length} → ${cargas.length} registros`, `${cargas.length} cargas`),
+            ...(fueraDePeriodo.cargas > 0 ? [paso(
+                'Cargas que quedaron fuera del período',
+                `${fueraDePeriodo.cargas} cargas de ${fueraDePeriodo.meses.join(', ')}`,
+                `${nf(fueraDePeriodo.litros, 1)} L · $${nf(fueraDePeriodo.costo)}`,
+                fueraDePeriodo.meses_sin_gps.length === fueraDePeriodo.meses.length
+                    ? `${fueraDePeriodo.meses_sin_gps.length === 1 ? 'Ese mes no tiene' : 'Esos meses no tienen'} ningún Resumen de Flota cargado, así que no hay km ni horas contra los cuales medir esos litros y el período no los puede incluir (el consumo divide litros y actividad del mismo tramo). El gasto es real y está completo en Base de Datos: por eso este total es menor que el de la planilla de Cargas.`
+                    : `Quedaron fuera del período analizado. ${fueraDePeriodo.meses_sin_gps.length ? `De esos meses, ${fueraDePeriodo.meses_sin_gps.join(', ')} no ${fueraDePeriodo.meses_sin_gps.length === 1 ? 'tiene' : 'tienen'} Resumen de Flota cargado. ` : ''}El gasto es real y está completo en Base de Datos.`
+            )] : []),
             paso('Sumar la columna LITROS', `${cargas.length} valores`, `${nf(litrosTot, 1)} L`)
         ],
         costo: [
@@ -776,13 +839,29 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         ],
         km: [
             paso('Filtrar el GPS al período', `${allGps.length} → ${gps.length} registros`, `${gps.length} registros`),
-            paso('Sumar KILÓMETROS RECORRIDOS', `${gps.length} valores`, `${nf(kmTot)} km`)
+            paso('Sumar KILÓMETROS RECORRIDOS', `${gps.length} valores`, `${nf(kmTot)} km`),
+            ...(kmHuerfanos > 0 ? [paso(
+                'Descontar mentalmente lo que no pertenece a ningún equipo',
+                `${huerfanos.filter(h => h.km > 0).map(h => h.interno).join(', ')}`,
+                `${nf(kmHuerfanos)} km sin asignar`,
+                'Estos km vienen de unidades del GPS que no cruzan con ningún interno ni dominio del maestro. Suman al total de la flota, pero no están en ninguna tarjeta: por eso la suma de las tarjetas da menos que este KPI.'
+            )] : [])
         ],
         horas: [
             paso('Convertir cada tiempo de Excel a horas', 'valor × 24 (Excel guarda las horas como fracción de día)', 'horas reales'),
             paso('Sumar tiempo en ralentí', `${gps.length} registros`, `${nf(hs.ralenti, 1)} hs`),
             paso('Sumar tiempo en movimiento', `${gps.length} registros`, `${nf(hs.movimiento, 1)} hs`),
-            paso('Sumar ambos', `${nf(hs.ralenti, 1)} + ${nf(hs.movimiento, 1)}`, `${nf(hs.total, 1)} hs`)
+            ...(hs.parado > 0.05 ? [paso('Sumar tiempo parado', `${gps.length} registros`, `${nf(hs.parado, 1)} hs`,
+                'El Resumen de Flota trajo esta columna en esta importación. Está incluida en el total.')] : []),
+            paso('Sumar todo', hs.parado > 0.05
+                ? `${nf(hs.ralenti, 1)} + ${nf(hs.movimiento, 1)} + ${nf(hs.parado, 1)}`
+                : `${nf(hs.ralenti, 1)} + ${nf(hs.movimiento, 1)}`, `${nf(hs.total, 1)} hs`),
+            ...(horasHuerfanas > 0 ? [paso(
+                'Horas que no pertenecen a ningún equipo del maestro',
+                `${huerfanos.filter(h => h.horas > 0).map(h => h.interno).join(', ')}`,
+                `${nf(horasHuerfanas, 1)} hs sin asignar`,
+                'Incluidas en este total pero ausentes de toda tarjeta, por la misma razón que los km sin asignar.'
+            )] : [])
         ],
         sobre_meta: [
             paso('Calcular el consumo real de cada equipo', `${filas.length} equipos`, `${filas.filter(f => f.metrics.consumo_real > 0).length} con consumo calculable`),
@@ -791,7 +870,9 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         equipos: [
             paso('Contar las filas del maestro', 'planilla de Equipos + Consumos Estimados', `${equipos.length} equipos`),
             paso('Cruzar movimientos por interno o dominio', `${cargas.length + gps.length + otros.length} registros`, `${totales.equipos_con_datos} equipos con actividad`),
-            paso('Registros que no cruzaron con ningún equipo', `${huerfanos.length} códigos`, `${nf(huerfanos.reduce((s, h) => s + h.litros, 0))} L sin asignar`)
+            paso('Registros que no cruzaron con ningún equipo', `${huerfanos.length} códigos`,
+                [`${nf(litrosHuerfanos)} L`, kmHuerfanos > 0 ? `${nf(kmHuerfanos)} km` : null, horasHuerfanas > 0 ? `${nf(horasHuerfanas, 1)} hs` : null]
+                    .filter(Boolean).join(' · ') + ' sin asignar')
         ]
     };
 

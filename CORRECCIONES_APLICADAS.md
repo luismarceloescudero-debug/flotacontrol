@@ -987,6 +987,141 @@ tanda de trabajo propia — antes de construirla hace falta confirmar qué recor
 (¿todas las tabs del mockup, o solo un resumen?) para no repetir el problema de las tarjetas
 externas: mostrar mucho detalle con baja confianza en vez de poco con alta.
 
+## 07/09/2026 — arnés de coherencia de cálculos, y cuatro incoherencias reales que encontró
+
+Ronda de pruebas pedida explícitamente ("hacé pruebas hasta que no haya errores en el análisis
+de datos"). El arnés que ya existía (`verificar-datos-reales.mjs`) responde *"¿los totales dan
+lo mismo que ayer?"* — compara contra `invariantes.json`. Eso detecta que un número **cambió**,
+no que un número **está mal**: una fórmula equivocada desde el día uno pasa el chequeo para
+siempre. Así que se construyó un segundo arnés que responde la otra pregunta.
+
+### `tools/auditar-calculos.mjs` (nuevo) — coherencia, no regresión
+
+3.347 chequeos sobre los archivos reales. No compara contra un valor congelado: **recalcula cada
+número por su definición** y lo confronta con el que produjo el pipeline. Cubre:
+
+- **Métricas por equipo**: `consumo_real` reproduce litros_alineados ÷ actividad_alineada;
+  `consumo_l_hora` y `consumo_l_100km` salen de la misma base; `desvio_pct` = (real ÷ meta − 1)
+  × 100; nada infinito ni NaN; la base alineada nunca supera al total del período; los meses
+  usados son exactamente la intersección declarada.
+- **Trazabilidad**: el paso que se le muestra al usuario ("450,2 ÷ 51,3") tiene que dar el
+  número que la tarjeta publica, y sus operandos tienen que ser los de la base alineada — no
+  alcanza con que el resultado coincida por casualidad.
+- **Agregación de flota**: la suma de las tarjetas más lo no asignado reconstruye exactamente
+  cada KPI (litros, costo, km, horas, cargas); los dos desgloses (por combustible y por lugar)
+  suman lo mismo entre sí y contra el total; cada lugar cierra contra su propio detalle.
+- **Reconciliación contra la planilla**: litros del período + litros fuera del período = litros
+  de la planilla. Lo mismo con el costo.
+- **Capa de diagnóstico**: cobertura, utilización, exceso contra meta y actividad implícita se
+  recalculan y se comparan; hallazgos sin `NaN`/`undefined` en el texto.
+- **Maestro**: ningún `interno_key` ni `dominio_key` repetido (`indexarMaestro()` pisaría uno en
+  silencio), ningún dominio que choque con el interno de otro equipo.
+- **Integridad**: sin litros/importes/km negativos, sin cargas sin fecha, sin GPS con más horas
+  que las que tiene su propio período.
+
+Corrida limpia hoy: **3.347 chequeos OK**, 190 equipos, 69 con consumo calculable.
+
+### Lo que encontró (todo verificado contra los archivos reales, no razonado)
+
+12. **El exceso contra la meta mezclaba dos períodos distintos** (`calcularExceso()`,
+    diagnostico.js). Es el mismo invariante 1 que `consumo_real` ya respetaba: los dos lados de
+    una comparación tienen que salir del mismo tramo de meses. La función restaba **todos** los
+    litros del período menos los litros que la meta predice para **solo los meses con GPS**. El
+    combustible de los meses sin GPS se contabilizaba entero como "exceso" sin tener contra qué
+    medirlo. Afectaba a **26 equipos**. Caso testigo CF37: informaba 2.474 L de exceso cuando
+    sobre el tramo realmente medido son 3.911 L (1.437 L de diferencia, en el número que
+    encabeza el hallazgo). No es cosmético: `exceso_costo` es el titular de "sobreconsumo" y de
+    "ahorro". Impacto medido en el panel:
+
+    | | antes | ahora |
+    |---|---|---|
+    | Sobreconsumo | 32 equipos · 93.818 L · $218.213.319 | 36 equipos · 96.995 L · $225.669.349 |
+    | Ahorro | 12 equipos · $76.888.008 | 12 equipos · $63.064.296 |
+
+    Entran cuatro equipos que antes no figuraban (MX66, MX90, BM24, MX60) y el "ahorro" baja
+    $13,8 M: eran equipos que parecían rendir de más porque sus litros cubrían menos meses que
+    su actividad. `calcularExceso()` ahora devuelve además `litros_fuera_de_base`, y el hallazgo
+    dice cuánto gasto quedó fuera de la comparación en vez de callarlo.
+
+13. **6.903 km y 3.180 hs entraban a los KPI de la flota sin pertenecer a ningún equipo**
+    (`analizarFlota()`, analyzer.js). Los huérfanos se acumulaban **solo por litros**. Una
+    unidad del GPS llamada `PORTATIL` aporta 7 registros con 6.903 km y 3.179,9 hs y **cero
+    litros**: sumaba a `total_km`/`total_horas` de la flota pero no aparecía en ninguna tarjeta
+    ni en ningún hallazgo (el de "consumo fuera de la flota" agrupa por litros, así que un
+    código con 0 L es invisible ahí). La suma de las tarjetas daba 1.525.722 km contra un KPI de
+    1.532.625 km, sin nada que explicara la diferencia. Ahora los huérfanos acumulan `km`,
+    `horas` y `costo`; `totales.sin_asignar` publica el total, y los pasos de los KPI de km y de
+    horas lo nombran, así que **KPI = Σ tarjetas + sin asignar**, exacto y verificable.
+
+14. **Hallazgo `huerfanos_gps`: la UI lo esperaba desde antes y nadie lo emitía.** `panel.js`
+    tenía registradas sus acciones propuestas (`ACCIONES_PROPUESTAS.huerfanos_gps`: "Dar de alta
+    en maestro" y "Ver registros GPS huérfanos", ambas con su handler funcionando) para un
+    hallazgo que ningún código generaba. Cableado muerto. Ahora `generarDiagnostico()` lo emite
+    cuando hay unidades de GPS sin equipo en el maestro, con sus km y horas, y las dos acciones
+    que ya existían funcionan sin tocar la UI.
+
+15. **86.439 L (12,8% del combustible del año) quedaban fuera de los KPI sin decirlo.** El
+    período analizado es la superposición entre Cargas y GPS (invariante 1, correcto). Agosto y
+    septiembre 2026 tienen 555 cargas por 86.439 L y $200.385.840, y **ningún** Resumen de Flota:
+    quedan afuera. El panel mostraba 590.761 L mientras la planilla de Cargas tiene 677.200 L, y
+    la diferencia solo aparecía si alguien cuadraba a mano contra el Excel — momento en el que
+    parece un error de la app. El hallazgo `meses_sin_gps` ya avisaba que faltaban esos archivos,
+    pero hablaba del consumo, no de los totales. **No se agregó un hallazgo nuevo** (se llegó a
+    escribir uno y se descartó por duplicar el que ya existe, que el usuario ya revisó en la
+    ronda anterior — punto 16 del checklist): se le agregó la frase que faltaba al hallazgo que
+    ya estaba, y un paso propio al desglose del KPI de litros, que es donde surge la pregunta.
+    `totales.fuera_de_periodo` publica el dato (cargas, litros, costo, meses, cuáles no tienen
+    GPS).
+
+16. **Dos medianas calculadas a mano, con la compartida ya importada** (invariante 2, "una
+    definición por concepto"). `ratioPotenciaFlota()` (diagnostico.js) y la carga "típica" de
+    `panel.js` línea ~2172 usaban `array.sort()[Math.floor(n/2)]`, que con una cantidad par de
+    valores devuelve el de arriba en vez del promedio de los dos centrales — exactamente el bug
+    que motivó exportar `mediana()` en su momento. `panel.js` ya la tenía importada (línea 9) y
+    no la usaba en ese punto. Las dos pasan a `mediana()`.
+
+### Lo que se descartó como falso positivo, después de medirlo
+
+- **"El import de un archivo de 1.381 filas tarda 180 segundos."** Real en el arnés, **falso en
+  la app**. Medido por partes: `XLSX.read` 1,5 s, el bucle de fusión de `insertEntregasLoop()`
+  **1 ms**, `getAllRawRecords()` 84 ms — y 25,7 s en 1.381 `get()`+`put()`. El culpable es
+  `fake-indexeddb`: el mismo store **sin índices** hace esos 1.381 `get()`+`put()` en **58 ms**,
+  y **con los 4 índices** de `raw_records` en **25.602 ms** (440×). Es su mantenimiento de
+  índices, que es lineal por `put()`; el IndexedDB de un navegador usa un B-tree y no tiene ese
+  costo. **No se tocó nada del código de la app**, y queda anotado acá para que nadie lo
+  "optimice" persiguiendo un fantasma. Lo que sí explica es por qué los arneses tardan varios
+  minutos: no es la app, es el sustituto de IndexedDB.
+- **Redondeo acumulado en las horas de flota.** `aggregateHours()` redondea ralentí, movimiento,
+  parado y total a 2 decimales por separado, así que sobre 787 registros la suma de las partes
+  difiere del total en 0,12 hs sobre 122.205. Es redondeo, no un error de fórmula; el chequeo
+  del arnés se ajustó para tolerar 0,01 hs por registro en vez de un valor fijo.
+- **`tiempo parado` en el GPS.** El paso que ve el usuario dice "ralentí + movimiento" mientras
+  `total_horas` incluye también `parado`. Verificado contra los archivos reales: **`parado` es 0
+  en las 787 filas**, así que hoy el texto y el número coinciden. Igual se blindó: el paso ahora
+  nombra `parado` y lo suma en el texto si alguna vez viene con valor, en vez de quedar mudo y
+  equivocado. Sigue siendo una trampa a vigilar el día que el export lo incluya.
+
+### Escenarios probados aparte (no cubiertos por ningún arnés hasta ahora)
+
+- **Reimportar los mismos archivos**: idempotente. 12.271 → 17.505 filas guardadas, 5.203
+  marcadas como duplicado exacto, y litros / km / horas / m³ de Loop **sin cambiar ni un
+  decimal**. El maestro tampoco duplica equipos (183 → 183).
+- **Filtro mes a mes**: los 9 meses por separado suman exactamente los mismos km y horas que el
+  período completo, y 677.200 L contra 590.761 L del período — la diferencia son los 86.439 L de
+  agosto y septiembre del punto 15, no un error de conteo.
+- **GPS multi-mes**: 0 de 787 registros abarcan más de un mes en los archivos actuales, así que
+  la trampa del `periodo` = mes de inicio (documentada en `CLAUDE.md`) hoy no está activa. Sigue
+  siendo relevante el día que se suba un consolidado como el "Resumen de Flota Ene-Jul".
+
+### Verificación en el navegador real
+
+Los cinco cambios se cargaron en la app servida en `localhost` con las planillas reales subidas
+por el flujo normal (no solo en Node): 20 hallazgos renderizados, `huerfanos_gps` visible con sus
+dos botones, `meses_sin_gps` con la frase nueva, los pasos de los KPI de litros / km / horas con
+sus líneas nuevas, y **cero errores en la consola**. Reconciliación confirmada en vivo:
+1.525.722 km en tarjetas + 6.903 km sin asignar = 1.532.625 km del KPI.
+
+
 ## Pendientes sumados el 04/09/2026 (todavía sin implementar)
 
 Tres pedidos nuevos del usuario, agregados a la lista de pendientes tal cual se pidieron —
@@ -1019,3 +1154,68 @@ ninguno de los tres se tocó en el código todavía.
   reordenar columnas arrastrando, ni renombrar el encabezado de una columna. Es una tanda propia
   por el tamaño (afecta las 4 vistas de Base de Datos) — queda pendiente de una implementación
   dedicada, no de una corrección puntual.
+
+---
+
+## 07/09/2026 — Ítems 1–7 del plan (tanda completa de 7 ítems)
+
+**Ítem 1 — Corregir maestro al asignar dominio→interno** (`js/ui/datatable.js`)
+
+Al asignar un interno a una carga con dominio (patente), la corrección se guardaba por huella
+de esa carga pero el maestro no se enteraba — el mismo dominio volvía a aparecer huérfano en
+la próxima reimportación. Fix: después de `updateRawRecord()`, se busca la fila del equipo en
+el maestro y se escribe el dominio con `editado_manual: ['dominio']` si el equipo todavía no lo
+tenía. Se aplica tanto a la asignación individual (`asignarA()`) como al lote
+(`ejecutarAccionMasivaCargas`, case `'asignar_interno'`).
+
+**Ítem 4 — Tramo alineado visible en la tarjeta** (`js/ui/panel.js`)
+
+26 equipos calculan su consumo sobre menos meses de los que cargaron (período alineado GPS∩Cargas
+< período total de cargas). Eso antes solo se veía abriendo "ver cálculo". Ahora aparece como
+`<span class="stat-nota">N de M meses</span>` al lado del número de "Consumo real", solo cuando
+`N < M` y `consumo_real > 0`.
+
+**Ítem 5 — Columnas comunes vs diferenciales explícito** (`js/ui/datatable.js`)
+
+Antes el criterio "INTERNO y DOMINIO primero, luego lo propio de cada planilla" era implícito y
+disperso en `COLS_MOV`. Ahora existe `COLS_COMUNES = [{k:'interno'}, {k:'dominio'}, {k:'denominacion'}]`
+como constante declarada, y `renderMovimientos()` la usa para construir las columnas del encabezado.
+
+**Ítem 6 — Badges por planilla** (`js/ui/upload.js`, `styles/upload.css`)
+
+Después de procesar cada archivo, en la lista de archivos subidos aparecen chips
+(`.chip-aporte`) con lo que aporta ese tipo de planilla: `APORTES_PLANILLA` mapea
+`meta.tipo` → lista de aportes diferenciales (litros/precios/lugar/chofer para Cargas,
+km/hs motor/ralentí para GPS, etc.). Solo se muestran cuando `f.status === 'done'` y el parser
+devolvió un tipo conocido.
+
+**Ítem 2 — Días trabajados como denominador** (`js/data/diagnostico.js`, `js/data/database.js`, `js/ui/panel.js`)
+
+El denominador de cobertura pasa de "días hábiles del período" a "días trabajados = días
+hábiles − días hábiles en rangos fuera de servicio marcados". Los rangos se guardan en
+`seguimientoEquipos[interno].rangos: [{desde, hasta, categoria}]`. `coberturaEquipo()` acepta
+un tercer parámetro `rangos = []`; cuando `diasFueraServicio > 0`, la tarjeta muestra "X de Y
+días trabajados" en lugar de "X de Y días hábiles".
+
+El modal "Estado del equipo" se expandió: además de la categoría/motivo general, ahora tiene una
+sección "Períodos fuera de servicio" con una tabla de rangos de fechas editable inline
+(desde/hasta/categoría por fila). `setSeguimientoEquipo()` acepta el array `rangos`; se agrega
+`setSeguimientoRangos(interno, rangos)` para actualizar solo los rangos sin tocar el resto.
+
+**Ítem 3 — Selección múltiple en todos los hallazgos con motivo por fila** (`js/ui/panel.js`)
+
+Checkboxes ahora aparecen también en `subutilizacion`, `datos_parciales`, `sin_gps_estimado` y
+`bajo_uso` (antes solo en ralentí, sin_medicion y nofl). Todos vienen tildados por defecto.
+Botón "Marcar estado (selección)" en la barra de acciones (para ≥ 2 equipos): abre el modal
+`abrirEstadoEquipoBulk()` con valor por defecto de categoría arriba y override por fila en tabla
+(mismo patrón que "Declarar actividad estimada"). Al guardar, escribe `setSeguimientoEquipo()`
+para cada equipo seleccionado, preservando los rangos existentes.
+
+**Ítem 7 — Arranque limpio y correcciones con período** (`js/data/database.js`, `js/ui/panel.js`)
+
+DB bump a v13. `setRalentiEstado(interno, estado, motivo, periodo)` y
+`setNoFlotaAceptado(codigo, motivo, periodo)` guardan el período de análisis activo al momento
+de aceptar. Al ejecutar `renderPanel()`, justo antes de renderizar, `ralentiEstadosCache` y
+`noFlotaAceptadosCache` se filtran a los que solapan con el período del análisis actual
+(`periodosCoinciden()`). Registros sin `periodo` (anteriores a v13) aplican siempre — backward
+compat. Todos los call sites de los setters en `panel.js` pasan `periodoDeAnalisis(analisis)`.

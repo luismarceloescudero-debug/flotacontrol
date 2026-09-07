@@ -764,7 +764,18 @@ async function abrirMarcarSeguimiento(interno) {
 
 // ============================================================ MOVIMIENTOS
 
-/** Columnas fijas por tipo conocido; el resto se arma con las columnas del propio Excel. */
+/**
+ * Columnas comunes a todas las vistas de Base de Datos: son la llave de cruce
+ * entre planillas (INTERNO + DOMINIO) más la denominación canónica del equipo.
+ * Van SIEMPRE primero; las columnas propias de cada planilla (COLS_MOV) van después.
+ */
+const COLS_COMUNES = [
+    { k: 'interno',      label: 'Interno' },
+    { k: 'dominio',      label: 'Dominio' },
+    { k: 'denominacion', label: 'Denominación' }
+];
+
+/** Columnas diferenciales por tipo de planilla: lo que cada archivo aporta de único. */
 const COLS_MOV = {
     carga: [
         { k: 'fecha', label: 'Fecha' }, { k: 'litros', label: 'Litros', num: 2 },
@@ -896,7 +907,7 @@ async function renderMovimientos(tipo) {
             .map(c => ({ k: `datos.${c}`, label: c }));
     }
     cols.forEach(c => { if (overrides[c.k]) c.label = overrides[c.k]; });
-    columnasVisibles = ['Interno', 'Dominio', 'Denominación', ...cols.map(c => c.label)];
+    columnasVisibles = [...COLS_COMUNES.map(c => c.label), ...cols.map(c => c.label)];
 
     // Solo fecha/fecha_hasta y las columnas derivadas del GPS (_ralenti/_movimiento/_total,
     // calculadas a partir de r.horas, no un campo propio) quedan afuera de la edición directa.
@@ -905,7 +916,7 @@ async function renderMovimientos(tipo) {
     const colspan = cols.length + 3 + (esCarga ? 2 : 0);
     document.getElementById('table-header').innerHTML =
         (esCarga ? '<th class="th-sel"><input type="checkbox" id="th-sel-mov-all" title="Seleccionar todos"></th>' : '') +
-        '<th>Interno</th><th>Dominio</th><th>Denominación</th>' +
+        COLS_COMUNES.map(c => `<th>${esc(c.label)}</th>`).join('') +
         cols.map(c => `<th>${esc(c.label)}${noEditable.has(c.k) ? '' : `
             <button class="th-rename-mov" data-tipo="${esc(tipo)}" data-col="${esc(c.k)}" data-label="${esc(c.label)}" title="Renombrar columna"><i class="fa-solid fa-pen"></i></button>`}</th>`).join('') +
         (esCarga ? '<th class="th-acciones"></th>' : '');
@@ -1478,6 +1489,19 @@ function conectarPanelCorreccion(panelTr, record, todasCargas, equipos = []) {
         if (extra.lugar_carga_correcto) cambiosRecord.lugar_carga = extra.lugar_carga_correcto;
         if (extra.sector_correcto) cambiosRecord.sector = extra.sector_correcto;
         await updateRawRecord(record.id, cambiosRecord);
+        // Ítem 1: Escribir el dominio en la fila del equipo del maestro si éste no tiene uno
+        // todavía, para que el mismo dominio cruce solo en la próxima planilla sin reasignar.
+        const dominioParaMaestro = dominio || record.dominio || '';
+        if (dominioParaMaestro) {
+            const todosEquipos = await getAllEquipos();
+            const eqObj = todosEquipos.find(e => normalizeEquipoKey(e.interno) === ikey);
+            if (eqObj && !eqObj.dominio) {
+                eqObj.dominio = dominioParaMaestro;
+                eqObj.dominio_key = normalizeEquipoKey(dominioParaMaestro);
+                eqObj.editado_manual = [...new Set([...(eqObj.editado_manual || []), 'dominio'])];
+                await updateEquipo(eqObj);
+            }
+        }
         await registrarEdicion({
             tabla: 'carga', registroId: record.id, etiqueta: `${formatFechaAR(record.fecha)} · corrección`,
             campo: 'Interno', valorAnterior: internoOriginalReal, valorNuevo: interno
@@ -1894,6 +1918,20 @@ async function ejecutarAccionMasivaCargas(accion) {
                     campo: 'Interno', valorAnterior: internoOriginalReal, valorNuevo: interno
                 });
                 n++;
+            }
+            // Ítem 1: Escribir el dominio en el equipo del maestro si los registros seleccionados
+            // comparten un único dominio y el equipo todavía no tiene uno cargado.
+            const dominiosBulk = dominio ? [dominio] :
+                [...new Set(registros.map(r => (r.dominio || '').trim().toUpperCase()).filter(Boolean))];
+            if (dominiosBulk.length === 1) {
+                const todosEq = await getAllEquipos();
+                const eqBulk = todosEq.find(e => normalizeEquipoKey(e.interno) === ikey);
+                if (eqBulk && !eqBulk.dominio) {
+                    eqBulk.dominio = dominiosBulk[0];
+                    eqBulk.dominio_key = normalizeEquipoKey(dominiosBulk[0]);
+                    eqBulk.editado_manual = [...new Set([...(eqBulk.editado_manual || []), 'dominio'])];
+                    await updateEquipo(eqBulk);
+                }
             }
             alert(`Asignadas ${n} cargas a ${interno}.`);
             break;
