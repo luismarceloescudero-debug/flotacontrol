@@ -78,7 +78,7 @@ const CATEGORIA_SEGUIMIENTO_LABEL = Object.fromEntries(CATEGORIAS_SEGUIMIENTO.ma
 
 /** El 7° parámetro opcional de generarDiagnostico(): siempre las mismas cachés de sesión. */
 function extraDiag() {
-    return { prefijosOficiales: prefijosOficialesCache, prefijosIgnorados: prefijosIgnoradosCache, accionesRecientes: accionesRecientes() };
+    return { prefijosOficiales: prefijosOficialesCache, prefijosIgnorados: prefijosIgnoradosCache, accionesRecientes: accionesRecientes(), actividadEstimada: actividadEstimadaCache };
 }
 
 // Equipos marcados para comparar desde las tarjetas (checkbox en cada card + barra flotante),
@@ -3249,7 +3249,14 @@ function abrirActividadEstimada(internos, analisis) {
 
     modal.querySelector('#btn-act-guardar').addEventListener('click', async () => {
         const v = leerForm();
-        if (v.valor_min <= 0 && v.valor_max <= 0 && v.litros_min <= 0 && v.litros_max <= 0) {
+        const globalVacio = v.valor_min <= 0 && v.valor_max <= 0 && v.litros_min <= 0 && v.litros_max <= 0;
+        // Permitir guardar si aunque sea un equipo tiene valor propio en la tabla "Por equipo"
+        const tieneAlgunPorEquipo = lista.some(i => {
+            const fila = modal.querySelector(`tr[data-interno="${CSS.escape(i)}"]`);
+            return (parseFloat(fila?.querySelector('.act-min-eq')?.value) || 0) > 0
+                || (parseFloat(fila?.querySelector('.act-max-eq')?.value) || 0) > 0;
+        });
+        if (globalVacio && !tieneAlgunPorEquipo) {
             alert('Cargá al menos la actividad estimada, o los litros que carga.'); return;
         }
         const reg = {
@@ -3260,11 +3267,14 @@ function abrirActividadEstimada(internos, analisis) {
         // Cada equipo puede tener su propia fila con un valor distinto (ver tabla "Por equipo"):
         // si la tiene y trae algo cargado, pisa el rango general SOLO para ese equipo — el resto
         // de campos (unidad, período, temporada, litros, nota) sí se comparten entre todos.
+        // Si el global está vacío y el equipo tampoco tiene valor propio, se saltea ese equipo.
         for (const interno of lista) {
             const fila = modal.querySelector(`tr[data-interno="${CSS.escape(interno)}"]`);
             const minEq = parseFloat(fila?.querySelector('.act-min-eq')?.value) || 0;
             const maxEq = parseFloat(fila?.querySelector('.act-max-eq')?.value) || 0;
-            const regEquipo = (minEq > 0 || maxEq > 0)
+            const tienePropio = minEq > 0 || maxEq > 0;
+            if (globalVacio && !tienePropio) continue; // este equipo no tiene valor → saltar
+            const regEquipo = tienePropio
                 ? { ...reg, valor_min: minEq || maxEq, valor_max: maxEq || minEq }
                 : reg;
             await setActividadEstimada({ interno, ...regEquipo });

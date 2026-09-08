@@ -1348,6 +1348,10 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // dos provincias y no todo el parque se usa en todos lados ni en todos los meses.
     const activos = filas.filter(f => f.metrics.cantidad_cargas > 0);
     const periodo = { desde: totales.periodo_desde, hasta: totales.periodo_hasta };
+    // Equipos con actividad declarada a mano (km/horas estimados): el usuario ya resolvió el
+    // "sin GPS" en ellos → no generan los hallazgos sin_medicion ni sin_gps_estimado.
+    const actividadEstimada = extra.actividadEstimada || [];
+    const internosConEstimada = new Set(actividadEstimada.map(a => a.interno));
     const conExceso = activos.map(f => ({ fila: f, exceso: calcularExceso(f), conf: confiabilidad(f, periodo) })).filter(x => x.exceso);
 
     // ---------- 0. Correcciones que se aplicaron solas ----------
@@ -1357,12 +1361,12 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // dado de alta se edita/borra desde Base de Datos; un código aceptado se destilda desde
     // "Códigos válidos así"; una meta alineada se pisa desde "Ajustar metas" o reimportando
     // Consumos Estimados con el valor real de fábrica.
-    const accionesRecientes = (extra.accionesRecientes || []).filter(a => !a.revisado);
+    // alta_interno se omite del hallazgo: agregar un equipo nuevo es la normalidad, no algo a revisar.
+    const accionesRecientes = (extra.accionesRecientes || []).filter(a => !a.revisado && a.tipo !== 'alta_interno');
     if (accionesRecientes.length) {
         const porTipo = { alta_interno: [], aceptado_no_flota: [], meta_alineada: [] };
         accionesRecientes.forEach(a => { (porTipo[a.tipo] || (porTipo[a.tipo] = [])).push(a); });
         const partes = [];
-        if (porTipo.alta_interno.length) partes.push(`${porTipo.alta_interno.length} equipo${porTipo.alta_interno.length === 1 ? '' : 's'} nuevo${porTipo.alta_interno.length === 1 ? '' : 's'} dado${porTipo.alta_interno.length === 1 ? '' : 's'} de alta`);
         if (porTipo.aceptado_no_flota.length) partes.push(`${porTipo.aceptado_no_flota.length} código${porTipo.aceptado_no_flota.length === 1 ? '' : 's'} sin identificar aceptado${porTipo.aceptado_no_flota.length === 1 ? '' : 's'} como "así está bien"`);
         if (porTipo.meta_alineada.length) partes.push(`${porTipo.meta_alineada.length} meta${porTipo.meta_alineada.length === 1 ? '' : 's'} alineada${porTipo.meta_alineada.length === 1 ? '' : 's'} al consumo real`);
         hallazgos.push({
@@ -1720,6 +1724,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // ---------- 7. Sin GPS: cálculo inverso ----------
     const sinMedicion = activos.filter(f =>
         f.metrics.total_litros > 0 && f.metrics.consumo_real === 0 && f.metrics.tipo_calculo !== 'No Aplica'
+        && !internosConEstimada.has(f.equipo.interno)
     ).map(f => ({ fila: f, implicita: actividadImplicita(f) }))
      .sort((a, b) => b.fila.metrics.total_litros - a.fila.metrics.total_litros);
 
@@ -2178,12 +2183,11 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     }
 
-    if (cal.variantes.length || cal.variantesCampos.length || cal.duplicados.length) {
+    if (cal.variantes.length || cal.variantesCampos.length || cal.duplicadosExactos.length) {
         const partes = [];
         if (cal.variantes.length) partes.push(`${cal.variantes.length} combustible${cal.variantes.length === 1 ? '' : 's'} escrito${cal.variantes.length === 1 ? '' : 's'} de más de una forma`);
         if (cal.variantesCampos.length) partes.push(`${cal.variantesCampos.length} valor${cal.variantesCampos.length === 1 ? '' : 'es'} de texto con variantes (${[...new Set(cal.variantesCampos.map(v => v.etiqueta))].join(', ')})`);
         if (cal.duplicadosExactos.length) partes.push(`${cal.duplicadosExactos.length} carga${cal.duplicadosExactos.length === 1 ? '' : 's'} duplicada${cal.duplicadosExactos.length === 1 ? '' : 's'} exacta${cal.duplicadosExactos.length === 1 ? '' : 's'}`);
-        if (cal.duplicadosPosibles.length) partes.push(`${cal.duplicadosPosibles.length} posible${cal.duplicadosPosibles.length === 1 ? '' : 's'} repetida${cal.duplicadosPosibles.length === 1 ? '' : 's'} a revisar`);
         const ejemplos = cal.variantes.map(v =>
             `<strong>${v.formas.map(([f, n]) => `"${esc(f)}" (${n})`).join(' y ')}</strong>`).join('; ');
         hallazgos.push({
@@ -2199,9 +2203,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                 (cal.duplicadosExactos.length
                     ? `Hay ${cal.duplicadosExactos.length} fila${cal.duplicadosExactos.length === 1 ? '' : 's'} <strong>idéntica${cal.duplicadosExactos.length === 1 ? '' : 's'} a otra en todo</strong>: mismo equipo, fecha, litros, importe, precio, combustible, lugar, centro de costo y chofer. Dos cargas reales del mismo equipo el mismo día no coinciden hasta el centavo — es la misma fila entrada dos veces, y se puede corregir sola con <strong>"Corregir duplicados exactos"</strong>: queda una y se descarta la copia (reversible, y se re-aplica sola si reimportás el archivo). Son ${fmt(cal.duplicadosExactos.reduce((s, d) => s + (parseFloat(d.repetida.litros) || 0), 0), 1)} L y $${fmt(cal.duplicadosExactos.reduce((s, d) => s + (parseFloat(d.repetida.importe) || 0), 0))} contados de más. `
                     : '') +
-                (cal.duplicadosPosibles.length
-                    ? `Otras ${cal.duplicadosPosibles.length} coinciden en equipo, fecha y litros pero difieren en algún otro campo (${[...new Set(cal.duplicadosPosibles.flatMap(d => d.difieren))].join(', ')}). <strong>Esas no se tocan solas</strong>: pueden ser dos cargas legítimas del mismo día en surtidores distintos. Se listan abajo con el campo que difiere, para decidir contra el comprobante.`
-                    : ''),
+                '',
             equipos: [
                 ...cal.variantes.map(v => ({
                     interno: v.formas[0][0], denominacion: 'tipo de combustible',
@@ -2217,11 +2219,6 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                     interno: d.repetida.interno || d.repetida.dominio || '—', denominacion: 'duplicado EXACTO',
                     texto: `${fmt(parseFloat(d.repetida.litros) || 0, 1)} L el ${d.repetida.fecha || '—'}`,
                     sub: `idéntica en todos los campos${d.repetida.importe ? ` · $${fmt(parseFloat(d.repetida.importe) || 0)} cada una` : ''} — se corrige sola`
-                })),
-                ...cal.duplicadosPosibles.slice(0, 6).map(d => ({
-                    interno: d.repetida.interno || d.repetida.dominio || '—', denominacion: 'posible repetida',
-                    texto: `${fmt(parseFloat(d.repetida.litros) || 0, 1)} L el ${d.repetida.fecha || '—'}`,
-                    sub: `difiere en ${d.difieren.join(', ')} — hay que decidir a mano`
                 }))
             ]
         });
@@ -2249,34 +2246,6 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     }
 
-
-    // ---------- 15 bis. Entregas de Loop con remito en conflicto ----------
-    // No es un problema de la flota, es de la planilla: el mismo N° de remito aparece más de una
-    // vez con datos que NO coinciden (otro equipo, otro volumen, otra fecha) entre "Informe
-    // Entregas" y "Exportado informe de Viajes" — o entre las propias hojas de Informe Entregas.
-    // Se guardaron las dos filas (ver insertEntregasLoop() en database.js) en vez de quedarse
-    // con una a ciegas: acá se juntan para poder decidir a mano contra el comprobante.
-    const remitosConflicto = new Map();
-    rawRecords.forEach(r => {
-        if (r.type === 'entrega' && r._conflicto_remito) {
-            if (!remitosConflicto.has(r.remito)) remitosConflicto.set(r.remito, []);
-            remitosConflicto.get(r.remito).push(r);
-        }
-    });
-    if (remitosConflicto.size) {
-        const grupos = [...remitosConflicto.values()];
-        hallazgos.push({
-            id: 'entregas_conflicto_remito', severidad: 'media', icono: 'fa-triangle-exclamation',
-            no_comparar: true,
-            titulo: `${grupos.length} remito${grupos.length === 1 ? '' : 's'} de Loop con datos que no coinciden entre sí`,
-            detalle: `El mismo N° de remito aparece más de una vez entre "Informe Entregas" y "Exportado informe de Viajes" (o entre las hojas de Informe Entregas) con <strong>datos distintos</strong>: otro equipo, otro volumen o otra fecha. No se descartó ninguna fila — las dos quedaron guardadas en "Entregas (Loop)", marcadas en rojo, para decidir a mano contra el comprobante.`,
-            equipos: grupos.slice(0, 12).map(g => ({
-                interno: g[0].interno || g[0].dominio || '—', denominacion: `remito ${g[0].remito}`,
-                texto: `${g.length} versiones`,
-                sub: g.map(r => `${r.formato === 'detalle' ? (r.hoja || 'Entregas') : 'Viajes'}: ${r.volumen > 0 ? fmt(r.volumen, 1) + ' m³' : 'sin volumen'}${r.fecha ? ' · ' + r.fecha : ''}${r.interno && r.interno !== g[0].interno ? ' · equipo ' + r.interno : ''}`).join(' vs. ')
-            }))
-        });
-    }
 
     // ---------- 16. Gasto de los equipos dados de alta como NO FLOTA ----------
     // No es un problema: es la contracara de haberlos normalizado. Antes estos litros vivían en
