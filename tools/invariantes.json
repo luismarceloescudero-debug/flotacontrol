@@ -1,5 +1,5 @@
 {
-  "generado": "2026-09-08T14:35:48.792Z",
+  "generado": "2026-09-08T15:40:01.930Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
@@ -98,7 +98,7 @@
       "etiqueta": "Resumen de viaje (GPS)"
     }
   ],
-  "equipos_maestro": 190,
+  "equipos_maestro": 189,
   "cargas": {
     "filas": 4511,
     "litros_totales": 690989.1,
@@ -157,8 +157,8 @@
     "filas_en_conflicto": 12
   },
   "duplicados_exactos_detectados": 3,
-  "equipos_analizados": 190,
-  "hallazgos_generados": 21,
+  "equipos_analizados": 189,
+  "hallazgos_generados": 22,
   "hallazgos_por_id": {
     "sobreconsumo": 1,
     "ralenti": 1,
@@ -176,6 +176,7 @@
     "acciones_automaticas": 1,
     "ralenti_espera": 1,
     "sin_gps_estimado": 1,
+    "nofl_otros": 1,
     "anomalas": 1,
     "bajo_uso": 1,
     "meses_sin_gps": 1,
@@ -183,9 +184,9 @@
     "normalizaciones": 1
   },
   "autocorreccion": {
-    "altas_interno": 7,
-    "aceptados_no_flota": 7,
+    "altas_interno": 6,
+    "aceptados_no_flota": 1,
     "metas_alineadas": 2
   },
-  "huerfanos_restantes": 15
+  "huerfanos_restantes": 16
 }

@@ -60,6 +60,9 @@ export async function aplicarCorreccionesAutomaticas({ equipos = [], huerfanos =
 
     for (const h of huerfanos) {
         if (codigosAceptados.has(h.interno)) continue; // ya resuelto en una pasada anterior
+        // Si no tiene litros reales en la planilla de Cargas, no se auto-da de alta ni acepta:
+        // puede ser un código que solo aparece en GPS/Loop y no corresponde a nuestra flota.
+        if (!h.litros || h.litros <= 0) continue;
         const clas = clasificarIdentificador(h.interno);
 
         // Un código a un solo tipeo de un interno real (ver GR01 vs GE01, el caso que motivó
