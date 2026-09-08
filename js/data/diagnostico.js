@@ -469,11 +469,21 @@ export function calcularExceso(fila) {
  * Compara primero contra misma marca+modelo; si no hay suficientes, cae a denominación.
  * Devuelve además la lista de esos pares, para poder mostrar CONTRA QUIÉN se compara.
  */
-export function sugerirMeta(fila, todas = []) {
+/**
+ * `referentes` (opcional) permite corregir a mano de qué equipos sale la mediana:
+ * `{ excluidos:[interno], incluidos:[interno] }`. Existe porque quien opera sabe cuál par es
+ * realmente comparable y la app no: dos cargadoras del mismo modelo pueden trabajar en frentes
+ * distintos, y una de ellas arrastra la mediana a un valor que no aplica. Excluir es sacar un
+ * par que la regla eligió; incluir es sumar uno que la regla no vio (otro modelo, otra
+ * denominación) pero que el usuario sabe equivalente.
+ */
+export function sugerirMeta(fila, todas = [], referentes = null) {
     const tipo = fila.metrics.tipo_calculo;
     if (tipo !== 'L/Hora' && tipo !== 'L/100Km') return null;
 
     const eq = fila.equipo;
+    const excluidos = new Set((referentes?.excluidos || []).map(i => normalizeEquipoKey(i)));
+    const incluidos = (referentes?.incluidos || []).map(i => normalizeEquipoKey(i));
     const filtroBase = f =>
         f.equipo.interno !== eq.interno &&
         f.metrics.tipo_calculo === tipo &&
@@ -492,11 +502,29 @@ export function sugerirMeta(fila, todas = []) {
         pares = todas.filter(f => filtroBase(f) && f.equipo.denominacion === eq.denominacion);
         etiqueta = eq.denominacion || 'equipos';
     }
+
+    // Los que el usuario sumó a mano entran aunque la regla no los hubiera elegido; solo se les
+    // exige tener consumo medido en la misma unidad — sin eso no hay número que promediar.
+    const yaEstan = new Set(pares.map(p => normalizeEquipoKey(p.equipo.interno)));
+    const sumados = incluidos
+        .filter(k => !yaEstan.has(k))
+        .map(k => todas.find(f => normalizeEquipoKey(f.equipo.interno) === k))
+        .filter(f => f && f.equipo.interno !== eq.interno && f.metrics.consumo_real > 0 && f.metrics.tipo_calculo === tipo);
+    pares = pares.concat(sumados).filter(f => !excluidos.has(normalizeEquipoKey(f.equipo.interno)));
+
     if (pares.length < 2) return null;
 
     const valores = pares.map(f => f.metrics.consumo_real);
     const med = mediana(valores);
     if (med <= 0) return null;
+
+    const ordenados = pares.slice().sort((a, b) => a.metrics.consumo_real - b.metrics.consumo_real);
+    const nombres = ordenados.map(p => p.equipo.interno);
+    // Nombrar a los referentes, no solo contarlos: "mediana de 5 cargadora frontal medidos" no
+    // deja verificar nada; "mediana de CF36, CF37, CF40" sí, y es lo que se pidió.
+    const listado = nombres.length <= 4
+        ? nombres.join(', ')
+        : `${nombres.slice(0, 3).join(', ')} y ${nombres.length - 3} más`;
 
     return {
         valor: Math.round(med * 100) / 100,
@@ -505,8 +533,11 @@ export function sugerirMeta(fila, todas = []) {
         minimo: Math.min(...valores),
         maximo: Math.max(...valores),
         base: `mediana de ${pares.length} ${etiqueta.toLowerCase()} medidos`,
-        pares: pares.sort((a, b) => a.metrics.consumo_real - b.metrics.consumo_real)
-            .map(p => ({ interno: p.equipo.interno, valor: p.metrics.consumo_real, cargas: p.metrics.cantidad_cargas }))
+        referentes_texto: listado,
+        base_con_referentes: `mediana de ${listado}`,
+        ajustada: excluidos.size > 0 || sumados.length > 0,
+        internos: nombres,
+        pares: ordenados.map(p => ({ interno: p.equipo.interno, valor: p.metrics.consumo_real, cargas: p.metrics.cantidad_cargas }))
     };
 }
 
@@ -1238,6 +1269,54 @@ export function ratioPotenciaFlota(filas = [], unidad = 'KVA') {
  * cuánto se le puede creer. Devuelve una lista de fuentes, no un número suelto: el usuario decide
  * viendo de dónde viene cada una.
  */
+/**
+ * El equipo PAR de uno dado: mismo marca + modelo, el de año más cercano.
+ *
+ * Devuelve los dos casos por separado porque sirven para cosas distintas:
+ *   - `conMeta`:  el gemelo con meta oficial cargada. Para dos equipos del mismo modelo la meta
+ *                 es el mismo número por definición.
+ *   - `conDatos`: el gemelo con CONSUMO MEDIDO. Este es el que faltaba, y es el caso que el
+ *                 usuario venía resolviendo a mano: CM-43 (HILUX 2022, sin GPS) tiene par
+ *                 utilizable en CM-48 (2023, con GPS) — pero CM-48 no tiene meta cargada, así
+ *                 que la búsqueda vieja no lo encontraba y CM-43 se quedaba sin referencia.
+ *
+ * El orden es "los que TENGAN datos → de esos, el año más cercano", nunca al revés. Verificado
+ * contra el maestro real: el par de año exacto de CM-43 es CM-46 (2022), que tampoco tiene GPS
+ * y por lo tanto no sirve para nada. Filtrar por año primero habría devuelto justo el inútil.
+ *
+ * Una única definición para las dos cosas que la usan (investigarMeta y el hallazgo
+ * sin_gps_estimado), por la invariante 2 del proyecto: nunca dos reglas con el mismo nombre.
+ */
+export function parIdentico(fila, todas = []) {
+    const eq = fila.equipo;
+    if (!eq.marca || !eq.modelo) return null;
+    const mismoModelo = todas.filter(f => f.equipo.interno !== eq.interno &&
+        f.equipo.marca === eq.marca && f.equipo.modelo === eq.modelo);
+    if (!mismoModelo.length) return null;
+
+    // Sin año conocido de alguno de los dos lados: va al fondo del orden, pero NO se descarta —
+    // un par sin año sigue siendo el mismo modelo, y es mejor referencia que ninguna.
+    const distancia = (f) => (eq.anio && f.equipo.anio)
+        ? Math.abs(Number(f.equipo.anio) - Number(eq.anio)) : 9999;
+    const porAnio = (a, b) => distancia(a) - distancia(b);
+
+    const conMeta = mismoModelo
+        .filter(f => f.confirmed && f.confirmed.valor > 0 && f.confirmed.source !== 'Maestro')
+        .sort(porAnio)[0] || null;
+    const conDatos = mismoModelo
+        .filter(f => f.metrics.consumo_real > 0 && confiabilidad(f).confiable)
+        .filter(f => !conMeta || f.equipo.interno !== conMeta.equipo.interno)
+        .sort(porAnio)[0] || null;
+
+    if (!conMeta && !conDatos) return null;
+    return {
+        conMeta, conDatos,
+        distanciaConMeta: conMeta ? distancia(conMeta) : null,
+        distanciaConDatos: conDatos ? distancia(conDatos) : null,
+        candidatos: mismoModelo.length
+    };
+}
+
 export function investigarMeta(fila, todas = [], estimadosCrudos = []) {
     const eq = fila.equipo;
     const m = fila.metrics;
@@ -1254,19 +1333,27 @@ export function investigarMeta(fila, todas = [], estimadosCrudos = []) {
         });
     }
 
-    // 2. Un equipo idéntico (misma marca y modelo) con estimado oficial: para gemelos, es el
-    //    mismo número por definición.
-    if (eq.marca && eq.modelo) {
-        const gemelo = todas.find(f => f.equipo.interno !== eq.interno &&
-            f.equipo.marca === eq.marca && f.equipo.modelo === eq.modelo &&
-            f.confirmed && f.confirmed.valor > 0 && f.confirmed.source !== 'Maestro');
-        if (gemelo) {
-            fuentes.push({
-                orden: 2, fuente: `Equipo idéntico: ${gemelo.equipo.interno}`, confianza: 'alta',
-                valor: gemelo.confirmed.valor, unidad: gemelo.metrics.tipo_calculo,
-                detalle: `${gemelo.equipo.interno} es un ${eq.marca} ${eq.modelo}, el mismo modelo que este, y tiene esa meta cargada.`
-            });
-        }
+    // 2. Equipos IDÉNTICOS (misma marca y modelo) — ver parIdentico().
+    const par = parIdentico(fila, todas);
+    if (par?.conMeta) {
+        const g = par.conMeta;
+        fuentes.push({
+            orden: 2, fuente: `Equipo idéntico: ${g.equipo.interno}`, confianza: 'alta',
+            valor: g.confirmed.valor, unidad: g.metrics.tipo_calculo,
+            detalle: `${g.equipo.interno} es un ${eq.marca} ${eq.modelo}${g.equipo.anio ? ` de ${g.equipo.anio}` : ''}, el mismo modelo que este, y tiene esa meta cargada.`
+        });
+    }
+    if (par?.conDatos) {
+        const g = par.conDatos;
+        const d = par.distanciaConDatos;
+        fuentes.push({
+            orden: 2.5, fuente: `Equipo idéntico medido: ${g.equipo.interno}`, confianza: 'alta',
+            valor: Math.round(g.metrics.consumo_real * 100) / 100, unidad: g.metrics.tipo_calculo,
+            detalle: `${g.equipo.interno} es un ${eq.marca} ${eq.modelo}${g.equipo.anio ? ` de ${g.equipo.anio}` : ''} — el mismo modelo` +
+                (d === 0 ? ' y el mismo año' : (d < 9999 ? ` y el año más cercano con datos (${d} de diferencia)` : '')) +
+                `. No tiene meta cargada, pero sí tiene consumo medido: ${fmt(g.metrics.consumo_real, 2)} ${g.metrics.tipo_calculo} sobre ${g.metrics.cantidad_cargas} cargas. Es la referencia más parecida que existe para este equipo.`,
+            referente: g.equipo.interno
+        });
     }
 
     // 3. Lo que el propio equipo viene consumiendo, si hay con qué medirlo.
@@ -1873,14 +1960,22 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             internos_todos: estimadasOk.map(x => x.fila.equipo.interno),
             titulo: `${estimadasOk.length} equipos sin GPS, con actividad estimada por cálculo inverso`,
             detalle: `Suman <strong>${fmt(litros)} L</strong>. No tienen km u hora del Resumen de Flota, pero con su meta y los litros cargados se pudo estimar cuánta actividad deberían haber tenido, y esa estimación <strong>pasa el control de razonabilidad</strong> (la meta es coherente con la de sus pares y el resultado es compatible con la cantidad de cargas). No es una falla: es lo mejor que se puede medir hasta que tengan GPS.` + notaReparto('sin_gps_estimado'),
-            equipos: estimadasOk.slice(0, 10).map(x => ({
-                interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
-                texto: `${fmt(x.fila.metrics.total_litros)} L`,
-                sub: `≈ ${fmt(x.implicita.valor)} ${x.implicita.unidad} implícitas  (${x.implicita.formula})`
-                    + (x.implicita.referencia ? ` · ${x.implicita.referencia.respalda ? 'confirmado' : 'sin confirmar'} por jornada de referencia (${x.implicita.referencia.formula})` : '')
-                    + ` · ${x.comp.etiqueta}`,
-                completitud: x.comp.nivel
-            }))
+            equipos: estimadasOk.slice(0, 10).map(x => {
+                // Nombrar el equipo par: sin esto la tarjeta decía "estimado" sin decir contra
+                // qué, y el usuario tenía que acordarse de memoria de que CF38 se mira con CF37.
+                const par = parIdentico(x.fila, activos);
+                const ref = par?.conDatos || par?.conMeta;
+                return {
+                    interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
+                    texto: `${fmt(x.fila.metrics.total_litros)} L`,
+                    sub: `≈ ${fmt(x.implicita.valor)} ${x.implicita.unidad} implícitas  (${x.implicita.formula})`
+                        + (x.implicita.referencia ? ` · ${x.implicita.referencia.respalda ? 'confirmado' : 'sin confirmar'} por jornada de referencia (${x.implicita.referencia.formula})` : '')
+                        + (ref ? ` · par: ${esc(ref.equipo.interno)}${ref.equipo.anio ? ` (${esc(String(ref.equipo.anio))})` : ''}${par.conDatos ? ` mide ${fmt(ref.metrics.consumo_real, 2)} ${esc(ref.metrics.tipo_calculo)}` : ''}` : '')
+                        + ` · ${x.comp.etiqueta}`,
+                    completitud: x.comp.nivel,
+                    par_interno: ref ? ref.equipo.interno : null
+                };
+            })
         });
     }
 

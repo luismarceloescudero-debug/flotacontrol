@@ -39,7 +39,12 @@ const DB_NAME = 'FlotaControlDB';
 // v13 — correcciones del período: ralentiEstados y noFlotaAceptados llevan {periodo:{desde,hasta}}
 // opcional, para que en futuros períodos el sistema sepa si una aceptación sigue vigente o hay
 // que revisarla. Sin migración: registros sin periodo siguen aplicando siempre (backward compat).
-const DB_VERSION = 13;
+// v14: referentes de meta elegidos a mano (`referentesMeta`). La mediana de pares la arma una
+// regla (marca+modelo, si no denominación), pero quien opera sabe cuál par es realmente
+// comparable y la app no: dos equipos del mismo modelo pueden trabajar en frentes distintos y
+// uno arrastra la mediana a un valor que no aplica. Guarda {interno, excluidos[], incluidos[]}
+// para poder sacar un par que la regla eligió, o sumar uno que la regla no vio.
+const DB_VERSION = 14;
 
 let dbInstance = null;
 
@@ -133,6 +138,10 @@ export function initDB() {
                 const s = db.createObjectStore('accionesAutomaticas', { keyPath: 'id', autoIncrement: true });
                 s.createIndex('codigo', 'codigo', { unique: false });
                 s.createIndex('revisado', 'revisado', { unique: false });
+            }
+            // v14 — ver comentario junto a DB_VERSION.
+            if (!db.objectStoreNames.contains('referentesMeta')) {
+                db.createObjectStore('referentesMeta', { keyPath: 'interno' });
             }
         };
     });
@@ -670,6 +679,17 @@ export async function setColLabelMov(tipo, campoKey, label) {
  * automático deje de repetirle la misma alerta: { interno, estado: 'aceptable'|'seguimiento',
  * motivo, fecha }. No borra ni modifica ningún dato de origen, solo cómo se interpreta.
  */
+/** Referentes de meta elegidos a mano: {interno, excluidos:[], incluidos:[]}. Ver v14. */
+export function getReferentesMeta() { return readAll('referentesMeta'); }
+export function setReferentesMeta(interno, excluidos = [], incluidos = []) {
+    return writeTx(['referentesMeta'], ([store]) => {
+        // Sin nada elegido a mano se borra la fila: así la regla automática vuelve a mandar,
+        // en vez de quedar una fila vacía que igual se consulta en cada render.
+        if (!excluidos.length && !incluidos.length) store.delete(interno);
+        else store.put({ interno, excluidos, incluidos, fecha: new Date().toISOString() });
+    });
+}
+
 export function getRalentiEstados() { return readAll('ralentiEstados'); }
 /** periodo: {desde, hasta} (ISO strings) del análisis activo al momento de guardar. */
 export function setRalentiEstado(interno, estado, motivo = '', periodo = null) {

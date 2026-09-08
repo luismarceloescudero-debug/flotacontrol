@@ -132,6 +132,24 @@ document.getElementById('btn-process-all').click();
 Tarda ~30 s en procesar. Después `window.ultimoAnalisis` tiene el análisis y el panel está
 renderizado. **Borrar `_datos_prueba/` al terminar**: son datos de flota.
 
+**El truco del puerto distinto NO sirve con el Browser pane**, porque proxea todo por un mismo
+puerto y el origen no cambia. Ahí el síntoma es brutal y confuso: los Excel parsean bien (se ven
+los `[CARGAS] … 4511 filas` en consola) pero el panel no renderiza nada y la consola tira
+`does not provide an export named 'X'` — el módulo viejo cacheado no tiene el export que el
+módulo nuevo importa. Lo que sí funciona es forzar la revalidación del caché HTTP y recién ahí
+recargar:
+
+```js
+for (const m of ['/js/app.js','/js/data/database.js','/js/ui/panel.js', /* …todos los tocados */])
+    await fetch(m, { cache: 'reload' });   // 'reload' ignora el caché Y lo actualiza
+location.reload();
+```
+
+Y si el cambio incluye un bump de `DB_VERSION`, borrar antes la base
+(`indexedDB.deleteDatabase('FlotaControlDB')`) — pero **sin abrirla vos** después para
+inspeccionarla: un `indexedDB.open()` sin versión crea una base v1 vacía y te deja mirando un
+estado que fabricaste vos. Para ver qué versión hay sin tocarla, `await indexedDB.databases()`.
+
 **Browser module cache will lie to you.** `python -m http.server` sends no `Cache-Control`, and
 the browser keeps ES modules from a previous run of the same origin, so edits appear to have no
 effect and you end up debugging code that isn't running. Confirm what's actually loaded
@@ -536,26 +554,40 @@ Dos detalles que importan:
 - **Al volver de una acción se reabre la ventana** con el hallazgo recalculado, porque encadenar
   decisiones sobre el mismo grupo es el caso normal.
 
-**C · Equipo par por marca + modelo (ítem 8 del plan viejo).** Pedido textual: *"cm43 no LEVANTA
-META DE cm48, o equipo igual, año más cercano"*. La regla, ya verificada contra el maestro real:
+**C · Equipo par por marca + modelo (ítem 8 del plan viejo).** ✅ **HECHO (08/09/2026).**
+`parIdentico(fila, todas)` en diagnostico.js. La regla:
 
 ```
 mismo marca + modelo  →  de esos, los que TENGAN datos medidos  →  el año más cercano
 ```
 
-Verificado: `CM-43` (TOYOTA / HILUX 4X4 DC SR 2.8 TDI 6 MT / 2022, sin GPS) → su único par
-utilizable es `CM-48` (2023, con GPS); `CM-46` tiene el año exacto pero tampoco tiene GPS.
-`CF-38` (HYUNDAI / 757 / 2017) → `CF-36` y `CF-37`, dos pares exactos con datos. `CM-35` **sí
-tiene GPS** y no necesita par. **La función ya existe a medias**: `investigarMeta()`
-(diagnostico.js ~1259) ya busca el gemelo por marca+modelo y lo devuelve como fuente de orden 2 —
-lo que falta es (a) que caiga de vuelta al **año más cercano** cuando no hay coincidencia exacta
-con datos, y (b) que el hallazgo `sin_gps_estimado` la use y **nombre al referente en pantalla**.
+**El orden importa y no es intercambiable.** Filtrar por año antes que por datos habría devuelto
+justo el par inútil: el gemelo de año exacto de `CM-43` (HILUX 2022) es `CM-46`, que tampoco
+tiene GPS. El único par utilizable es `CM-48` (2023, con GPS) — el que el usuario venía usando a
+mano. Hay un chequeo dedicado a esto en `auditar-declarados.mjs` (grupo `par`) que arma
+justamente ese trío para que nadie invierta el orden sin que falle.
 
-**D · Nombrar el referente en la sugerencia.** Pedido textual: *"Usar sugerencia: 10,89 L/Hora ·
-mediana de 5 cargadora frontal medidos — no indica la referencia, CF37 por ejemplo; permitir
-agregar referencia similar"*. Hoy la sugerencia dice de cuántos equipos salió pero no de cuáles.
-Hay que listar los internos que forman la mediana y dejar agregar o quitar uno a mano, porque el
-usuario sabe cuál par es realmente comparable y la app no.
+Devuelve los dos casos por separado porque sirven para cosas distintas: `conMeta` (gemelo con
+meta oficial — para dos del mismo modelo la meta es el mismo número) y `conDatos` (gemelo con
+consumo medido). **Este segundo era el que faltaba**: la búsqueda vieja exigía que el gemelo
+tuviera meta cargada, y CM-48 no la tiene, así que CM-43 se quedaba sin ninguna referencia.
+
+Lo usan `investigarMeta()` (como fuentes de orden 2 y 2.5) y el hallazgo `sin_gps_estimado`, que
+ahora **nombra al par en pantalla**: "par: CM48 (2023) mide 9,31 L/100Km". Una sola definición
+para los dos, por la invariante 2.
+
+**D · Nombrar el referente en la sugerencia.** ✅ **HECHO (08/09/2026).** `sugerirMeta()` gana
+`base_con_referentes`, `internos` y `ajustada`. La tarjeta pasó de *"mediana de 8 tractor
+medidos"* a *"mediana de TR35, TR20, TR26 y 5 más"* — de cuántos son a cuáles son, que es lo que
+permite verificar si la comparación tiene sentido.
+
+Y se pueden corregir a mano: botón **"Elegir referentes"** → `abrirElegirReferentes()`. Destildar
+el par que no es comparable, o sumar uno que la regla no eligió (otro modelo, otra denominación)
+pero que quien opera sabe equivalente. La vista previa corre el **mismo** `sugerirMeta()` que se
+va a guardar, no una fórmula paralela — si difirieran, la vista previa no serviría para nada.
+Lo elegido se guarda por equipo en el store `referentesMeta` (DB v14) y la tarjeta lo declara
+con "referentes elegidos a mano", para que un número ajustado nunca se lea como automático.
+"Volver a la automática" borra la fila y manda de nuevo la regla.
 
 **E · Comparación normalizada, no cruda.** Pedido textual: *"Cantidad de cargas desigual (3 vs
 106) — agregar acción para estos casos"* y *"normalizando datos para comparar 120 cargas contra

@@ -20,7 +20,7 @@
  * Uso:  node tools/auditar-declarados.mjs [--verboso]
  * Sale con código 1 si hay alguna incoherencia.
  */
-import { consumoDesdeActividadDeclarada, generarDiagnostico } from '../js/data/diagnostico.js';
+import { consumoDesdeActividadDeclarada, generarDiagnostico, parIdentico, sugerirMeta, investigarMeta } from '../js/data/diagnostico.js';
 import { diasHabiles } from '../js/data/feriados.js';
 
 const VERBOSO = process.argv.includes('--verboso');
@@ -237,6 +237,88 @@ const PERIODO_6M = { desde: '2026-01-01', hasta: '2026-06-30' };
         repetidos.length === 0, repetidos.map(([i, n]) => `${i} x${n}`).join(', '));
     check('reparto', 'los tres equipos siguen apareciendo en algún lado',
         cuentas.size === 3, `aparecieron ${cuentas.size} de 3`);
+}
+
+// ============================================================ H. EQUIPO PAR (marca+modelo)
+{
+    // El caso real que motivó esto: CM-43 (HILUX 2022, sin GPS) tiene DOS pares del mismo
+    // modelo — CM-46, año exacto pero tampoco tiene GPS, y CM-48, un año más lejos pero CON
+    // datos medidos. El par utilizable es CM-48: filtrar por año antes que por datos habría
+    // devuelto justo el inútil.
+    const conModelo = ({ interno, anio, consumo = 0, meta = 0, cargas = 8 }) => {
+        const f = filaSinGps({ interno, litros: 1000, cargas, meta });
+        f.equipo.marca = 'TOYOTA'; f.equipo.modelo = 'HILUX 4X4 DC SR 2.8'; f.equipo.anio = anio;
+        f.metrics.consumo_real = consumo;
+        if (consumo > 0) { f.metrics.total_km = 10000; f.metrics.cantidad_gps = 6; }
+        return f;
+    };
+    const cm43 = conModelo({ interno: 'CM43', anio: 2022 });
+    const cm46 = conModelo({ interno: 'CM46', anio: 2022 });                  // año exacto, SIN datos
+    const cm48 = conModelo({ interno: 'CM48', anio: 2023, consumo: 12.5 });   // 1 año, CON datos
+    const flota = [cm43, cm46, cm48];
+
+    const par = parIdentico(cm43, flota);
+    check('par', 'encuentra un par por marca+modelo', !!par, 'no encontró ninguno');
+    check('par', 'el par CON DATOS es CM48, no el del año exacto sin datos (CM46)',
+        par?.conDatos?.equipo.interno === 'CM48', `dio: ${par?.conDatos?.equipo.interno}`);
+    check('par', 'reporta la distancia de año del par con datos (2023-2022 = 1)',
+        par?.distanciaConDatos === 1, `${par?.distanciaConDatos}`);
+    check('par', 'cuenta los candidatos del mismo modelo', par?.candidatos === 2, `${par?.candidatos}`);
+
+    // Con un par de año exacto Y datos, ese gana sobre uno más lejano
+    const cm44 = conModelo({ interno: 'CM44', anio: 2022, consumo: 11.0 });
+    const par2 = parIdentico(cm43, [cm43, cm44, cm48]);
+    check('par', 'entre dos pares CON datos gana el de año más cercano',
+        par2?.conDatos?.equipo.interno === 'CM44', `dio: ${par2?.conDatos?.equipo.interno}`);
+
+    // Sin marca/modelo no hay par posible
+    const suelto = filaSinGps({ interno: 'ZZ01' });
+    check('par', 'sin marca ni modelo no devuelve par', parIdentico(suelto, flota) === null);
+
+    // investigarMeta debe exponerlo como fuente
+    const fuentes = investigarMeta(cm43, flota, []);
+    const fuenteMedida = (fuentes?.fuentes || fuentes || []).find?.(f => f.referente === 'CM48');
+    check('par', 'investigarMeta ofrece el par medido como fuente de meta',
+        !!fuenteMedida, `fuentes: ${JSON.stringify((fuentes?.fuentes||fuentes||[]).map?.(f=>f.fuente))}`);
+}
+
+// ============================================================ I. REFERENTES DE LA MEDIANA
+{
+    const cf = (interno, consumo) => {
+        const f = filaSinGps({ interno, litros: 2000, cargas: 10 });
+        f.equipo.denominacion = 'CARGADORA FRONTAL';
+        f.metrics.consumo_real = consumo; f.metrics.total_horas = 500; f.metrics.cantidad_gps = 6;
+        return f;
+    };
+    const objetivo = cf('CF38', 0);            // el que necesita meta
+    objetivo.metrics.total_horas = 0; objetivo.metrics.cantidad_gps = 0;
+    const pares = [cf('CF36', 8), cf('CF37', 10), cf('CF40', 30)];
+    const flota = [objetivo, ...pares];
+
+    const auto = sugerirMeta(objetivo, flota);
+    check('referentes', 'la sugerencia nombra a los referentes, no solo los cuenta',
+        auto && /CF36/.test(auto.base_con_referentes) && /CF37/.test(auto.base_con_referentes),
+        `${auto?.base_con_referentes}`);
+    check('referentes', 'expone la lista de internos', Array.isArray(auto?.internos) && auto.internos.length === 3, `${auto?.internos}`);
+    check('referentes', 'sin ajustes, ajustada = false', auto?.ajustada === false, `${auto?.ajustada}`);
+    check('referentes', 'mediana de 8, 10 y 30 es 10', casi(auto?.valor, 10), `${auto?.valor}`);
+
+    // Excluir el que no es comparable cambia la mediana
+    const sinCF40 = sugerirMeta(objetivo, flota, { excluidos: ['CF40'], incluidos: [] });
+    check('referentes', 'excluir un par lo saca de la mediana (8 y 10 -> 9)', casi(sinCF40?.valor, 9), `${sinCF40?.valor}`);
+    check('referentes', 'al excluir queda marcada como ajustada', sinCF40?.ajustada === true);
+    check('referentes', 'el excluido no aparece en los referentes', !sinCF40?.internos.includes('CF40'), `${sinCF40?.internos}`);
+
+    // Sumar un equipo que la regla no eligió (otra denominación)
+    const otro = cf('MX99', 20); otro.equipo.denominacion = 'MIXER';
+    const conSumado = sugerirMeta(objetivo, [...flota, otro], { excluidos: [], incluidos: ['MX99'] });
+    check('referentes', 'sumar un equipo de otra denominación lo incorpora',
+        conSumado?.internos.includes('MX99'), `${conSumado?.internos}`);
+    check('referentes', 'mediana con el sumado (8,10,20,30 -> 15)', casi(conSumado?.valor, 15), `${conSumado?.valor}`);
+
+    // Excluir de más deja sin mediana posible
+    const roto = sugerirMeta(objetivo, flota, { excluidos: ['CF36', 'CF37'], incluidos: [] });
+    check('referentes', 'con menos de 2 referentes devuelve null', roto === null, `${roto?.valor}`);
 }
 
 // ============================================================ REPORTE

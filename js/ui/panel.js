@@ -4,7 +4,7 @@
  * Todo número mostrado acá registra sus pasos de cálculo (ver calcpopover.js): al hacer
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
-import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas } from '../data/database.js';
+import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
@@ -65,6 +65,8 @@ function accionesRecientes() {
 let seguimientoEquiposCache = new Map();
 // Actividad (km/horas) declarada a mano, para equipos sin GPS. Ver database.js v11.
 let actividadEstimadaCache = [];
+// Referentes de meta elegidos a mano por equipo. Ver database.js v14.
+let referentesMetaCache = new Map();
 const CATEGORIAS_SEGUIMIENTO = [
     { id: 'fuera_servicio', label: 'Fuera de servicio' },
     { id: 'taller_ext', label: 'Taller externo' },
@@ -298,8 +300,8 @@ export async function renderPanel() {
     kpiEl.innerHTML = '<p style="color:var(--text-muted)">Analizando datos...</p>';
 
     try {
-        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos, actividadEstimada, accionesAutomaticas] = await Promise.all([
-            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos(), getActividadEstimada(), getAccionesAutomaticas()
+        const [equipos, rawRecords, estimados, ralentiEstados, noFlotaAceptados, equiposExcluidos, prefijosOficiales, seguimientoEquipos, actividadEstimada, accionesAutomaticas, referentesMeta] = await Promise.all([
+            getAllEquipos(), getAllRawRecords(), getAllEstimados(), getRalentiEstados(), getNoFlotaAceptados(), getEquiposExcluidos(), getPrefijosNoFlota(), getSeguimientoEquipos(), getActividadEstimada(), getAccionesAutomaticas(), getReferentesMeta()
         ]);
         datosCrudos = { equipos, rawRecords, estimados };
         ralentiEstadosCache = ralentiEstados;
@@ -308,6 +310,7 @@ export async function renderPanel() {
         prefijosOficialesCache = prefijosOficiales;
         seguimientoEquiposCache = new Map(seguimientoEquipos.map(s => [s.interno, s]));
         actividadEstimadaCache = actividadEstimada;
+        referentesMetaCache = new Map(referentesMeta.map(r => [r.interno, r]));
         window.actividadEstimadaCache = actividadEstimada;
         accionesAutomaticasCache = accionesAutomaticas;
 
@@ -2221,7 +2224,7 @@ function abrirRegistrosConsejo(modo, hallazgoId) {
         const equipos = grupos[0] ? grupos[0].equipos : [];
         cuerpo = equipos.length ? equipos.map(e => {
             const f = filaDe(e.interno);
-            const sug = f ? (sugerirMeta(f, analisis.filas) || metaDesdeConsumoRealLocal(f)) : null;
+            const sug = f ? (sugerirMeta(f, analisis.filas, referentesMetaCache.get(f.equipo.interno)) || metaDesdeConsumoRealLocal(f)) : null;
             const metaAct = f && f.confirmed && f.confirmed.valor ? `${nf(f.confirmed.valor, 2)} ${esc(f.metrics.tipo_calculo)}` : 'sin meta cargada';
             return `<div class="reg-grupo">
                 <h4 class="reg-grupo-head"><strong style="color:var(--accent-cyan)">${esc(e.interno)}</strong> <small>${esc(e.denominacion || '')}</small></h4>
@@ -3451,6 +3454,149 @@ function abrirAltaNoFlota(hallazgoId, analisis, rawRecords) {
  * una columna de override por equipo para los que trabajan distinto.
  */
 /**
+ * Elegir a mano de qué equipos sale la mediana que se propone como meta.
+ *
+ * La regla automática (marca+modelo, y si no alcanza, denominación) acierta casi siempre, pero
+ * no sabe nada de la operación: dos equipos del mismo modelo pueden estar en frentes distintos
+ * y uno arrastra la mediana a un valor que no aplica. Acá se puede destildar ese par, o sumar
+ * uno que la regla no eligió — otro modelo, otra denominación — pero que quien opera sabe
+ * equivalente. Lo elegido se guarda por equipo (store `referentesMeta`, ver database.js v14).
+ */
+function abrirElegirReferentes(interno, analisis) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const fila = (analisis?.filas || []).find(f => f.equipo.interno === interno);
+    if (!fila) { alert('No se encontró el equipo.'); return; }
+
+    const guardado = referentesMetaCache.get(interno) || { excluidos: [], incluidos: [] };
+    // La propuesta SIN ajustes: es la lista que hay que mostrar para poder destildar de ahí.
+    const automatica = sugerirMeta(fila, analisis.filas) || { pares: [] };
+    const actual = sugerirMeta(fila, analisis.filas, guardado);
+    const excl = new Set(guardado.excluidos || []);
+    const sumadosAhora = (guardado.incluidos || [])
+        .filter(i => !automatica.pares.some(p => p.interno === i))
+        .map(i => {
+            const f = analisis.filas.find(x => x.equipo.interno === i);
+            return f ? { interno: i, valor: f.metrics.consumo_real, cargas: f.metrics.cantidad_cargas, sumado: true } : null;
+        }).filter(Boolean);
+    const listado = automatica.pares.map(p => ({ ...p, sumado: false })).concat(sumadosAhora);
+
+    // Candidatos para sumar: cualquier equipo medido en la misma unidad que no esté ya en la lista
+    const yaEn = new Set(listado.map(p => p.interno));
+    const candidatos = (analisis.filas || [])
+        .filter(f => f.equipo.interno !== interno && !yaEn.has(f.equipo.interno)
+            && f.metrics.consumo_real > 0 && f.metrics.tipo_calculo === fila.metrics.tipo_calculo)
+        .sort((a, b) => a.equipo.interno.localeCompare(b.equipo.interno));
+
+    const modalId = 'modal-elegir-referentes';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div><h2>Elegir referentes de <strong>${esc(interno)}</strong></h2>
+                    <p class="modal-sub">La meta sugerida es la <strong>mediana</strong> de estos equipos. Destildá el que no sea comparable, o sumá uno que la regla no eligió.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    <table class="data-table">
+                        <thead><tr><th style="width:2rem"></th><th>Equipo</th><th>Consumo</th><th>Cargas</th></tr></thead>
+                        <tbody>
+                            ${listado.map(p => `<tr>
+                                <td><input type="checkbox" class="chk-ref" data-interno="${esc(p.interno)}"${excl.has(p.interno) ? '' : ' checked'}></td>
+                                <td class="cell-key">${esc(p.interno)}${p.sumado ? ' <small>(sumado a mano)</small>' : ''}</td>
+                                <td class="cell-num">${nf(p.valor, 2)}</td>
+                                <td class="cell-num">${nf(p.cargas)}</td>
+                            </tr>`).join('')}
+                        </tbody>
+                    </table>
+                    <p class="modal-note" id="ref-preview" style="margin-top:.6rem"></p>
+                    <label class="correc-field-label" style="margin-top:.8rem">Sumar otro equipo como referente</label>
+                    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+                        <select id="ref-agregar" style="flex:1;min-width:14rem">
+                            <option value="">— elegir un equipo —</option>
+                            ${candidatos.map(f => `<option value="${esc(f.equipo.interno)}">${esc(f.equipo.interno)} · ${esc(f.equipo.denominacion || '')} · ${nf(f.metrics.consumo_real, 2)} ${esc(f.metrics.tipo_calculo)}</option>`).join('')}
+                        </select>
+                        <button class="btn-sm" id="btn-ref-agregar"><i class="fa-solid fa-plus"></i> Sumar</button>
+                    </div>
+                    <div class="modal-actions" style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1rem">
+                        <button class="btn-secondary btn-sm" data-close>Cancelar</button>
+                        <button class="btn-sm" id="btn-ref-reset" title="Volver a la selección automática por marca y modelo">Volver a la automática</button>
+                        <button class="btn-primary btn-sm" id="btn-ref-guardar"><i class="fa-solid fa-floppy-disk"></i> Guardar</button>
+                    </div>
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    // Vista previa en vivo: corre el MISMO sugerirMeta() que se va a guardar, no una fórmula
+    // paralela — si difirieran, la vista previa no serviría para nada.
+    const leer = () => {
+        const marcados = [...modal.querySelectorAll('.chk-ref:checked')].map(c => c.dataset.interno);
+        const todos = [...modal.querySelectorAll('.chk-ref')].map(c => c.dataset.interno);
+        const autos = new Set(automatica.pares.map(p => p.interno));
+        return {
+            excluidos: todos.filter(i => !marcados.includes(i)),
+            incluidos: marcados.filter(i => !autos.has(i))
+        };
+    };
+    const preview = () => {
+        const r = sugerirMeta(fila, analisis.filas, leer());
+        const el = modal.querySelector('#ref-preview');
+        el.innerHTML = r
+            ? `Con estos referentes la sugerencia sería <strong>${nf(r.valor, 2)} ${esc(r.unidad)}</strong> — ${esc(r.base_con_referentes)} · rango ${nf(r.minimo, 1)}–${nf(r.maximo, 1)}.`
+            : 'Hacen falta al menos <strong>2 referentes</strong> para poder sacar una mediana.';
+    };
+    modal.querySelectorAll('.chk-ref').forEach(c => c.addEventListener('change', preview));
+    preview();
+
+    modal.querySelector('#btn-ref-agregar').addEventListener('click', () => {
+        const sel = modal.querySelector('#ref-agregar');
+        const nuevo = sel.value;
+        if (!nuevo) return;
+        const f = analisis.filas.find(x => x.equipo.interno === nuevo);
+        modal.querySelector('tbody').insertAdjacentHTML('beforeend', `<tr>
+            <td><input type="checkbox" class="chk-ref" data-interno="${esc(nuevo)}" checked></td>
+            <td class="cell-key">${esc(nuevo)} <small>(sumado a mano)</small></td>
+            <td class="cell-num">${nf(f.metrics.consumo_real, 2)}</td>
+            <td class="cell-num">${nf(f.metrics.cantidad_cargas)}</td></tr>`);
+        sel.querySelector(`option[value="${CSS.escape(nuevo)}"]`)?.remove();
+        sel.value = '';
+        modal.querySelectorAll('.chk-ref').forEach(c => { c.onchange = preview; });
+        preview();
+    });
+
+    modal.querySelector('#btn-ref-reset').addEventListener('click', async () => {
+        await setReferentesMeta(interno, [], []);
+        referentesMetaCache.delete(interno);
+        cerrar();
+        await renderPanel();
+    });
+
+    modal.querySelector('#btn-ref-guardar').addEventListener('click', async () => {
+        const r = leer();
+        if (!sugerirMeta(fila, analisis.filas, r)) {
+            alert('Con esa selección quedan menos de 2 referentes y no se puede sacar una mediana.');
+            return;
+        }
+        await setReferentesMeta(interno, r.excluidos, r.incluidos);
+        if (!r.excluidos.length && !r.incluidos.length) referentesMetaCache.delete(interno);
+        else referentesMetaCache.set(interno, { interno, ...r });
+        await registrarEdicion({
+            tabla: 'equipo', registroId: interno, etiqueta: `referentes de meta`,
+            campo: 'referentes', valorAnterior: (guardado.excluidos || []).concat(guardado.incluidos || []).join(', '),
+            valorNuevo: `sin ${r.excluidos.join(', ') || '—'} · con ${r.incluidos.join(', ') || '—'}`
+        });
+        cerrar();
+        await renderPanel();
+    });
+}
+
+/**
  * "Revisar y decidir": UNA sola ventana con los equipos del hallazgo y TODAS las acciones que
  * les aplican, en vez de una botonera dispersa arriba y un modal distinto por acción.
  *
@@ -4264,6 +4410,10 @@ function renderCards(container, analisis) {
             card.querySelector('.edit-unidad').value = b.dataset.unidad;
             b.classList.add('aplicada');
         });
+        card.querySelector('.btn-elegir-referentes')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            abrirElegirReferentes(e.currentTarget.dataset.interno, analisis);
+        });
         card.querySelector('.btn-card-detail')?.addEventListener('click', (e) => {
             e.stopPropagation();
             if (fila) openUnitModal(fila.equipo, fila.metrics, fila.confirmed, fila.cargas, fila.gps, fila.ubicacion, periodoDeAnalisis(analisis));
@@ -4632,7 +4782,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
             </div>`;
     }
 
-    const sug = editando && ultimoAnalisis ? sugerirMeta(f, ultimoAnalisis.filas) : null;
+    const sug = editando && ultimoAnalisis ? sugerirMeta(f, ultimoAnalisis.filas, referentesMetaCache.get(f.equipo.interno)) : null;
     const sugAttrs = sug ? registrarSugerenciaCalculo(eq.interno, sug) : '';
 
     const cuerpo = editando ? `
@@ -4657,9 +4807,10 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
             ${sug ? `
             <button class="btn-sugerir" data-valor="${sug.valor}" data-unidad="${sug.unidad}">
                 <span><i class="fa-solid fa-wand-magic-sparkles"></i> Usar sugerencia: <strong>${nf(sug.valor, 2)} ${sug.unidad}</strong></span>
-                <small>${esc(sug.base)} · rango real ${nf(sug.minimo, 1)}–${nf(sug.maximo, 1)}</small>
+                <small>${esc(sug.base_con_referentes || sug.base)} · rango real ${nf(sug.minimo, 1)}–${nf(sug.maximo, 1)}${sug.ajustada ? ' · <b>referentes elegidos a mano</b>' : ''}</small>
             </button>
-            <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>` : ''}
+            <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>
+            <button class="btn-sm btn-elegir-referentes" data-interno="${esc(f.equipo.interno)}" title="Sacar un par que no es comparable, o sumar uno que la regla no vio"><i class="fa-solid fa-users-gear"></i> Elegir referentes</button>` : ''}
             <div class="edit-actions">
                 <button class="btn-primary btn-card-save"><i class="fa-solid fa-check"></i> Guardar</button>
                 <button class="btn-secondary btn-card-cancel">Cancelar</button>
@@ -4749,7 +4900,7 @@ function abrirOverlayEquipo(fila, analisis) {
     const est = estadoDe(m, confirmed, implicita);
 
     // Sugerencia de meta (igual que en la tarjeta)
-    const sug = ultimoAnalisis ? sugerirMeta(fila, ultimoAnalisis.filas) : null;
+    const sug = ultimoAnalisis ? sugerirMeta(fila, ultimoAnalisis.filas, referentesMetaCache.get(fila.equipo.interno)) : null;
     const sugAttrs = sug ? registrarSugerenciaCalculo(eq.interno, sug) : '';
 
     // Estado de comparación
@@ -4880,9 +5031,10 @@ function abrirOverlayEquipo(fila, analisis) {
               ${sug ? `
               <button class="btn-sugerir" data-valor="${sug.valor}" data-unidad="${sug.unidad}">
                 <span><i class="fa-solid fa-wand-magic-sparkles"></i> Usar sugerencia: <strong>${nf(sug.valor, 2)} ${sug.unidad}</strong></span>
-                <small>${esc(sug.base)} · rango real ${nf(sug.minimo, 1)}–${nf(sug.maximo, 1)}</small>
+                <small>${esc(sug.base_con_referentes || sug.base)} · rango real ${nf(sug.minimo, 1)}–${nf(sug.maximo, 1)}${sug.ajustada ? ' · <b>referentes elegidos a mano</b>' : ''}</small>
               </button>
-              <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>` : ''}
+              <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>
+              <button class="btn-sm btn-elegir-referentes" data-interno="${esc(fila.equipo.interno)}" title="Sacar un par que no es comparable, o sumar uno que la regla no vio"><i class="fa-solid fa-users-gear"></i> Elegir referentes</button>` : ''}
               <div class="edit-actions overlay-edit-actions">
                 <button class="btn-primary btn-card-save"><i class="fa-solid fa-check"></i> Guardar</button>
                 <button class="btn-secondary btn-overlay-close-cancel">Cancelar</button>
@@ -4931,6 +5083,11 @@ function abrirOverlayEquipo(fila, analisis) {
         overlay.querySelector('.edit-meta').value = b.dataset.valor;
         overlay.querySelector('.edit-unidad').value = b.dataset.unidad;
         b.classList.add('aplicada');
+    });
+
+    overlay.querySelector('.btn-elegir-referentes')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        abrirElegirReferentes(e.currentTarget.dataset.interno, ultimoAnalisis);
     });
 
     // Períodos desalineados: ir a revisar los movimientos de este equipo.

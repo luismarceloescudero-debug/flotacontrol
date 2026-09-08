@@ -4,8 +4,8 @@
     {
       "name": "flotacontrol",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "8090"],
-      "port": 8090
+      "runtimeArgs": ["-m", "http.server", "8097"],
+      "port": 8097
     }
   ]
 }
