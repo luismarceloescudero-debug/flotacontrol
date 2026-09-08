@@ -293,16 +293,20 @@ for (const f of filas) {
 
     const cob = coberturaEquipo(f, periodo);
     if (cob) {
-        check('cobertura', `${id}: pct = dias con carga / dias habiles`,
-            cob.pct === Math.round((cob.diasConCarga / cob.diasHabiles) * 100), `${cob.pct}`);
+        // diasPonderados: Lun-Vie=1, Sab=0.5 (jornada confirmada por operaciones)
+        const denomCob = cob.diasPonderados ?? cob.diasHabiles;
+        check('cobertura', `${id}: pct = dias con carga / dias habiles ponderados`,
+            cob.pct === Math.round((cob.diasConCarga / Math.max(0.5, cob.diasTrabajados ?? denomCob)) * 100), `${cob.pct}`);
         if (cob.exceso) aviso('cobertura', `${id}: cobertura ${cob.pct}% (>100%)`,
-            `${cob.diasConCarga} dias con carga sobre ${cob.diasHabiles} dias habiles`);
+            `${cob.diasConCarga} dias con carga sobre ${Math.round(denomCob)} dias habiles ponderados`);
     }
 
     const uti = utilizacion(f, periodo, f.ubicacion);
     if (uti) {
-        check('utilizacion', `${id}: hs/dia = horas / dias habiles del MISMO tramo`,
-            casi(uti.hsPorDia, uti.horas / uti.diasHabiles), `${uti.hsPorDia}`);
+        // diasPonderados: Lun-Vie=1, Sab=0.5 (denominador correcto cuando GPS incluye sábados)
+        const denomUti = uti.diasPonderados ?? uti.diasHabiles;
+        check('utilizacion', `${id}: hs/dia = horas / dias habiles ponderados del MISMO tramo`,
+            casi(uti.hsPorDia, uti.horas / denomUti), `${uti.hsPorDia}`);
         if (uti.hsPorDia > 24) check('utilizacion', `${id}: >24 hs/dia queda marcado como no representativo`,
             uti.estado === 'no_representativa', `${uti.hsPorDia.toFixed(1)} hs/dia con estado ${uti.estado}`);
     }

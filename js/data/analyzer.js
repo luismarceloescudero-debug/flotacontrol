@@ -322,7 +322,10 @@ export const JORNADA_REFERENCIA = {
     por_denominacion: {
         MIXER: { min: 10, max: 12, nota: 'promedio informado por operaciones' },
         'SEMI MIXER': { min: 10, max: 12, nota: 'promedio informado por operaciones' }
-    }
+    },
+    // Sábados: jornada reducida confirmada por operaciones (aplica a toda la flota).
+    // Se usa en el denominador de utilización y en el cross-check de actividad implícita.
+    sabado: { min: 4, max: 6, nota: 'jornada de sábado (4-6 hs, confirmado operaciones)' }
 };
 
 /**

@@ -176,13 +176,13 @@ export function consumoDesdeActividadDeclarada(fila, actividades = [], periodo =
             const desde = `${a.periodo}-01`;
             const ult = new Date(Date.UTC(an, mm, 0)).getUTCDate();
             const dh = diasHabiles(desde, `${a.periodo}-${String(ult).padStart(2, '0')}`);
-            dias = dh.dias || 22;
+            dias = dh.diasPonderados || 22;
         } else if (periodo && periodo.desde && periodo.hasta) {
             const [a1, m1] = periodo.desde.slice(0, 7).split('-').map(Number);
             const [a2, m2] = periodo.hasta.slice(0, 7).split('-').map(Number);
             meses = Math.max(1, (a2 - a1) * 12 + (m2 - m1) + 1);
             const dh = diasHabiles(periodo.desde, periodo.hasta);
-            dias = dh.dias || meses * 22;
+            dias = dh.diasPonderados || meses * 22;
         }
         return { meses, dias };
     };
@@ -263,11 +263,11 @@ export function confiabilidad(fila, periodo = null) {
     if (periodo && periodo.desde && periodo.hasta && Array.isArray(fila.cargas) && fila.cargas.length) {
         const diasConCarga = new Set(fila.cargas.map(c => c.fecha).filter(Boolean)).size;
         const dh = diasHabiles(periodo.desde, periodo.hasta);
-        if (dh.dias > 0) {
-            const pct = Math.round((diasConCarga / dh.dias) * 100);
-            cobertura = { diasConCarga, diasHabiles: dh.dias, pct };
+        if (dh.diasPonderados > 0) {
+            const pct = Math.round((diasConCarga / dh.diasPonderados) * 100);
+            cobertura = { diasConCarga, diasHabiles: dh.dias, sabados: dh.sabados, diasPonderados: dh.diasPonderados, pct };
             if (pct < COBERTURA_MINIMA_PCT && !(cadencia && cadencia.regular)) {
-                avisos.push(`cargó ${diasConCarga} de ${dh.dias} días hábiles del período (${pct}%)`);
+                avisos.push(`cargó ${diasConCarga} de ${Math.round(dh.diasPonderados)} días hábiles del período (${pct}%)`);
             }
         }
     }
@@ -328,20 +328,22 @@ export function utilizacion(fila, periodo = null, ubicacion = null) {
     } else return null;
 
     const dh = diasHabiles(desde, hasta);
-    if (!dh || dh.dias <= 0) return null;
+    if (!dh || dh.diasPonderados <= 0) return null;
 
-    const hsPorDia = horas / dh.dias;
-    // Más de 24 hs por día hábil no es "muy utilizado": o el equipo trabajó también sábados,
-    // domingos y feriados (y entonces la vara de "por día hábil" no aplica), o el GPS está
-    // reportando horas que no existieron — que es un problema de dato, no de operación, y ya
-    // tiene su propio hallazgo. En cualquier caso el número no es una medida de utilización.
+    // Denominador ponderado: Lun-Vie=1, Sab=0.5 (4-6 hs confirmado por operaciones).
+    // El GPS registra horas reales incluyendo sábados, así que el denominador debe incluirlos
+    // para que el ratio tenga sentido.
+    const hsPorDia = horas / dh.diasPonderados;
+    // Más de 24 hs por día ponderado: GPS reportando horas imposibles (problema de dato, no
+    // de operación — ya tiene su hallazgo propio).
     const estado = hsPorDia > 24 ? 'no_representativa'
         : hsPorDia < ref.min * 0.6 ? 'muy_baja'
         : hsPorDia < ref.min ? 'baja'
         : hsPorDia > ref.max * 1.25 ? 'alta'
         : 'normal';
     return {
-        hsPorDia, diasHabiles: dh.dias, horas, desde, hasta,
+        hsPorDia, diasHabiles: dh.dias, sabados: dh.sabados, diasPonderados: dh.diasPonderados,
+        horas, desde, hasta,
         esperadoMin: ref.min, esperadoMax: ref.max, base: ref.base, nota: ref.nota,
         estado,
         pct: Math.round((hsPorDia / ref.min) * 100)
@@ -359,7 +361,7 @@ function diasHabilesEnRangos(rangos, desde, hasta) {
         const rDesde = r.desde > desde ? r.desde : desde;
         const rHasta = r.hasta < hasta ? r.hasta : hasta;
         if (rDesde > rHasta) continue;
-        total += diasHabiles(rDesde, rHasta).dias;
+        total += diasHabiles(rDesde, rHasta).diasPonderados;
     }
     return total;
 }
@@ -387,19 +389,21 @@ export function coberturaEquipo(fila, periodo = null, rangos = []) {
     }
 
     const dh = diasHabiles(desde, hasta);
-    if (!dh || dh.totalCorridos <= 0 || dh.dias <= 0) return null;
+    if (!dh || dh.totalCorridos <= 0 || dh.diasPonderados <= 0) return null;
 
     // Días hábiles marcados como fuera de servicio, taller, sin chofer, etc.
+    // diasHabilesEnRangos ya devuelve días ponderados (Sab=0.5).
     const diasFueraServicio = rangos.length ? diasHabilesEnRangos(rangos, desde, hasta) : 0;
-    // Denominador efectivo: nunca cae a 0 para evitar división por cero.
-    const diasTrabajados = Math.max(1, dh.dias - diasFueraServicio);
+    // Denominador ponderado: Lun-Vie=1, Sab=0.5; nunca cae a 0.
+    const diasTrabajados = Math.max(0.5, dh.diasPonderados - diasFueraServicio);
     const pct = Math.round((diasConCarga / diasTrabajados) * 100);
 
     // Pasarse de 100% (cargó en más días trabajados de los que tuvo el período) sigue siendo
     // detectable: ahí sí hay algo mal en el dato, no una carga doble legítima.
     return {
         cargas: fila.metrics.cantidad_cargas, diasConCarga,
-        diasHabiles: dh.dias, diasTrabajados, diasFueraServicio,
+        diasHabiles: dh.dias, sabados: dh.sabados, diasPonderados: dh.diasPonderados,
+        diasTrabajados, diasFueraServicio,
         totalCorridos: dh.totalCorridos, completo: dh.completo,
         pct, exceso: pct > 100
     };
@@ -529,16 +533,19 @@ export function metaDesdeConsumoReal(fila) {
  * diasHabiles(), que ya descuenta fines de semana y feriados.
  */
 function diasHabilesDeMeses(meses = []) {
-    let total = 0;
+    let total = 0, totalPonderado = 0, totalSabados = 0;
     for (const ym of meses) {
         const [anio, mes] = String(ym).split('-').map(Number);
         if (!anio || !mes) continue;
         const desde = `${ym}-01`;
         const ultimoDia = new Date(anio, mes, 0).getDate();
         const hasta = `${ym}-${String(ultimoDia).padStart(2, '0')}`;
-        total += diasHabiles(desde, hasta).dias;
+        const dh = diasHabiles(desde, hasta);
+        total += dh.dias;
+        totalPonderado += dh.diasPonderados;
+        totalSabados += dh.sabados;
     }
-    return total;
+    return { total, ponderado: totalPonderado, sabados: totalSabados };
 }
 
 /**
@@ -572,14 +579,20 @@ export function actividadImplicita(fila) {
         const mesesCargas = (m.alineacion && m.alineacion.meses_cargas) || [];
         if (ref && mesesCargas.length) {
             const dh = diasHabilesDeMeses(mesesCargas);
-            if (dh > 0) {
-                const horasMin = dh * ref.min, horasMax = dh * ref.max;
+            // Horas esperadas: Lun-Vie a jornada completa + sábados a jornada reducida (4-6 hs).
+            // Usar días ponderados (Sab=0.5) en el denominador asume que la proporción Lun-Vie/Sab
+            // se refleja en la actividad total; sumarlo explícito da el rango real más ajustado.
+            const jorSab = { min: 4, max: 6 }; // JORNADA_REFERENCIA.sabado
+            const horasMin = dh.total * ref.min + dh.sabados * jorSab.min;
+            const horasMax = dh.total * ref.max + dh.sabados * jorSab.max;
+            if (horasMin > 0) {
                 // Tolerancia amplia (mitad del piso a el doble del techo): esto no busca precisión,
                 // busca detectar cuando el número está en otro orden de magnitud.
                 const respalda = imp.valor >= horasMin * 0.5 && imp.valor <= horasMax * 2;
                 imp.referencia = {
-                    dias_habiles: dh, horas_min: horasMin, horas_max: horasMax, jornada: ref, respalda,
-                    formula: `${dh} días hábiles cargados × ${ref.min}-${ref.max} hs/día (${ref.nota})`
+                    dias_habiles: dh.total, sabados: dh.sabados, dias_ponderados: dh.ponderado,
+                    horas_min: horasMin, horas_max: horasMax, jornada: ref, respalda,
+                    formula: `${dh.total} días Lun-Vie × ${ref.min}-${ref.max} hs + ${dh.sabados} sáb × ${jorSab.min}-${jorSab.max} hs`
                 };
             }
         }

@@ -3090,6 +3090,24 @@ function abrirActividadEstimada(internos, analisis) {
     const unidadSugerida = filas.length && filas.every(f => f.metrics.tipo_calculo === 'L/Hora') ? 'horas' : 'km';
     const meses = rangoMesesPeriodo(analisis);
 
+    // Cobertura del equipo individual — se muestra en el encabezado del modal para que el
+    // usuario sepa cuántos días cargó y pueda elegir el estimado con ese dato en mente.
+    const coberturaTexto = (() => {
+        if (lista.length !== 1) return '';
+        const fila = filas[0];
+        if (!fila) return '';
+        const per = periodoDeAnalisis(analisis);
+        const segEq = seguimientoEquiposCache.get(lista[0]);
+        const rangos = segEq?.rangos || [];
+        const cob = coberturaEquipo(fila, per, rangos);
+        if (!cob) return '';
+        const sabTxt = cob.sabados > 0 ? ` + ${cob.sabados} sáb` : '';
+        const trabajTxt = cob.diasFueraServicio > 0
+            ? `${Math.round(cob.diasTrabajados)} trabajados`
+            : `${Math.round(cob.diasPonderados ?? cob.diasHabiles)} hábiles${sabTxt}`;
+        return ` · <strong>${cob.diasConCarga} de ${trabajTxt}</strong> días con carga (${cob.pct}%)`;
+    })();
+
     const modalId = 'modal-actividad-estimada';
     document.getElementById(modalId)?.remove();
     container.insertAdjacentHTML('beforeend', `
@@ -3097,7 +3115,7 @@ function abrirActividadEstimada(internos, analisis) {
             <div class="modal-content modal-wide">
                 <div class="modal-header">
                     <div><h2>Declarar actividad estimada</h2>
-                    <p class="modal-sub">${lista.length === 1 ? `Equipo <strong>${esc(lista[0])}</strong>` : `<strong>${lista.length} equipos</strong>: ${lista.slice(0, 8).map(esc).join(', ')}${lista.length > 8 ? '…' : ''}`}. Los litros ya están; lo que falta son los km u horas para poder calcular el consumo.</p></div>
+                    <p class="modal-sub">${lista.length === 1 ? `Equipo <strong>${esc(lista[0])}</strong>${coberturaTexto}` : `<strong>${lista.length} equipos</strong>: ${lista.slice(0, 8).map(esc).join(', ')}${lista.length > 8 ? '…' : ''}`}. Los litros ya están; lo que falta son los km u horas para poder calcular el consumo.</p></div>
                     <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <div class="modal-body">
@@ -4252,19 +4270,20 @@ function cardPeriodoInfo(f, m, ubi, ralentiTag) {
     const rangosEq = seguimientoEq?.rangos || [];
     const cob = coberturaEquipo(f, periodoFlota, rangosEq);
     if (cob) {
-        const { pct, diasHabiles: dias, diasTrabajados, diasFueraServicio, totalCorridos, completo, diasConCarga, cargas } = cob;
+        const { pct, diasHabiles: dias, sabados = 0, diasPonderados, diasTrabajados, diasFueraServicio, totalCorridos, completo, diasConCarga, cargas } = cob;
         const cls = pct > 100 ? 'cobertura-exceso' : (pct >= 40 ? 'cobertura-ok' : (pct >= 20 ? 'cobertura-media' : 'cobertura-baja'));
         const tituloExceso = pct > 100 ? ` · ⚠ cargó en más días trabajados de los que tuvo el período: revisar duplicados o el período` : '';
         const notaCargas = cargas > diasConCarga ? ` (${cargas} cargas en total: hubo días con más de una)` : '';
-        // Cuando hay días marcados fuera de servicio, el denominador es "días trabajados";
-        // si no, se muestra "días hábiles" (la misma cifra, sin la distinción que no aporta nada).
-        const denominador = diasFueraServicio > 0 ? diasTrabajados : dias;
-        const labelDenom = diasFueraServicio > 0
-            ? `días trabajados`
-            : `días hábiles`;
+        // Denominador ponderado: Lun-Vie=1, Sab=0.5. Cuando hay días fuera de servicio se muestra
+        // "días trabajados" con ese descuento ya aplicado; si no, se muestran los días hábiles
+        // ponderados (número con .5 posible, se redondea para la UI).
+        const diaBase = diasPonderados ?? dias;
+        const denominador = diasFueraServicio > 0 ? Math.round(diasTrabajados) : Math.round(diaBase);
+        const labelDenom = diasFueraServicio > 0 ? `días trabajados` : `días hábiles`;
+        const sabTxtTooltip = sabados > 0 ? ` (${dias} Lun-Vie + ${sabados} sáb×0.5)` : '';
         const notaFuera = diasFueraServicio > 0
-            ? ` · ${diasFueraServicio} días fuera de servicio descontados de ${dias} hábiles`
-            : '';
+            ? ` · ${Math.round(diasFueraServicio)} días fuera de servicio descontados de ${Math.round(diaBase)} hábiles${sabTxtTooltip}`
+            : sabTxtTooltip;
         coberturaHtml = `<div class="card-cobertura ${cls}" title="Cargó combustible en ${diasConCarga} de ${denominador} ${labelDenom} del período analizado${completo ? '' : ' (sin feriados móviles confirmados)'}, sobre ${totalCorridos} días corridos${notaFuera}${notaCargas ? ' · ' + notaCargas.slice(2) : ''} → ${pct}%${tituloExceso}">
             <span class="cobertura-num"><i class="fa-solid fa-gas-pump"></i> ${diasConCarga}</span>
             <span class="cobertura-sep">de</span>

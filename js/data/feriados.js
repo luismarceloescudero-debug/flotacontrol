@@ -73,12 +73,12 @@ export function esDiaHabil(fechaISO) {
  * con `completo:false` para que la UI pueda aclararlo).
  */
 export function diasHabiles(desdeISO, hastaISO) {
-    if (!desdeISO || !hastaISO) return { dias: 0, totalCorridos: 0, completo: true };
+    if (!desdeISO || !hastaISO) return { dias: 0, sabados: 0, diasPonderados: 0, totalCorridos: 0, completo: true };
     const desde = new Date(desdeISO + 'T00:00:00');
     const hasta = new Date(hastaISO + 'T00:00:00');
-    if (isNaN(desde) || isNaN(hasta) || desde > hasta) return { dias: 0, totalCorridos: 0, completo: true };
+    if (isNaN(desde) || isNaN(hasta) || desde > hasta) return { dias: 0, sabados: 0, diasPonderados: 0, totalCorridos: 0, completo: true };
 
-    let dias = 0, totalCorridos = 0;
+    let dias = 0, sabados = 0, totalCorridos = 0;
     let completo = true;
     const cur = new Date(desde);
     while (cur <= hasta) {
@@ -86,8 +86,11 @@ export function diasHabiles(desdeISO, hastaISO) {
         const anio = cur.getFullYear();
         if (!FERIADOS_MOVILES[anio]) completo = false;
         totalCorridos++;
-        if (esDiaHabil(iso)) dias++;
+        const dow = cur.getDay();
+        if (dow === 6 && !esFeriado(iso)) sabados++;   // sábado no feriado
+        else if (esDiaHabil(iso)) dias++;               // lun–vie no feriado
         cur.setDate(cur.getDate() + 1);
     }
-    return { dias, totalCorridos, completo };
+    // diasPonderados: Lun-Vie cuentan 1 completo, sábados 0.5 (jornada 4-6 hs vs 10-12)
+    return { dias, sabados, diasPonderados: dias + sabados * 0.5, totalCorridos, completo };
 }

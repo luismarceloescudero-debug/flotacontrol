@@ -1,10 +1,10 @@
 {
-  "generado": "2026-09-07T16:42:51.234Z",
+  "generado": "2026-09-08T14:35:48.792Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
       "tipo": "CARGAS",
-      "filas": 4413,
+      "filas": 4511,
       "etiqueta": "Cargas de Combustible"
     },
     {
@@ -94,19 +94,19 @@
     {
       "archivo": "Resumen de viaje.xlsx",
       "tipo": "GPS_RESUMEN_VIAJE",
-      "filas": 0,
+      "filas": 1,
       "etiqueta": "Resumen de viaje (GPS)"
     }
   ],
   "equipos_maestro": 190,
   "cargas": {
-    "filas": 4413,
-    "litros_totales": 677471,
+    "filas": 4511,
+    "litros_totales": 690989.1,
     "sin_fecha": 0,
     "sin_litros": 0
   },
   "gps": {
-    "filas_equipo_mes": 907,
+    "filas_equipo_mes": 908,
     "cobertura_por_mes": [
       {
         "mes": "2026-01",
