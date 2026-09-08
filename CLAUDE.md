@@ -112,6 +112,26 @@ back to the browser: load the files, then read the result out of `window.ultimoA
 per-equipment ones — and check that the card's displayed formula divides to the consumption it
 shows next to it.
 
+**Cómo cargar las planillas reales en el navegador sin clickear.** `.claude/launch.json` levanta
+el server (`preview_start` con `name: "flotacontrol"`). Después, copiar los Excel a
+`_datos_prueba/` (gitignoreado, ver .gitignore) y empujarlos al input desde la consola — es la
+forma de verificar una interacción que los arneses no cubren:
+
+```js
+const dt = new DataTransfer();
+for (const n of nombres) {
+  const r = await fetch('/_datos_prueba/' + encodeURIComponent(n));
+  dt.items.add(new File([await r.arrayBuffer()], n));
+}
+const inp = document.getElementById('file-input');
+inp.files = dt.files;
+inp.dispatchEvent(new Event('change', { bubbles: true }));
+document.getElementById('btn-process-all').click();
+```
+
+Tarda ~30 s en procesar. Después `window.ultimoAnalisis` tiene el análisis y el panel está
+renderizado. **Borrar `_datos_prueba/` al terminar**: son datos de flota.
+
 **Browser module cache will lie to you.** `python -m http.server` sends no `Cache-Control`, and
 the browser keeps ES modules from a previous run of the same origin, so edits appear to have no
 effect and you end up debugging code that isn't running. Confirm what's actually loaded
@@ -471,23 +491,50 @@ entradas existen porque una suposición razonable resultó equivocada al medirla
 
 Ordenado por lo que el usuario pidió primero y por lo que más mueve la lectura del panel.
 
-**A · El panel repite el mismo equipo en varios hallazgos.** Pedido textual: *"los equipos que
-aparecen aquí que no aparezcan en otro punto a corregir"* y *"si salen equipos en una categoría y
-resolvemos o usamos botones de acción, no poner en otra también"*. Hoy un equipo sin GPS puede
-figurar a la vez en `sin_gps_estimado`, en `bajo_uso` y en `subutilizacion` — tres tarjetas para
-una sola situación. Lo correcto: que cada equipo aparezca en **el hallazgo de mayor severidad que
-lo explica**, y que los demás lo omitan. Ya existe el precedente exacto: `sinMedicion` se parte en
-tres buckets excluyentes (`sin_medicion` / `sin_gps_estimado` / `estimacion_inverosimil`) y ningún
-equipo cae en dos. Hay que extender ese criterio al resto con un `Set` de "ya explicados" que se
-va llenando en orden de severidad dentro de `generarDiagnostico()`.
+**A · El panel repite el mismo equipo en varios hallazgos.** ✅ **HECHO (08/09/2026).** Bloque
+"REPARTO DE EQUIPOS ENTRE HALLAZGOS DE SITUACIÓN" al principio de `generarDiagnostico()`. Seis
+hallazgos entran al reparto: `datos_parciales`, `sin_medicion`, `estimacion_inverosimil`,
+`subutilizacion`, `bajo_uso`, `sin_gps_estimado`. Cada equipo lo reclama el primero de esa lista
+que lo contenga; los demás lo omiten.
 
-**B · Todas las acciones en la misma ventana.** Pedido textual: *"Revisar y decidir equipo por
-equipo Y Declarar km/horas estimados, Y DEMÁS ACCIONES DEBERÍAN ESTAR EN ESTA MISMA VENTANA, para
-corregir por separado, o seleccionar varios"*. Hoy son modales distintos y hay que cerrar uno para
-abrir el otro, perdiendo la selección. Es un solo modal con la lista de equipos del hallazgo,
-checkbox por fila, y las acciones disponibles como pestañas o botonera: declarar actividad, marcar
-estado, aceptar ralentí, actualizar meta, excluir. La tabla "Por equipo" que ya existe en
-"Declarar actividad estimada" es el patrón a generalizar.
+**El orden NO es la severidad, es la causalidad** — el hallazgo que explica *por qué* faltan
+datos gana sobre el que solo constata que faltan. Por eso `datos_parciales` va primero aunque su
+severidad empate con otros: su propio detalle ya decía *"van a seguir apareciendo en hallazgos
+que no les corresponden"*, que era exactamente este problema. Y `sin_gps_estimado` va último
+porque su propio texto dice *"no es una falla"*.
+
+Las seis listas se calculan **juntas y arriba**, aunque cada tarjeta se arme más abajo donde
+siempre estuvo: si se calcularan donde se arma cada una, el orden de reparto sería el del archivo
+(subutilización primero) y no el de causalidad. Los títulos siguen contando bien porque el filtro
+se aplica a la lista, no a la tarjeta ya armada.
+
+El reparto **se declara**: `notaReparto(id)` agrega al detalle una frase que dice a dónde se
+fueron los equipos cedidos ("Otros 4 equipos de este grupo se listan en «datos de solo una parte
+del período»"). Cambiar un conteo sin explicarlo sería peor que el problema original.
+
+Medido sobre los archivos reales: 28 equipos en los hallazgos repartidos, **0 repetidos** (antes
+se repetían), y el total de hallazgos bajó de 21 a 20 porque `bajo_uso` y `estimacion_inverosimil`
+quedaron vacíos — sus equipos ya estaban explicados por otro. Ningún total de flota se movió.
+Regresión cubierta en `auditar-declarados.mjs` (grupo `reparto`, 5 chequeos).
+
+**B · Todas las acciones en la misma ventana.** ✅ **HECHO (08/09/2026).**
+`abrirRevisarDecidir(hallazgoId, analisis, rawRecords)` en panel.js, con un botón primario
+"Revisar y decidir" en cada hallazgo que liste equipos.
+
+Una sola ventana con la lista completa, checkbox por fila, "Tildar todos / Ninguno", contador en
+vivo, y todas las acciones que apliquen al hallazgo operando sobre la selección: declarar
+actividad, marcar estado, ralentí aceptable, reclamo GPS, "así está bien", comparar y marcar como
+revisado. Qué acciones se ofrecen sale de un solo objeto `puede`, con los mismos criterios que
+usa la barra de la tarjeta, para que no se desincronicen.
+
+Dos detalles que importan:
+- **La lista es la completa, no la recortada.** `h.equipos` viene con 10-15 filas para la
+  tarjeta; el modal usa `internos_todos` cuando está. Se le agregó ese campo a `subutilizacion`,
+  `bajo_uso`, `datos_parciales`, `sin_gps_estimado` y `estimacion_inverosimil` (`sin_medicion` ya
+  lo tenía). Sin eso, un hallazgo de 40 equipos solo dejaba actuar sobre los primeros 12 y el
+  resto quedaba inalcanzable — verificado en el navegador antes y después.
+- **Al volver de una acción se reabre la ventana** con el hallazgo recalculado, porque encadenar
+  decisiones sobre el mismo grupo es el caso normal.
 
 **C · Equipo par por marca + modelo (ítem 8 del plan viejo).** Pedido textual: *"cm43 no LEVANTA
 META DE cm48, o equipo igual, año más cercano"*. La regla, ya verificada contra el maestro real:

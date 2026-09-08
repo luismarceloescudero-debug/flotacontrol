@@ -38,14 +38,14 @@ function check(grupo, nombre, ok, detalle) {
 }
 
 /** Fila mínima pero completa: sin GPS (km y horas en 0) y con litros cargados. */
-function filaSinGps({ interno = 'XX01', litros = 1000, tipo = 'L/Hora', meta = 0 } = {}) {
+function filaSinGps({ interno = 'XX01', litros = 1000, tipo = 'L/Hora', meta = 0, cargas = 6 } = {}) {
     return {
         equipo: { interno, denominacion: 'EQUIPO PRUEBA', marca: '', modelo: '', anio: '' },
         metrics: {
             total_litros: litros, total_km: 0, total_horas: 0,
             horas_ralenti: 0, horas_movimiento: 0,
             consumo_real: 0, consumo_l_hora: 0, consumo_l_100km: 0,
-            tipo_calculo: tipo, cantidad_cargas: 6, cantidad_gps: 0,
+            tipo_calculo: tipo, cantidad_cargas: cargas, cantidad_gps: 0,
             total_costo: litros * 1000, litros_alineados: 0, km_alineados: 0, horas_alineadas: 0
         },
         cargas: [], confirmed: meta > 0 ? { valor: meta, source: 'Estimados' } : null
@@ -191,6 +191,52 @@ const PERIODO_6M = { desde: '2026-01-01', hasta: '2026-06-30' };
     const otroEquipo = enHallazgos({ actividadEstimada: [{ interno: 'ZZ99', periodo: 'TODO', unidad: 'horas', base: 'total', valor_min: 400 }] });
     check('exclusion', 'declarar actividad de otro equipo no saca a este del hallazgo',
         otroEquipo.length > 0, `${otroEquipo.join(', ')}`);
+}
+
+// ============================================================ G. REPARTO ENTRE HALLAZGOS
+{
+    // Un equipo con 2 cargas, sin GPS, sin meta y con litros califica a la vez para
+    // `sin_medicion` (no hay con qué medirlo) y para `bajo_uso` (muy pocas cargas). Antes
+    // aparecía en los dos: dos tarjetas para una sola decisión. Ahora lo tiene que reclamar
+    // el de mayor prioridad causal — `sin_medicion` — y `bajo_uso` omitirlo.
+    const REPARTIDOS = ['datos_parciales', 'sin_medicion', 'estimacion_inverosimil', 'subutilizacion', 'bajo_uso', 'sin_gps_estimado'];
+    const totales = { periodo_desde: PERIODO_6M.desde, periodo_hasta: PERIODO_6M.hasta, huerfanos: [], sin_asignar: {} };
+
+    const dondeAparece = (fila, interno) => {
+        const hs = generarDiagnostico([fila], totales, [], [], [], [], {});
+        return hs.filter(h => REPARTIDOS.includes(h.id))
+                 .filter(h => (h.equipos || []).some(e => e.interno === interno)
+                           || (h.internos_todos || []).includes(interno))
+                 .map(h => h.id);
+    };
+
+    const doble = filaSinGps({ interno: 'TR77', litros: 500, cargas: 2, meta: 0 });
+    const apariciones = dondeAparece(doble, 'TR77');
+    check('reparto', 'un equipo que califica para dos hallazgos aparece en UNO solo',
+        apariciones.length === 1, `apareció en: ${apariciones.join(', ') || '(ninguno)'}`);
+    check('reparto', 'lo reclama sin_medicion, no bajo_uso (prioridad causal)',
+        apariciones[0] === 'sin_medicion', `lo reclamó: ${apariciones[0]}`);
+
+    // El reparto no debe hacer desaparecer al equipo de TODOS los hallazgos
+    check('reparto', 'el equipo no se pierde: sigue estando en exactamente un hallazgo',
+        apariciones.length > 0, 'desapareció de todos');
+
+    // Con varios equipos, ninguno debe contarse dos veces
+    const varios = [
+        filaSinGps({ interno: 'TR70', litros: 500, cargas: 2 }),
+        filaSinGps({ interno: 'TR71', litros: 800, cargas: 3 }),
+        filaSinGps({ interno: 'TR72', litros: 900, cargas: 1 })
+    ];
+    const hs = generarDiagnostico(varios, totales, [], [], [], [], {});
+    const cuentas = new Map();
+    hs.filter(h => REPARTIDOS.includes(h.id)).forEach(h => {
+        (h.equipos || []).forEach(e => cuentas.set(e.interno, (cuentas.get(e.interno) || 0) + 1));
+    });
+    const repetidos = [...cuentas.entries()].filter(([, n]) => n > 1);
+    check('reparto', 'ningún equipo aparece en más de un hallazgo repartido',
+        repetidos.length === 0, repetidos.map(([i, n]) => `${i} x${n}`).join(', '));
+    check('reparto', 'los tres equipos siguen apareciendo en algún lado',
+        cuentas.size === 3, `aparecieron ${cuentas.size} de 3`);
 }
 
 // ============================================================ REPORTE

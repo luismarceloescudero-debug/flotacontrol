@@ -908,7 +908,8 @@ function renderDiagnostico(analisis, rawRecords = []) {
             <div class="diag-body">
                 <p class="diag-detalle">${h.detalle}</p>
                 <div class="diag-acciones-bar">
-                    ${h.accion ? `<button class="btn-primary btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
+                    ${equiposPendientes.length ? `<button class="btn-primary btn-sm btn-revisar-decidir" data-hallazgo="${esc(h.id)}" title="Abre una sola ventana con estos equipos y todas las acciones que les aplican"><i class="fa-solid fa-list-check"></i> Revisar y decidir</button>` : ''}
+                    ${h.accion ? `<button class="btn-sm btn-diag-accion" data-filtro="${esc(h.accion.filtro)}"><i class="fa-solid fa-sliders"></i> ${esc(h.accion.texto)}</button>` : ''}
                     ${acciones.filter(a => !(ocultarResolverEIgnorar && a.accion === 'resolver')).map(a => `<button class="btn-sm btn-diag-propuesta" data-accion="${esc(a.accion)}" data-hallazgo="${esc(h.id)}"><i class="fa-solid ${a.icono}"></i> ${esc(a.texto)}</button>`).join('')}
                     ${h.equipos && h.equipos.length >= 2 && !h.no_comparar ? `<button class="btn-sm btn-diag-comparar-lista" data-hallazgo="${esc(h.id)}" title="Abrir comparativa con estos equipos"><i class="fa-solid fa-code-compare"></i> Comparar estos equipos</button>` : ''}
                     ${esRalenti && h.internos_bajo_promedio && h.internos_bajo_promedio.length ? `<button class="btn-sm btn-ralenti-promediar" data-hallazgo="${esc(h.id)}" title="Marca como aceptable a los equipos tildados de la lista de abajo (por defecto, los ${h.internos_bajo_promedio.length} que están en la media de ${nf(h.promedio_ralenti)} hs para abajo)"><i class="fa-solid fa-check-double"></i> Marcar aceptable (selección)</button>` : ''}
@@ -1228,6 +1229,14 @@ function renderDiagnostico(analisis, rawRecords = []) {
             const h = hallazgos.find(x => x.id === hid);
             if (!h || !h.equipos || h.equipos.length < 2) return;
             abrirComparativa(analisis, h.equipos.map(eq => eq.interno).slice(0, 8));
+        });
+    });
+
+    // "Revisar y decidir": la ventana única con los equipos del hallazgo y todas sus acciones.
+    el.querySelectorAll('.btn-revisar-decidir').forEach(b => {
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            abrirRevisarDecidir(b.dataset.hallazgo, analisis, rawRecords);
         });
     });
 
@@ -3441,6 +3450,170 @@ function abrirAltaNoFlota(hallazgoId, analisis, rawRecords) {
  * El mismo patrón que "Declarar actividad estimada": categoría global arriba, tabla con
  * una columna de override por equipo para los que trabajan distinto.
  */
+/**
+ * "Revisar y decidir": UNA sola ventana con los equipos del hallazgo y TODAS las acciones que
+ * les aplican, en vez de una botonera dispersa arriba y un modal distinto por acción.
+ *
+ * El problema que resuelve: las acciones ya compartían la selección (todas leen los checkboxes
+ * de la tarjeta), pero estaban repartidas en la barra superior, no todas se ofrecían en todos
+ * los hallazgos, y cada una abría su propio modal — así que decidir sobre un grupo de equipos
+ * obligaba a cerrar una ventana para abrir la siguiente, perdiendo lo tildado en el camino.
+ *
+ * Acá la selección vive en el modal y cada acción la recibe. Al volver de una acción se
+ * reabre esta ventana con el hallazgo recalculado, para poder encadenar decisiones sobre el
+ * mismo grupo sin rearmar la selección.
+ */
+function abrirRevisarDecidir(hallazgoId, analisis, rawRecords) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const h = generarDiagnostico(analisis.filas, analisis.totales, rawRecords, ralentiEstadosCache,
+        noFlotaAceptadosCache, equiposExcluidosCache, extraDiag()).find(x => x.id === hallazgoId);
+    if (!h) { alert('Ese hallazgo ya no está: los datos cambiaron y se recalculó el diagnóstico.'); return; }
+
+    // `h.equipos` viene recortado para la tarjeta (10-15 filas); `internos_todos` trae el grupo
+    // completo. Para decidir en bloque hace falta el grupo entero — si no, un hallazgo de 40
+    // equipos solo dejaba actuar sobre los primeros 12 y el resto quedaba inalcanzable.
+    const detalleDe = new Map((h.equipos || []).map(e => [e.interno, e]));
+    const listaInternos = (h.internos_todos && h.internos_todos.length)
+        ? [...new Set(h.internos_todos)]
+        : (h.equipos || []).map(e => e.interno);
+    const equipos = listaInternos.map(interno => {
+        const d = detalleDe.get(interno);
+        if (d) return d;
+        const fila = (analisis.filas || []).find(f => f.equipo.interno === interno);
+        return {
+            interno,
+            denominacion: fila?.equipo.denominacion || '',
+            texto: fila ? `${nf(fila.metrics.total_litros)} L` : '',
+            sub: fila ? `${fila.metrics.cantidad_cargas} carga${fila.metrics.cantidad_cargas === 1 ? '' : 's'}` : ''
+        };
+    });
+    if (!equipos.length) { alert('Este hallazgo no lista equipos sobre los que decidir.'); return; }
+
+    // Qué acciones tienen sentido para este hallazgo. Mismos criterios que usa la barra de la
+    // tarjeta, en un solo lugar para que no se desincronicen.
+    const esRalenti = hallazgoId.startsWith('ralenti');
+    const esNofl = hallazgoId.startsWith('nofl_') || hallazgoId === 'huerfanos_typo';
+    const sinActividad = ['sin_medicion', 'sin_gps_estimado', 'estimacion_inverosimil', 'bajo_uso', 'datos_parciales', 'subutilizacion'].includes(hallazgoId);
+    const puede = {
+        declarar:  sinActividad,
+        estado:    sinActividad || esRalenti,
+        reclamo:   esRalenti || hallazgoId === 'sin_medicion',
+        ralenti:   esRalenti,
+        nofl:      esNofl,
+        comparar:  equipos.length >= 2 && !h.no_comparar
+    };
+
+    const atendidos = diagAtendidos.get(hallazgoId) || new Map();
+    const modalId = 'modal-revisar-decidir';
+    document.getElementById(modalId)?.remove();
+
+    const btn = (accion, icono, texto, titulo) =>
+        `<button class="btn-sm btn-rev-accion" data-accion="${accion}" title="${esc(titulo)}"><i class="fa-solid ${icono}"></i> ${esc(texto)}</button>`;
+
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content modal-wide">
+                <div class="modal-header">
+                    <div><h2>Revisar y decidir</h2>
+                    <p class="modal-sub">${esc(h.titulo)} · <strong>${equipos.length} equipo${equipos.length === 1 ? '' : 's'}</strong>.
+                    Tildá los que van juntos y elegí la acción; la selección se mantiene entre acciones.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    <div class="rev-selbar" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem">
+                        <button type="button" class="btn-xs btn-rev-todos">Tildar todos</button>
+                        <button type="button" class="btn-xs btn-rev-ninguno">Ninguno</button>
+                        <span class="modal-note" id="rev-cuenta" style="margin:0"></span>
+                    </div>
+                    <table class="data-table">
+                        <thead><tr><th style="width:2rem"></th><th>Equipo</th><th>Dato</th><th>Detalle</th><th style="width:5rem"></th></tr></thead>
+                        <tbody>
+                            ${equipos.map(e => {
+                                const at = atendidos.get(e.interno);
+                                return `<tr data-interno="${esc(e.interno)}"${at ? ' class="rev-atendido"' : ''}>
+                                    <td><input type="checkbox" class="chk-rev" data-interno="${esc(e.interno)}"${at ? '' : ' checked'}></td>
+                                    <td class="cell-key">${esc(e.interno)}<br><small>${esc(e.denominacion || '')}</small></td>
+                                    <td class="cell-num">${esc(e.texto || '')}</td>
+                                    <td><small>${esc(e.sub || '')}</small></td>
+                                    <td>${at ? `<span class="diag-badge-atendidos"><i class="fa-solid fa-check"></i> ${esc(at.motivo || 'atendido')}</span>` : ''}</td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                    <h4 class="consejo-sub" style="margin-top:1rem"><i class="fa-solid fa-bolt"></i> Acciones para lo tildado</h4>
+                    <div class="diag-acciones-bar" style="margin-top:.4rem">
+                        ${puede.declarar ? btn('declarar', 'fa-calculator', 'Declarar km/horas estimados', 'Cargar la actividad estimada — valor general arriba y override por equipo') : ''}
+                        ${puede.estado ? btn('estado', 'fa-clipboard-list', 'Marcar estado', 'Backup, taller, sin chofer, temporada baja… ajusta el denominador de cobertura') : ''}
+                        ${puede.ralenti ? btn('ralenti', 'fa-check-double', 'Ralentí aceptable', 'Sale del hallazgo de ralentí de ahora en más') : ''}
+                        ${puede.reclamo ? btn('reclamo', 'fa-satellite-dish', 'Reclamo GPS', 'Generar pedido de revisión del equipo GPS') : ''}
+                        ${puede.nofl ? btn('nofl', 'fa-check-double', 'Así está bien', 'Aceptar estos códigos como gasto fuera de flota') : ''}
+                        ${puede.comparar ? btn('comparar', 'fa-code-compare', 'Comparar', 'Abrir la comparativa con los tildados') : ''}
+                        <span class="diag-acciones-sep"></span>
+                        ${btn('atendido', 'fa-check', 'Marcar como revisado', 'Sacarlos de la lista pendiente sin cambiar ningún dato')}
+                    </div>
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    const seleccion = () => [...modal.querySelectorAll('.chk-rev:checked')].map(c => c.dataset.interno);
+    const actualizarCuenta = () => {
+        const n = seleccion().length;
+        modal.querySelector('#rev-cuenta').textContent = `${n} de ${equipos.length} tildado${n === 1 ? '' : 's'}`;
+    };
+    modal.querySelectorAll('.chk-rev').forEach(c => c.addEventListener('change', actualizarCuenta));
+    modal.querySelector('.btn-rev-todos').addEventListener('click', () => {
+        modal.querySelectorAll('.chk-rev').forEach(c => { c.checked = true; }); actualizarCuenta();
+    });
+    modal.querySelector('.btn-rev-ninguno').addEventListener('click', () => {
+        modal.querySelectorAll('.chk-rev').forEach(c => { c.checked = false; }); actualizarCuenta();
+    });
+    actualizarCuenta();
+
+    // Al volver de una acción se reabre esta ventana: encadenar decisiones sobre el mismo grupo
+    // es el caso normal, y obligar a reabrirla a mano es justamente lo que se vino a resolver.
+    const reabrir = async () => { await renderPanel(); abrirRevisarDecidir(hallazgoId, ultimoAnalisis, rawRecords); };
+
+    modal.querySelectorAll('.btn-rev-accion').forEach(b => {
+        b.addEventListener('click', async () => {
+            const internos = seleccion();
+            if (!internos.length) { alert('No hay equipos tildados.'); return; }
+            const per = periodoDeAnalisis(analisis);
+            switch (b.dataset.accion) {
+                case 'declarar':
+                    cerrar(); abrirActividadEstimada(internos, ultimoAnalisis); break;
+                case 'estado':
+                    cerrar(); abrirEstadoEquipoBulk(internos, hallazgoId); break;
+                case 'comparar':
+                    cerrar(); abrirComparativa(analisis, internos.slice(0, 8)); break;
+                case 'reclamo':
+                    cerrar(); abrirNuevoReclamoModal(internos, motivoReclamoGPS(hallazgoId), analisis, rawRecords, hallazgoId); break;
+                case 'ralenti':
+                    if (!confirm(`¿Marcar "ralentí aceptable" a ${internos.length} equipo${internos.length === 1 ? '' : 's'}? Salen del hallazgo de ahora en más.`)) return;
+                    for (const i of internos) await setRalentiEstado(i, 'aceptable', '', per);
+                    ralentiEstadosCache = ralentiEstadosCache.filter(r => !internos.includes(r.interno))
+                        .concat(internos.map(interno => ({ interno, estado: 'aceptable', periodo: per })));
+                    internos.forEach(i => marcarAtendido(hallazgoId, i, 'ralentí aceptable'));
+                    cerrar(); await reabrir(); break;
+                case 'nofl':
+                    if (!confirm(`¿Marcar "así está bien" a ${internos.length} código${internos.length === 1 ? '' : 's'}?`)) return;
+                    for (const c of internos) await setNoFlotaAceptado(c, '', per);
+                    noFlotaAceptadosCache = noFlotaAceptadosCache.filter(r => !internos.includes(r.codigo))
+                        .concat(internos.map(codigo => ({ codigo, periodo: per })));
+                    cerrar(); await reabrir(); break;
+                case 'atendido':
+                    internos.forEach(i => marcarAtendido(hallazgoId, i, 'revisado'));
+                    cerrar(); renderDiagnostico(analisis, rawRecords); break;
+            }
+        });
+    });
+}
+
 function abrirEstadoEquipoBulk(internos, hallazgoId = '') {
     const container = document.getElementById('modals-container');
     if (!container) return;

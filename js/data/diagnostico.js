@@ -1352,6 +1352,109 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // "sin GPS" en ellos → no generan los hallazgos sin_medicion ni sin_gps_estimado.
     const actividadEstimada = extra.actividadEstimada || [];
     const internosConEstimada = new Set(actividadEstimada.map(a => a.interno));
+
+    // ============================================================================
+    // REPARTO DE EQUIPOS ENTRE HALLAZGOS DE SITUACIÓN
+    // ============================================================================
+    // El mismo equipo se explicaba hasta tres veces: "sin GPS" en un hallazgo, "trabajó poco"
+    // en otro y "pocas cargas" en un tercero — tres tarjetas para una sola situación y una
+    // sola decisión a tomar. Acá se reparten: cada equipo queda en el hallazgo que MEJOR lo
+    // explica y los demás lo omiten.
+    //
+    // El orden NO es la severidad, es la CAUSALIDAD: el hallazgo que explica *por qué* faltan
+    // datos gana sobre el que solo constata que faltan. Por eso `datos_parciales` va primero
+    // aunque su severidad empate con otros — su propio detalle ya decía "van a seguir
+    // apareciendo en hallazgos que no les corresponden", que es exactamente esto.
+    //
+    // Solo se reparten los hallazgos de SITUACIÓN del equipo (por qué no hay datos confiables
+    // / por qué usó poco). Los de otro eje — sobreconsumo, ralentí, metas, calidad de planilla —
+    // no entran: un equipo puede legítimamente tener sobreconsumo Y ralentí alto, son dos
+    // problemas distintos con dos acciones distintas.
+    const ORDEN_REPARTO = ['datos_parciales', 'sin_medicion', 'estimacion_inverosimil', 'subutilizacion', 'bajo_uso', 'sin_gps_estimado'];
+    const ETIQUETA_REPARTO = {
+        datos_parciales: 'datos de solo una parte del período',
+        sin_medicion: 'sin dato de actividad',
+        estimacion_inverosimil: 'estimación no creíble',
+        subutilizacion: 'por debajo de la jornada esperada',
+        bajo_uso: 'muy pocas cargas',
+        sin_gps_estimado: 'sin GPS, con actividad estimada'
+    };
+    const duenoDe = new Map();      // interno -> id del hallazgo que lo reclamó
+    const cedidosPor = new Map();   // id -> Map(idQueSeLoLlevo -> cantidad)
+
+    /** Filtro con efecto: reclama el equipo para `id`, o lo rechaza si ya lo tiene otro. */
+    const pedir = (id) => (interno) => {
+        const dueno = duenoDe.get(interno);
+        if (dueno) {
+            if (!cedidosPor.has(id)) cedidosPor.set(id, new Map());
+            const m = cedidosPor.get(id);
+            m.set(dueno, (m.get(dueno) || 0) + 1);
+            return false;
+        }
+        duenoDe.set(interno, id);
+        return true;
+    };
+
+    /** Frase para el detalle: dice a dónde se fueron los equipos que este hallazgo cedió. */
+    const notaReparto = (id) => {
+        const m = cedidosPor.get(id);
+        if (!m || !m.size) return '';
+        const total = [...m.values()].reduce((a, b) => a + b, 0);
+        const partes = [...m.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([otro, n]) => `${n} en «${ETIQUETA_REPARTO[otro] || otro}»`);
+        return ` <strong>Otros ${total} equipo${total === 1 ? '' : 's'} de este grupo se list${total === 1 ? 'a' : 'an'} en el hallazgo que mejor lo${total === 1 ? '' : 's'} explica</strong> (${partes.join(', ')}), para no pedir la misma decisión dos veces.`;
+    };
+
+    // Las seis listas se calculan acá, juntas y en el orden de reparto, aunque cada hallazgo se
+    // arme más abajo donde siempre estuvo. Tienen que resolverse en este orden para que el
+    // reparto sea el correcto; si se calcularan donde se arma cada tarjeta, el orden sería el
+    // del archivo (subutilización primero) y no el de causalidad.
+
+    // 1. datos_parciales — el equipo dejó de reportar: explica la causa de casi todo lo demás
+    const parciales = filas
+        .filter(f => f.metrics.cantidad_cargas > 0 || f.metrics.cantidad_gps > 0)
+        .map(f => ({ fila: f, cob: coberturaMensual(f, periodo), comp: completitudDatos(f) }))
+        .filter(x => x.cob.parcial)
+        .sort((a, b) => a.cob.conDatos - b.cob.conDatos || b.fila.metrics.total_litros - a.fila.metrics.total_litros)
+        .filter(x => pedir('datos_parciales')(x.fila.equipo.interno));
+
+    // 2-3-6. sin_medicion / estimacion_inverosimil / sin_gps_estimado — los tres salen de la
+    // misma base (sin actividad medida) y ya eran excluyentes entre sí; el reparto solo agrega
+    // que no choquen con los otros tres hallazgos.
+    const sinMedicionBase = activos.filter(f =>
+        f.metrics.total_litros > 0 && f.metrics.consumo_real === 0 && f.metrics.tipo_calculo !== 'No Aplica'
+        && !internosConEstimada.has(f.equipo.interno)
+    ).map(f => ({ fila: f, implicita: actividadImplicita(f) }))
+     .sort((a, b) => b.fila.metrics.total_litros - a.fila.metrics.total_litros);
+
+    const sinMedicionSinMeta = sinMedicionBase.filter(x => !x.implicita)
+        .filter(x => pedir('sin_medicion')(x.fila.equipo.interno));
+
+    const estimadas = sinMedicionBase.filter(x => x.implicita)
+        .map(x => ({ ...x, chequeo: estimacionCreible(x.fila, activos), comp: completitudDatos(x.fila) }))
+        .sort((a, b) => b.comp.score - a.comp.score);
+    const estimadasDudosas = estimadas.filter(x => x.chequeo && !x.chequeo.creible)
+        .filter(x => pedir('estimacion_inverosimil')(x.fila.equipo.interno));
+
+    // 4. subutilizacion — trabajó por debajo de la jornada de referencia
+    const subutilizados = activos
+        .map(f => ({ fila: f, u: utilizacion(f, periodo) }))
+        .filter(x => x.u && (x.u.estado === 'baja' || x.u.estado === 'muy_baja'))
+        .sort((a, b) => a.u.pct - b.u.pct)
+        .filter(x => pedir('subutilizacion')(x.fila.equipo.interno));
+
+    // 5. bajo_uso — 1 a 3 cargas y ningún GPS
+    const bajoUso = activos.filter(f =>
+        f.metrics.cantidad_cargas > 0 && f.metrics.cantidad_cargas <= 3 &&
+        f.metrics.cantidad_gps === 0 && f.metrics.tipo_calculo !== 'No Aplica'
+    ).sort((a, b) => a.metrics.cantidad_cargas - b.metrics.cantidad_cargas)
+     .filter(f => pedir('bajo_uso')(f.equipo.interno));
+
+    // 6. sin_gps_estimado — último a propósito: su propio texto dice "no es una falla".
+    // Si algo más concreto ya explica al equipo, ese gana.
+    const estimadasOk = estimadas.filter(x => !x.chequeo || x.chequeo.creible)
+        .filter(x => pedir('sin_gps_estimado')(x.fila.equipo.interno));
     const conExceso = activos.map(f => ({ fila: f, exceso: calcularExceso(f), conf: confiabilidad(f, periodo) })).filter(x => x.exceso);
 
     // ---------- 0. Correcciones que se aplicaron solas ----------
@@ -1455,11 +1558,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // simplemente no trabajó — y son dos conclusiones opuestas sobre el mismo dato. Sin esto,
     // un sector entero parado (áridos durante la obra de la ripiera) figura como un logro de
     // eficiencia y encima arrastra las metas hacia abajo si se las normaliza contra ese real.
-    const subutilizados = activos
-        .map(f => ({ fila: f, u: utilizacion(f, periodo) }))
-        .filter(x => x.u && (x.u.estado === 'baja' || x.u.estado === 'muy_baja'))
-        .sort((a, b) => a.u.pct - b.u.pct);
-
+    // (la lista ya se calculó y se repartió arriba, ver REPARTO DE EQUIPOS)
     if (subutilizados.length) {
         const muyBajos = subutilizados.filter(x => x.u.estado === 'muy_baja').length;
         const conAhorroAparente = subutilizados.filter(x => x.fila.metrics.desvio_pct !== null && x.fila.metrics.desvio_pct < -TOLERANCIA * 100).length;
@@ -1467,6 +1566,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         hallazgos.push({
             id: 'subutilizacion', severidad: muyBajos ? 'media' : 'baja', icono: 'fa-gauge-simple-low',
             no_comparar: true,
+            internos_todos: subutilizados.map(x => x.fila.equipo.interno),
             titulo: `${subutilizados.length} equipos trabajaron por debajo de la jornada esperada`,
             detalle: `La referencia operativa es de <strong>${ref.esperadoMin}-${ref.esperadoMax} horas por día hábil</strong> ` +
                 `(áridos y mixers). Estos equipos quedaron por debajo${muyBajos ? `, y ${muyBajos} de ellos por menos de la mitad` : ''}. ` +
@@ -1475,7 +1575,8 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
                     ? `<strong>${conAhorroAparente} de ellos figuran hoy consumiendo menos que su meta</strong> — con esta jornada, ese "ahorro" no es eficiencia: es un equipo que estuvo parado. `
                     : '') +
                 `Cuidado al normalizar metas contra un período así: la meta quedaría fijada con el consumo de meses de baja actividad. ` +
-                `Si hay una causa conocida (una obra, una parada de planta, baja de producción), conviene anotarla en el equipo desde "Marcar para seguimiento" para no volver a investigarlo el mes que viene.`,
+                `Si hay una causa conocida (una obra, una parada de planta, baja de producción), conviene anotarla en el equipo desde "Marcar para seguimiento" para no volver a investigarlo el mes que viene.` +
+                notaReparto('subutilizacion'),
             equipos: subutilizados.slice(0, 12).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.u.hsPorDia, 1)} hs/día hábil`,
@@ -1722,25 +1823,17 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     }
 
     // ---------- 7. Sin GPS: cálculo inverso ----------
-    const sinMedicion = activos.filter(f =>
-        f.metrics.total_litros > 0 && f.metrics.consumo_real === 0 && f.metrics.tipo_calculo !== 'No Aplica'
-        && !internosConEstimada.has(f.equipo.interno)
-    ).map(f => ({ fila: f, implicita: actividadImplicita(f) }))
-     .sort((a, b) => b.fila.metrics.total_litros - a.fila.metrics.total_litros);
-
-    // Separados en dos: los que YA tienen una estimación por cálculo inverso no son un problema
-    // sin resolver (ya se muestra "≈ X hs/km" en su tarjeta) — no tiene sentido repetirles la
-    // misma advertencia acá. Solo son un problema real los que ni siquiera tienen meta para estimar.
-    const sinMedicionSinMeta = sinMedicion.filter(x => !x.implicita);
-    const sinMedicionEstimada = sinMedicion.filter(x => x.implicita);
-
+    // Los que YA tienen una estimación por cálculo inverso no son un problema sin resolver (su
+    // tarjeta ya muestra "≈ X hs/km") — no tiene sentido repetirles la advertencia acá. Solo son
+    // un problema real los que ni siquiera tienen meta para estimar. Las tres listas
+    // (sinMedicionSinMeta, estimadasDudosas, estimadasOk) se calcularon y repartieron arriba.
     if (sinMedicionSinMeta.length) {
         const litros = sinMedicionSinMeta.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
         hallazgos.push({
             id: 'sin_medicion', severidad: 'media', icono: 'fa-eye-slash',
             internos_todos: sinMedicionSinMeta.map(x => x.fila.equipo.interno),
             titulo: `${sinMedicionSinMeta.length} equipos cargan combustible sin dato de actividad`,
-            detalle: `Suman <strong>${fmt(litros)} L</strong>. Falta el km u hora del Resumen de Flota (normalmente porque el equipo no tiene GPS) y tampoco tienen una meta cargada para poder estimar por cálculo inverso. Cargarles una meta en "Consumos Estimados" es el primer paso para poder controlarlos.`,
+            detalle: `Suman <strong>${fmt(litros)} L</strong>. Falta el km u hora del Resumen de Flota (normalmente porque el equipo no tiene GPS) y tampoco tienen una meta cargada para poder estimar por cálculo inverso. Cargarles una meta en "Consumos Estimados" es el primer paso para poder controlarlos.` + notaReparto('sin_medicion'),
             equipos: sinMedicionSinMeta.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.total_litros)} L`,
@@ -1750,23 +1843,18 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     }
 
     // La estimación por cálculo inverso sale de dividir litros ÷ meta. Si la meta no es creíble,
-    // el resultado tampoco lo es — y se mostraba igual, con cara de dato medido. Se separan los
-    // dos casos: los que sirven como control de razonabilidad, y los que directamente hay que
+    // el resultado tampoco lo es — y se mostraba igual, con cara de dato medido. Por eso los dos
+    // casos van separados: los que sirven como control de razonabilidad, y los que hay que
     // corregir antes de usarlos para nada.
-    const estimadas = sinMedicionEstimada
-        .map(x => ({ ...x, chequeo: estimacionCreible(x.fila, activos), comp: completitudDatos(x.fila) }))
-        .sort((a, b) => b.comp.score - a.comp.score);
-    const estimadasDudosas = estimadas.filter(x => x.chequeo && !x.chequeo.creible);
-    const estimadasOk = estimadas.filter(x => !x.chequeo || x.chequeo.creible);
-
     if (estimadasDudosas.length) {
         const litros = estimadasDudosas.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
         hallazgos.push({
             id: 'estimacion_inverosimil', severidad: 'media', icono: 'fa-circle-question',
+            internos_todos: estimadasDudosas.map(x => x.fila.equipo.interno),
             titulo: estimadasDudosas.length === 1
                 ? `1 estimación por cálculo inverso no es creíble`
                 : `${estimadasDudosas.length} estimaciones por cálculo inverso no son creíbles`,
-            detalle: `Suman <strong>${fmt(litros)} L</strong>. Estos equipos no tienen GPS, así que su actividad se estima dividiendo los litros cargados por la meta — pero <strong>la meta que se usa no resiste el control</strong>: está muy lejos de lo que miden sus pares, o el resultado que da es imposible para la cantidad de cargas. Mientras no se corrija, el "≈ X hs" de la tarjeta es un número inventado con apariencia de dato. Están ordenados de más a menos datos: los primeros se pueden corregir hoy con confianza.`,
+            detalle: `Suman <strong>${fmt(litros)} L</strong>. Estos equipos no tienen GPS, así que su actividad se estima dividiendo los litros cargados por la meta — pero <strong>la meta que se usa no resiste el control</strong>: está muy lejos de lo que miden sus pares, o el resultado que da es imposible para la cantidad de cargas. Mientras no se corrija, el "≈ X hs" de la tarjeta es un número inventado con apariencia de dato. Están ordenados de más a menos datos: los primeros se pueden corregir hoy con confianza.` + notaReparto('estimacion_inverosimil'),
             equipos: estimadasDudosas.slice(0, 12).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.total_litros)} L → ≈ ${fmt(x.chequeo.implicita.valor, 1)} ${x.chequeo.implicita.unidad}`,
@@ -1782,8 +1870,9 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         const litros = estimadasOk.reduce((s, x) => s + x.fila.metrics.total_litros, 0);
         hallazgos.push({
             id: 'sin_gps_estimado', severidad: 'baja', icono: 'fa-calculator',
+            internos_todos: estimadasOk.map(x => x.fila.equipo.interno),
             titulo: `${estimadasOk.length} equipos sin GPS, con actividad estimada por cálculo inverso`,
-            detalle: `Suman <strong>${fmt(litros)} L</strong>. No tienen km u hora del Resumen de Flota, pero con su meta y los litros cargados se pudo estimar cuánta actividad deberían haber tenido, y esa estimación <strong>pasa el control de razonabilidad</strong> (la meta es coherente con la de sus pares y el resultado es compatible con la cantidad de cargas). No es una falla: es lo mejor que se puede medir hasta que tengan GPS.`,
+            detalle: `Suman <strong>${fmt(litros)} L</strong>. No tienen km u hora del Resumen de Flota, pero con su meta y los litros cargados se pudo estimar cuánta actividad deberían haber tenido, y esa estimación <strong>pasa el control de razonabilidad</strong> (la meta es coherente con la de sus pares y el resultado es compatible con la cantidad de cargas). No es una falla: es lo mejor que se puede medir hasta que tengan GPS.` + notaReparto('sin_gps_estimado'),
             equipos: estimadasOk.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.total_litros)} L`,
@@ -1940,16 +2029,13 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     }
 
     // ---------- 10. Bajo uso: equipos con pocas cargas y sin GPS ----------
-    const bajoUso = activos.filter(f =>
-        f.metrics.cantidad_cargas > 0 && f.metrics.cantidad_cargas <= 3 &&
-        f.metrics.cantidad_gps === 0 && f.metrics.tipo_calculo !== 'No Aplica'
-    ).sort((a, b) => a.metrics.cantidad_cargas - b.metrics.cantidad_cargas);
-
+    // (la lista ya se calculó y se repartió arriba, ver REPARTO DE EQUIPOS)
     if (bajoUso.length) {
         hallazgos.push({
             id: 'bajo_uso', severidad: 'baja', icono: 'fa-battery-quarter',
+            internos_todos: bajoUso.map(f => f.equipo.interno),
             titulo: `${bajoUso.length} equipos con muy pocas cargas y sin dato de GPS`,
-            detalle: `Tienen entre 1 y 3 cargas en el período y ningún registro de Resumen de Flota. Con tan pocos datos el consumo calculado no es representativo. Conviene verificar si el equipo estuvo efectivamente en uso o si las cargas podrían estar mal imputadas.`,
+            detalle: `Tienen entre 1 y 3 cargas en el período y ningún registro de Resumen de Flota. Con tan pocos datos el consumo calculado no es representativo. Conviene verificar si el equipo estuvo efectivamente en uso o si las cargas podrían estar mal imputadas.` + notaReparto('bajo_uso'),
             equipos: bajoUso.slice(0, 10).map(x => ({
                 interno: x.equipo.interno, denominacion: x.equipo.denominacion,
                 texto: `${x.metrics.cantidad_cargas} carga${x.metrics.cantidad_cargas === 1 ? '' : 's'} · ${fmt(x.metrics.total_litros)} L`,
@@ -2095,16 +2181,13 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // en hallazgos que no le corresponden. Hay que decidirlo una vez, no discutirlo cada mes.
     // Base más amplia que `activos`: acá también importa el equipo que reporta GPS pero nunca
     // carga combustible (o al revés). Justamente ese desbalance es parte del síntoma.
-    const conAlgunDato = filas.filter(f => f.metrics.cantidad_cargas > 0 || f.metrics.cantidad_gps > 0);
+    // (la lista ya se calculó y se repartió arriba — es la PRIMERA en reclamar, ver REPARTO DE
+    // EQUIPOS: este hallazgo explica la causa de que los otros cinco vean al equipo raro)
     const desc = totales.registros_descartados;
-    const parciales = conAlgunDato
-        .map(f => ({ fila: f, cob: coberturaMensual(f, periodo), comp: completitudDatos(f) }))
-        .filter(x => x.cob.parcial)
-        .sort((a, b) => a.cob.conDatos - b.cob.conDatos || b.fila.metrics.total_litros - a.fila.metrics.total_litros);
-
     if (parciales.length) {
         hallazgos.push({
             id: 'datos_parciales', severidad: 'media', icono: 'fa-calendar-day',
+            internos_todos: parciales.map(x => x.fila.equipo.interno),
             titulo: `${parciales.length} equipo${parciales.length === 1 ? '' : 's'} con datos de solo una parte del período`,
             detalle: `Aparecen en las planillas de todos los meses, pero solo tienen actividad real en uno o dos. ${desc && desc.total ? `Se descartaron <strong>${fmt(desc.total)} registros en cero</strong> (${fmt(desc.gps)} del GPS y ${fmt(desc.cargas)} de cargas) repartidos en ${fmt(desc.internos.length)} equipos` : 'Las filas en cero'} — <strong>no se cuentan como "trabajó cero"</strong> sino como "ese mes no hay dato", así que no estiran el período ni bajan los promedios. Lo que queda por decidir es si el equipo dejó de reportar acá (pasó a San Juan, salió de servicio, le sacaron el GPS) o si realmente trabajó solo esos meses. Mientras no se decida, van a seguir apareciendo en hallazgos que no les corresponden.`,
             equipos: parciales.slice(0, 15).map(x => ({
