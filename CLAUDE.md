@@ -85,7 +85,21 @@ one found four real defects (see `CORRECCIONES_APLICADAS.md`, 07/09/2026), inclu
 a violation of invariant 1 that had been shifting the headline "sobreconsumo" figure by millions
 of pesos while every regression check stayed green.
 
-**Both harnesses take several minutes, and that is `fake-indexeddb`, not the app.** Measured:
+**`node tools/auditar-declarados.mjs`** (`npm run declarados`) is the third harness and covers
+what the other two structurally cannot. Both of them run the pipeline over the real spreadsheets
+— but **activity declared by hand never appears in a spreadsheet**, so no invariant and no
+pipeline run ever exercises `consumoDesdeActividadDeclarada()`, the only path by which an
+equipment without GPS gets a consumption at all. That number is displayed with the same face as
+a measured one: an expansion bug (declaring "10 hs per day" and multiplying by months instead of
+by business days) yields a consumption 20× off with nothing failing anywhere. The same blind spot
+covered `coberturaEquipo()` (1 check in `auditar-calculos.mjs`) and `utilizacion()` (2) — exactly
+the two formulas whose denominator changed when Saturdays started counting 0.5. This harness
+builds its inputs by hand and calls the pure functions directly: **no Excel, no IndexedDB, runs
+in under a second**. It also holds the regression test for "declaring activity removes the
+equipment from the sin-medición findings", which is behaviour no totals check would ever notice.
+
+**The two spreadsheet harnesses take several minutes, and that is `fake-indexeddb`, not the app.**
+`auditar-declarados.mjs` is instant — run it first, it fails fastest. Measured:
 `fake-indexeddb` maintains each index linearly on `put()`, so 1.381 `get()`+`put()` on a store
 with `raw_records`' four indexes take **25,6 s**, against **58 ms** on the same store with no
 indexes — a 440× penalty a browser's B-tree-backed IndexedDB does not pay. The merge loop inside
@@ -424,12 +438,101 @@ entradas existen porque una suposición razonable resultó equivocada al medirla
   meses que tienen datos en ambas fuentes, aunque sea un solo mes. Nunca se informa "falta el mes
   X" ni se pide subir los meses restantes.
 
-### Pendiente de implementación
+### Decisiones cerradas nuevas (08/09/2026)
 
-- **Botón "Actualizar meta al consumo actual" por equipo.** Decisión acordada 07/09/2026: la
-  autocorrección alinea **solo las metas vacías** (comportamiento actual). El botón explícito por
-  equipo permite mover la línea base cuando el usuario quiera — sin alinear todas de golpe
-  (eso silenciaría el sobreconsumo por construcción).
+6. **Solo se autocorrigen códigos CON litros en la planilla de Cargas.** Un código que aparece
+   únicamente en GPS o en Loop, sin ninguna carga de combustible, no se da de alta como equipo ni
+   se acepta como "así está bien": se descarta. Implementado en `aplicarCorreccionesAutomaticas()`
+   con un `continue` temprano si `h.litros <= 0`. Efecto medido sobre los archivos reales: 6
+   aceptados menos, 1 alta menos, 16 huérfanos a revisión manual en vez de 15.
+
+7. **"Posible repetida" no es un hallazgo.** Dos cargas del mismo equipo, el mismo día, con los
+   mismos litros pero distinto importe u hora **son legítimas** (dos surtidores, dos turnos). Solo
+   el duplicado **exacto** — idéntico en todos los campos hasta el centavo — tiene una corrección
+   obvia, y esa ya se aplica sola. La sección `duplicadosPosibles` salió del hallazgo
+   `calidad_planilla`. `auditarCalidadCargas()` los sigue calculando; simplemente no se reportan.
+
+8. **Los remitos de Loop en conflicto NO son parte del análisis de combustible.** El hallazgo
+   `entregas_conflicto_remito` se eliminó. Los datos siguen guardados en IndexedDB y visibles en
+   "Entregas (Loop)" para el cruce de ciclo/ralentí (ítem 9), pero no ensucian el diagnóstico de
+   consumo. **Esto reemplaza al viejo ítem 13, que queda cancelado.**
+
+9. **Dar de alta un equipo nuevo es la normalidad, no un aviso.** Las acciones `alta_interno`
+   salieron del hallazgo `acciones_automaticas`. Solo se reportan `aceptado_no_flota` y
+   `meta_alineada`, que sí son decisiones que el usuario puede querer revertir.
+
+10. **NUNCA agregar `"type": "module"` al package.json.** Medido el 08/09/2026: `xlsx.full.min.js`
+    es UMD y los arneses lo cargan con `createRequire()`. Bajo `type:module` ese `require()`
+    devuelve un objeto vacío, el parseo produce 0 filas y `verificar-datos-reales.mjs` mide
+    **0 equipos en vez de 189 — sin lanzar un solo error**. Queda un `_comment` en el package.json
+    diciéndolo. Es exactamente la clase de falla silenciosa que los arneses existen para atrapar.
+
+### Pendiente de implementación — plan vigente (08/09/2026)
+
+Ordenado por lo que el usuario pidió primero y por lo que más mueve la lectura del panel.
+
+**A · El panel repite el mismo equipo en varios hallazgos.** Pedido textual: *"los equipos que
+aparecen aquí que no aparezcan en otro punto a corregir"* y *"si salen equipos en una categoría y
+resolvemos o usamos botones de acción, no poner en otra también"*. Hoy un equipo sin GPS puede
+figurar a la vez en `sin_gps_estimado`, en `bajo_uso` y en `subutilizacion` — tres tarjetas para
+una sola situación. Lo correcto: que cada equipo aparezca en **el hallazgo de mayor severidad que
+lo explica**, y que los demás lo omitan. Ya existe el precedente exacto: `sinMedicion` se parte en
+tres buckets excluyentes (`sin_medicion` / `sin_gps_estimado` / `estimacion_inverosimil`) y ningún
+equipo cae en dos. Hay que extender ese criterio al resto con un `Set` de "ya explicados" que se
+va llenando en orden de severidad dentro de `generarDiagnostico()`.
+
+**B · Todas las acciones en la misma ventana.** Pedido textual: *"Revisar y decidir equipo por
+equipo Y Declarar km/horas estimados, Y DEMÁS ACCIONES DEBERÍAN ESTAR EN ESTA MISMA VENTANA, para
+corregir por separado, o seleccionar varios"*. Hoy son modales distintos y hay que cerrar uno para
+abrir el otro, perdiendo la selección. Es un solo modal con la lista de equipos del hallazgo,
+checkbox por fila, y las acciones disponibles como pestañas o botonera: declarar actividad, marcar
+estado, aceptar ralentí, actualizar meta, excluir. La tabla "Por equipo" que ya existe en
+"Declarar actividad estimada" es el patrón a generalizar.
+
+**C · Equipo par por marca + modelo (ítem 8 del plan viejo).** Pedido textual: *"cm43 no LEVANTA
+META DE cm48, o equipo igual, año más cercano"*. La regla, ya verificada contra el maestro real:
+
+```
+mismo marca + modelo  →  de esos, los que TENGAN datos medidos  →  el año más cercano
+```
+
+Verificado: `CM-43` (TOYOTA / HILUX 4X4 DC SR 2.8 TDI 6 MT / 2022, sin GPS) → su único par
+utilizable es `CM-48` (2023, con GPS); `CM-46` tiene el año exacto pero tampoco tiene GPS.
+`CF-38` (HYUNDAI / 757 / 2017) → `CF-36` y `CF-37`, dos pares exactos con datos. `CM-35` **sí
+tiene GPS** y no necesita par. **La función ya existe a medias**: `investigarMeta()`
+(diagnostico.js ~1259) ya busca el gemelo por marca+modelo y lo devuelve como fuente de orden 2 —
+lo que falta es (a) que caiga de vuelta al **año más cercano** cuando no hay coincidencia exacta
+con datos, y (b) que el hallazgo `sin_gps_estimado` la use y **nombre al referente en pantalla**.
+
+**D · Nombrar el referente en la sugerencia.** Pedido textual: *"Usar sugerencia: 10,89 L/Hora ·
+mediana de 5 cargadora frontal medidos — no indica la referencia, CF37 por ejemplo; permitir
+agregar referencia similar"*. Hoy la sugerencia dice de cuántos equipos salió pero no de cuáles.
+Hay que listar los internos que forman la mediana y dejar agregar o quitar uno a mano, porque el
+usuario sabe cuál par es realmente comparable y la app no.
+
+**E · Comparación normalizada, no cruda.** Pedido textual: *"Cantidad de cargas desigual (3 vs
+106) — agregar acción para estos casos"* y *"normalizando datos para comparar 120 cargas contra
+120 cargas, o promediar, también en días laborales 19/22"*. La comparativa hoy enfrenta totales
+crudos de períodos distintos. Tiene que ofrecer, como acción del propio aviso: recortar ambos al
+período común, o comparar por promedio (L/día trabajado, L/carga) en vez de por total. El
+denominador ponderado ya está resuelto (`diasPonderados`, sábados 0,5) — falta usarlo acá.
+
+**F · Botón "Actualizar meta al consumo actual" por equipo.** Decisión acordada 07/09/2026 y sigue
+en pie: la autocorrección alinea **solo las metas vacías**. El botón explícito por equipo permite
+mover la línea base cuando el usuario quiera — sin alinear todas de golpe, que silenciaría el
+sobreconsumo por construcción.
+
+### Deuda técnica conocida (medida, no supuesta)
+
+- **`/api/chat` no tiene rate limiting.** El `APP_SECRET_VALUE` viaja en el JS del navegador y está
+  documentado como anti-scraping, no como autenticación. Quien lea el archivo puede gastar la
+  `ANTHROPIC_API_KEY`. Los topes de tamaño (`MAX_TOKENS`, `MAX_CONTEXT_CHARS`,
+  `MAX_HISTORY_MESSAGES`, `MAX_TOTAL_JSON_CHARS`) acotan el costo **por request**, no la cantidad
+  de requests. Cerrarlo de verdad requiere Vercel Deployment Protection o un login real; mientras
+  tanto, el techo de gasto se pone en la consola de Anthropic, no en el código.
+- **`panel.js` tiene 4.867 líneas.** Es el archivo más grande del repo por lejos y concentra el
+  panel entero. Los ítems A y B lo van a tocar fuerte: conviene extraer primero el modal de
+  hallazgos a su propio módulo antes de agregarle una pestaña más.
 
 ### El orden del pipeline, tal como lo definió el usuario
 
@@ -446,6 +549,11 @@ entradas existen porque una suposición razonable resultó equivocada al medirla
 ```
 
 ### Plan, en orden de ejecución
+
+> **Estado al 08/09/2026:** los ítems **0 a 7 están hechos** (commits `5516593`, `50612aa`,
+> `d97bd8b`, `3fecc4c`). El **13 quedó cancelado** por pedido del usuario. Siguen abiertos los
+> ítems **8 a 12 y 14**, reordenados y ampliados en "Pendiente de implementación — plan vigente"
+> más arriba: lo que era el ítem 8 ahora es el punto **C** de ese plan.
 
 **0 · Reencuadrar `meses_sin_gps`** ✅ **HECHO (07/09/2026).** Severidad bajó a 'baja', título
 "Período analizado: N meses en común", frase "Ojo con los totales" eliminada. El dato está:
@@ -562,9 +670,11 @@ y en lote, columnas propias. **No existe**: mover columnas arrastrando, renombra
 borrar fila como botón genérico en toda tabla. Es el ítem más grande y el que menos mueve los
 números — por eso va después de los que sí los mueven.
 
-**13 · Remitos de Loop que no coinciden → registro y reclamo** (tanda corta). Son 6 remitos. El
-hallazgo ya los detecta; falta el botón que lleva a la tabla y la plantilla de pedido de revisión
-hacia Loop, con el mismo patrón que el reclamo de GPS.
+**13 · Remitos de Loop que no coinciden → reclamo.** ❌ **CANCELADO (08/09/2026).** El usuario:
+*"NO CORRESPONDE ANÁLISIS, porque estamos analizando cargas de combustible"*. El hallazgo
+`entregas_conflicto_remito` se eliminó de `generarDiagnostico()`. Las filas en conflicto siguen
+guardadas y visibles en "Entregas (Loop)" — el dato no se perdió, solo dejó de reportarse como
+problema de combustible. Ver decisión cerrada 8.
 
 **14 · Consumo por obra / cliente / planta** (tanda media, secundario). Loop trae Planta, Cliente,
 Proyecto, Obra, Localidad, Provincia. Permite ver qué obra sale cara en combustible.
