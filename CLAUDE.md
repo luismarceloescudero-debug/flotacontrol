@@ -589,17 +589,42 @@ Lo elegido se guarda por equipo en el store `referentesMeta` (DB v14) y la tarje
 con "referentes elegidos a mano", para que un número ajustado nunca se lea como automático.
 "Volver a la automática" borra la fila y manda de nuevo la regla.
 
-**E · Comparación normalizada, no cruda.** Pedido textual: *"Cantidad de cargas desigual (3 vs
-106) — agregar acción para estos casos"* y *"normalizando datos para comparar 120 cargas contra
-120 cargas, o promediar, también en días laborales 19/22"*. La comparativa hoy enfrenta totales
-crudos de períodos distintos. Tiene que ofrecer, como acción del propio aviso: recortar ambos al
-período común, o comparar por promedio (L/día trabajado, L/carga) en vez de por total. El
-denominador ponderado ya está resuelto (`diasPonderados`, sábados 0,5) — falta usarlo acá.
+**E · Comparación normalizada, no cruda.** ✅ **HECHO (09/09/2026).** La comparativa tiene dos
+modos: **totales** (cuánto hizo cada equipo) y **ritmo** (a qué velocidad lo hizo), con
+`METRICAS_NORMALIZADAS` en comparativa.js — L/día trabajado, L/carga, $/día, km/día, hs/día,
+cargas/mes. El aviso de "cargas desigual" dejó de ser solo un cartel: lleva el botón que activa
+el modo ritmo.
 
-**F · Botón "Actualizar meta al consumo actual" por equipo.** Decisión acordada 07/09/2026 y sigue
-en pie: la autocorrección alinea **solo las metas vacías**. El botón explícito por equipo permite
-mover la línea base cuando el usuario quiera — sin alinear todas de golpe, que silenciaría el
-sobreconsumo por construcción.
+Dos cosas se declaran **siempre**, en los dos modos, porque comparar sobre períodos distintos sin
+decirlo es lo que la regla 1 prohíbe:
+- **"Meses con datos"** como primera fila, marcada cuando son desiguales.
+- **"Días trabajados (denominador)"** como fila propia en modo ritmo, con los meses en el tooltip
+  — sin eso "12,4 L/día" sería un número sin pasos, que la regla 2 no deja publicar.
+
+**El denominador son los meses del PROPIO equipo, no los del período.** Esto costó un bug real,
+encontrado en el navegador y no por los arneses: comparando `CM30` (datos en 1 de 8 meses) contra
+`TR32` (8 de 8), los dos mostraban "179 días trabajados", porque el denominador salía de
+`coberturaEquipo()` sobre el período completo. Los 71,6 L de CM30 son de **un** mes; dividirlos
+por los días hábiles de ocho daba 0,40 L/día cuando el ritmo real es 3,11 — **7,8× de error**,
+numerador y denominador de períodos distintos. Se corrigió con `diasHabilesDeMeses()` (la misma
+función que usa `actividadImplicita()`, ahora exportada — no una segunda definición) sobre
+`coberturaMensual().listaMeses`. Hay chequeos dedicados en `auditar-declarados.mjs` (grupo
+`normalizado`) que fallan si alguien vuelve al denominador del período.
+
+**F · Botón "Actualizar meta al consumo actual" por equipo.** ✅ **HECHO (09/09/2026).**
+`abrirActualizarMeta()` en panel.js, botón en la tarjeta en edición y en el overlay, visible solo
+cuando el equipo **tiene consumo real medido** (si no, no hay a qué alinear).
+
+Sigue en pie la decisión de fondo: la autocorrección alinea **solo las metas vacías**, y esto es
+de a un equipo. Por eso el modal muestra, antes de guardar: la meta actual con su origen, la
+nueva, el % de diferencia, la división que la produce con sus operandos y período, un aviso si la
+base es floja (`metaDesdeConsumoReal().confiable`), y la advertencia de que alinear la meta al
+consumo actual **deja el desvío en cero y puede tapar un sobreconsumo real**. Queda marcada en
+`editado_manual` para que una reimportación no la pise, y registrada en `edicionesLog`.
+
+De paso se eliminó `metaDesdeConsumoRealLocal()` de panel.js, que era una copia recortada de
+`metaDesdeConsumoReal()` — dos definiciones del mismo concepto, justo lo que la invariante 2
+prohíbe.
 
 ### Deuda técnica conocida (medida, no supuesta)
 

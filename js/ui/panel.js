@@ -6,7 +6,7 @@
  */
 import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta } from '../data/database.js';
 import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
-import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion } from '../data/diagnostico.js';
+import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
 import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica } from '../data/autocorreccion.js';
 import { diasHabiles, esDiaHabil, esFeriado } from '../data/feriados.js';
@@ -2224,7 +2224,7 @@ function abrirRegistrosConsejo(modo, hallazgoId) {
         const equipos = grupos[0] ? grupos[0].equipos : [];
         cuerpo = equipos.length ? equipos.map(e => {
             const f = filaDe(e.interno);
-            const sug = f ? (sugerirMeta(f, analisis.filas, referentesMetaCache.get(f.equipo.interno)) || metaDesdeConsumoRealLocal(f)) : null;
+            const sug = f ? (sugerirMeta(f, analisis.filas, referentesMetaCache.get(f.equipo.interno)) || metaDesdeConsumoReal(f)) : null;
             const metaAct = f && f.confirmed && f.confirmed.valor ? `${nf(f.confirmed.valor, 2)} ${esc(f.metrics.tipo_calculo)}` : 'sin meta cargada';
             return `<div class="reg-grupo">
                 <h4 class="reg-grupo-head"><strong style="color:var(--accent-cyan)">${esc(e.interno)}</strong> <small>${esc(e.denominacion || '')}</small></h4>
@@ -2300,14 +2300,6 @@ function abrirRegistrosConsejo(modo, hallazgoId) {
         renderDiagnostico(analisis, datosCrudos?.rawRecords || []);
     }));
 }
-
-/** Meta implícita a partir del propio consumo real, sin depender de pares. */
-function metaDesdeConsumoRealLocal(fila) {
-    const m = fila.metrics;
-    if (!m.consumo_real || m.consumo_real <= 0) return null;
-    return { valor: Math.round(m.consumo_real * 100) / 100, base: `consumo real medido sobre ${m.cantidad_cargas} cargas` };
-}
-
 
 /**
  * "Revisar y decidir": la pantalla donde se resuelve, de una vez, qué pasa con un equipo que
@@ -3454,6 +3446,103 @@ function abrirAltaNoFlota(hallazgoId, analisis, rawRecords) {
  * una columna de override por equipo para los que trabajan distinto.
  */
 /**
+ * "Actualizar meta al consumo actual" — mover la línea base de UN equipo, a pedido.
+ *
+ * Por qué es un botón explícito y no algo automático: la autocorrección solo alinea metas
+ * VACÍAS (ver autocorreccion.js). Alinear una meta que ya existe al consumo real que se está
+ * midiendo **silencia el sobreconsumo por construcción** — si la meta siempre iguala al real,
+ * el desvío es cero para siempre y el equipo deja de poder fallar. Por eso lo decide una
+ * persona, de a un equipo, y viendo contra qué se está cambiando.
+ *
+ * Regla 2 de calculos-combustible: el número que se va a guardar muestra sus pasos —de cuánto
+ * a cuánto, con qué datos, de qué período— antes de guardarse, no después.
+ */
+function abrirActualizarMeta(interno, analisis) {
+    const container = document.getElementById('modals-container');
+    if (!container) return;
+    const fila = (analisis?.filas || []).find(f => f.equipo.interno === interno);
+    if (!fila) { alert('No se encontró el equipo.'); return; }
+
+    const nueva = metaDesdeConsumoReal(fila);
+    if (!nueva) { alert(`${interno} no tiene consumo real medido en este período: no hay a qué alinear la meta.`); return; }
+
+    const m = fila.metrics;
+    const actual = fila.confirmed && fila.confirmed.valor > 0 ? fila.confirmed : null;
+    const per = periodoDeAnalisis(analisis);
+    const esHora = m.tipo_calculo === 'L/Hora';
+    const actividad = esHora ? m.horas_alineadas || m.total_horas : m.km_alineados || m.total_km;
+    const litros = m.litros_alineados || m.total_litros;
+    const dif = actual ? ((nueva.valor - actual.valor) / actual.valor) * 100 : null;
+
+    const modalId = 'modal-actualizar-meta';
+    document.getElementById(modalId)?.remove();
+    container.insertAdjacentHTML('beforeend', `
+        <div class="modal-overlay active" id="${modalId}">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div><h2>Actualizar meta de <strong>${esc(interno)}</strong></h2>
+                    <p class="modal-sub">Mover la línea base a lo que este equipo viene consumiendo de verdad.</p></div>
+                    <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body">
+                    <table class="data-table">
+                        <tbody>
+                            <tr><td class="cell-key">Meta cargada hoy</td>
+                                <td class="cell-num">${actual ? `${nf(actual.valor, 2)} ${esc(m.tipo_calculo)}` : '<em>sin meta</em>'}</td>
+                                <td><small>${actual ? esc(actual.source || '') : 'nunca se cargó una'}</small></td></tr>
+                            <tr><td class="cell-key">Pasaría a</td>
+                                <td class="cell-num"><strong>${nf(nueva.valor, 2)} ${esc(nueva.unidad)}</strong></td>
+                                <td><small>${dif !== null ? `${dif >= 0 ? '+' : ''}${nf(dif, 1)}% respecto de la actual` : 'primera meta del equipo'}</small></td></tr>
+                        </tbody>
+                    </table>
+                    <h4 class="consejo-sub" style="margin-top:1rem"><i class="fa-solid fa-calculator"></i> De dónde sale ese número</h4>
+                    <p class="modal-note" style="margin:.3rem 0 0">
+                        <code>${nf(litros, 1)} L ÷ ${nf(actividad, 1)} ${esHora ? 'hs' : 'km'}${esHora ? '' : ' × 100'}</code>
+                        = <strong>${nf(nueva.valor, 2)} ${esc(nueva.unidad)}</strong><br>
+                        Medido sobre <strong>${m.cantidad_cargas} carga${m.cantidad_cargas === 1 ? '' : 's'}</strong>${per?.desde ? ` del período <strong>${esc(per.desde)} a ${esc(per.hasta)}</strong>` : ''}.
+                        ${m.litros_alineados && m.litros_alineados !== m.total_litros ? `Se usa el tramo <strong>alineado</strong> (los meses con cargas y GPS a la vez), no el total del período.` : ''}
+                    </p>
+                    ${!nueva.confiable ? `<p class="modal-note" style="margin-top:.6rem"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Base floja:</strong> ${esc((nueva.avisos || []).join(', '))}. Una meta fijada con estos datos va a arrastrar ese ruido.</p>` : ''}
+                    <p class="modal-note" style="margin-top:.8rem"><i class="fa-solid fa-circle-info"></i>
+                        Ojo con lo que esto significa: la meta es <strong>contra qué se mide el sobreconsumo</strong>.
+                        Alinearla al consumo actual deja el desvío de este equipo en cero — correcto si la meta vieja
+                        nunca fue realista, pero <strong>tapa el problema</strong> si el equipo efectivamente está
+                        gastando de más. Por eso se hace de a un equipo y no en bloque.</p>
+                    <div class="modal-actions" style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:1rem">
+                        <button class="btn-secondary btn-sm" data-close>Cancelar</button>
+                        <button class="btn-primary btn-sm" id="btn-meta-confirmar"><i class="fa-solid fa-check"></i> Actualizar meta</button>
+                    </div>
+                </div>
+            </div>
+        </div>`);
+
+    const modal = document.getElementById(modalId);
+    const cerrar = () => modal.remove();
+    modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', cerrar));
+    modal.addEventListener('click', (e) => { if (e.target === modal) cerrar(); });
+
+    modal.querySelector('#btn-meta-confirmar').addEventListener('click', async () => {
+        const eq = { ...fila.equipo };
+        const unidadTexto = nueva.unidad === 'L/Hora' ? 'L/hora' : 'L/100km';
+        eq.meta_valor = nueva.valor;
+        eq.meta_unidad = nueva.unidad;
+        eq.meta_texto = `${nueva.valor} ${unidadTexto}`;
+        eq.meta_origen = `${nueva.base} (actualizada a mano el ${new Date().toLocaleDateString('es-AR')})`;
+        // Queda protegida contra reimportación, igual que cualquier corrección a mano.
+        eq.editado_manual = [...new Set([...(eq.editado_manual || []), 'meta_valor', 'meta_unidad', 'meta_texto'])];
+        await updateEquipo(eq);
+        await registrarEdicion({
+            tabla: 'maestro', registroId: interno, etiqueta: interno,
+            campo: 'meta_valor',
+            valorAnterior: actual ? `${actual.valor} ${m.tipo_calculo}` : '',
+            valorNuevo: `${nueva.valor} ${nueva.unidad} (actualizada al consumo real)`
+        });
+        cerrar();
+        await renderPanel();
+    });
+}
+
+/**
  * Elegir a mano de qué equipos sale la mediana que se propone como meta.
  *
  * La regla automática (marca+modelo, y si no alcanza, denominación) acierta casi siempre, pero
@@ -4414,6 +4503,10 @@ function renderCards(container, analisis) {
             e.stopPropagation();
             abrirElegirReferentes(e.currentTarget.dataset.interno, analisis);
         });
+        card.querySelector('.btn-actualizar-meta')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            abrirActualizarMeta(e.currentTarget.dataset.interno, analisis);
+        });
         card.querySelector('.btn-card-detail')?.addEventListener('click', (e) => {
             e.stopPropagation();
             if (fila) openUnitModal(fila.equipo, fila.metrics, fila.confirmed, fila.cargas, fila.gps, fila.ubicacion, periodoDeAnalisis(analisis));
@@ -4811,6 +4904,7 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
             </button>
             <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>
             <button class="btn-sm btn-elegir-referentes" data-interno="${esc(f.equipo.interno)}" title="Sacar un par que no es comparable, o sumar uno que la regla no vio"><i class="fa-solid fa-users-gear"></i> Elegir referentes</button>` : ''}
+            ${m.consumo_real > 0 ? `<button class="btn-sm btn-actualizar-meta" data-interno="${esc(f.equipo.interno)}" title="Mover la meta de este equipo a lo que viene consumiendo de verdad. Se hace de a un equipo: alinear todas de golpe silenciaría el sobreconsumo."><i class="fa-solid fa-arrows-rotate"></i> Actualizar meta al consumo actual</button>` : ''}
             <div class="edit-actions">
                 <button class="btn-primary btn-card-save"><i class="fa-solid fa-check"></i> Guardar</button>
                 <button class="btn-secondary btn-card-cancel">Cancelar</button>
@@ -5035,6 +5129,7 @@ function abrirOverlayEquipo(fila, analisis) {
               </button>
               <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>
               <button class="btn-sm btn-elegir-referentes" data-interno="${esc(fila.equipo.interno)}" title="Sacar un par que no es comparable, o sumar uno que la regla no vio"><i class="fa-solid fa-users-gear"></i> Elegir referentes</button>` : ''}
+              ${m.consumo_real > 0 ? `<button class="btn-sm btn-actualizar-meta" data-interno="${esc(fila.equipo.interno)}" title="Mover la meta de este equipo a lo que viene consumiendo de verdad"><i class="fa-solid fa-arrows-rotate"></i> Actualizar meta al consumo actual</button>` : ''}
               <div class="edit-actions overlay-edit-actions">
                 <button class="btn-primary btn-card-save"><i class="fa-solid fa-check"></i> Guardar</button>
                 <button class="btn-secondary btn-overlay-close-cancel">Cancelar</button>
@@ -5088,6 +5183,11 @@ function abrirOverlayEquipo(fila, analisis) {
     overlay.querySelector('.btn-elegir-referentes')?.addEventListener('click', (e) => {
         e.stopPropagation();
         abrirElegirReferentes(e.currentTarget.dataset.interno, ultimoAnalisis);
+    });
+
+    overlay.querySelector('.btn-actualizar-meta')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        abrirActualizarMeta(e.currentTarget.dataset.interno, ultimoAnalisis);
     });
 
     // Períodos desalineados: ir a revisar los movimientos de este equipo.

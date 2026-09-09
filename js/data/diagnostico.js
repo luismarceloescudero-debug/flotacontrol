@@ -563,7 +563,7 @@ export function metaDesdeConsumoReal(fila) {
  * cargó combustible — nunca un rango inventado). Cada mes se cuenta de punta a punta con
  * diasHabiles(), que ya descuenta fines de semana y feriados.
  */
-function diasHabilesDeMeses(meses = []) {
+export function diasHabilesDeMeses(meses = []) {
     let total = 0, totalPonderado = 0, totalSabados = 0;
     for (const ym of meses) {
         const [anio, mes] = String(ym).split('-').map(Number);

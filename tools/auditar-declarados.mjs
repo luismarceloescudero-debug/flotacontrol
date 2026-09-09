@@ -20,7 +20,7 @@
  * Uso:  node tools/auditar-declarados.mjs [--verboso]
  * Sale con código 1 si hay alguna incoherencia.
  */
-import { consumoDesdeActividadDeclarada, generarDiagnostico, parIdentico, sugerirMeta, investigarMeta } from '../js/data/diagnostico.js';
+import { consumoDesdeActividadDeclarada, generarDiagnostico, parIdentico, sugerirMeta, investigarMeta, metaDesdeConsumoReal, diasHabilesDeMeses } from '../js/data/diagnostico.js';
 import { diasHabiles } from '../js/data/feriados.js';
 
 const VERBOSO = process.argv.includes('--verboso');
@@ -319,6 +319,95 @@ const PERIODO_6M = { desde: '2026-01-01', hasta: '2026-06-30' };
     // Excluir de más deja sin mediana posible
     const roto = sugerirMeta(objetivo, flota, { excluidos: ['CF36', 'CF37'], incluidos: [] });
     check('referentes', 'con menos de 2 referentes devuelve null', roto === null, `${roto?.valor}`);
+}
+
+// ============================================================ J. META DESDE CONSUMO REAL (F)
+{
+    // El botón "Actualizar meta al consumo actual" guarda exactamente este número. Si difiriera
+    // del consumo_real que muestra la tarjeta, el usuario estaría confirmando una cosa y
+    // guardando otra.
+    const f = filaSinGps({ interno: 'MX01', litros: 4500, cargas: 30 });
+    f.metrics.total_horas = 500; f.metrics.consumo_real = 9; f.metrics.cantidad_gps = 6;
+    const meta = metaDesdeConsumoReal(f);
+    check('meta_real', 'la meta propuesta ES el consumo real medido', casi(meta?.valor, 9), `${meta?.valor}`);
+    check('meta_real', 'lleva la unidad del equipo', meta?.unidad === 'L/Hora', `${meta?.unidad}`);
+    check('meta_real', 'declara sobre cuántas cargas se midió', /30 cargas/.test(meta?.base || ''), `${meta?.base}`);
+    check('meta_real', 'con 30 cargas y 500 hs la base es confiable', meta?.confiable === true, `${JSON.stringify(meta?.avisos)}`);
+
+    // Redondeo a 2 decimales, igual que en todos lados
+    const f2 = filaSinGps({ interno: 'MX02', litros: 1000, cargas: 12 });
+    f2.metrics.total_horas = 300; f2.metrics.consumo_real = 3.33333333; f2.metrics.cantidad_gps = 6;
+    check('meta_real', 'redondea a 2 decimales', casi(metaDesdeConsumoReal(f2)?.valor, 3.33), `${metaDesdeConsumoReal(f2)?.valor}`);
+
+    // Una base floja tiene que avisarlo: fijar meta con 2 cargas arrastra el ruido
+    const f3 = filaSinGps({ interno: 'MX03', litros: 100, cargas: 2 });
+    f3.metrics.total_horas = 12; f3.metrics.consumo_real = 8.33; f3.metrics.cantidad_gps = 1;
+    const m3 = metaDesdeConsumoReal(f3);
+    check('meta_real', 'una base de 2 cargas se marca como NO confiable', m3?.confiable === false, `${JSON.stringify(m3)}`);
+    check('meta_real', 'y dice por qué', (m3?.avisos || []).length > 0, `${JSON.stringify(m3?.avisos)}`);
+
+    // Sin consumo medido no hay a qué alinear: null, nunca un cero
+    const f4 = filaSinGps({ interno: 'MX04', litros: 500 });
+    check('meta_real', 'sin consumo medido devuelve null, no 0', metaDesdeConsumoReal(f4) === null);
+}
+
+// ============================================================ K. NORMALIZACIÓN DE LA COMPARATIVA (E)
+{
+    // El caso del usuario: 3 cargas contra 106. Por total son incomparables; por ritmo, sí.
+    // Acá se verifica la ARITMÉTICA de esa normalización, que es lo que la comparativa aplica.
+    const dh = diasHabiles(PERIODO_6M.desde, PERIODO_6M.hasta);
+    const dias = dh.diasPonderados;
+
+    const chico = filaSinGps({ interno: 'AA01', litros: 300, cargas: 3 });
+    const grande = filaSinGps({ interno: 'AA02', litros: 10600, cargas: 106 });
+
+    // Por total, el grande "gasta 35x más" — pero eso solo dice que trabajó más
+    check('normalizado', 'por total el segundo gasta ~35x (comparación engañosa)',
+        casi(grande.metrics.total_litros / chico.metrics.total_litros, 35.333, 1e-3),
+        `${grande.metrics.total_litros / chico.metrics.total_litros}`);
+
+    // Litros por carga: la normalización que NO depende del calendario
+    const lpcChico = chico.metrics.total_litros / chico.metrics.cantidad_cargas;
+    const lpcGrande = grande.metrics.total_litros / grande.metrics.cantidad_cargas;
+    check('normalizado', 'litros por carga: 300/3 = 100', casi(lpcChico, 100), `${lpcChico}`);
+    check('normalizado', 'litros por carga: 10600/106 = 100', casi(lpcGrande, 100), `${lpcGrande}`);
+    check('normalizado', 'normalizado por carga los dos son IGUALES — que es la verdad del dato',
+        casi(lpcChico, lpcGrande), `${lpcChico} vs ${lpcGrande}`);
+
+    // Litros por día trabajado usa el MISMO denominador ponderado que cobertura/utilización
+    check('normalizado', 'el denominador por día es diasPonderados, no días corridos',
+        dias === dh.dias + dh.sabados * 0.5 && dias < dh.totalCorridos, `${dias} vs ${dh.totalCorridos}`);
+    check('normalizado', 'litros por día del chico = 300 / días ponderados',
+        casi(chico.metrics.total_litros / dias, 300 / dias), `${300 / dias}`);
+
+    // Nunca se prorratea: sin días trabajados no hay tasa, no un cero ni un infinito
+    const sinDias = 0;
+    const tasa = sinDias > 0 ? chico.metrics.total_litros / sinDias : null;
+    check('normalizado', 'con 0 días trabajados la tasa es null, no Infinity', tasa === null, `${tasa}`);
+
+    // EL ERROR QUE ESTE CHEQUEO EXISTE PARA ATRAPAR
+    // Se encontró en vivo, no acá: la comparativa mostraba "179 días trabajados" para CM30
+    // (datos en 1 de 8 meses) y también 179 para TR32 (8 de 8). Dividir los litros de un mes
+    // por los días hábiles de ocho da un ritmo 8x menor que el real — numerador y denominador
+    // de períodos distintos, justo lo que prohíbe la regla 1. El denominador tiene que salir de
+    // los meses que el equipo REALMENTE tiene, vía diasHabilesDeMeses().
+    const unMes = diasHabilesDeMeses(['2026-03']);
+    const ochoMeses = diasHabilesDeMeses(['2026-01','2026-02','2026-03','2026-04','2026-05','2026-06','2026-07','2026-08']);
+    check('normalizado', 'los días de 1 mes son muchos menos que los de 8',
+        unMes.ponderado > 0 && unMes.ponderado < ochoMeses.ponderado / 4,
+        `1 mes: ${unMes.ponderado} · 8 meses: ${ochoMeses.ponderado}`);
+    check('normalizado', 'diasHabilesDeMeses pondera sábados igual que diasHabiles (dias + sab*0,5)',
+        casi(unMes.ponderado, unMes.total + unMes.sabados * 0.5),
+        `${unMes.ponderado} vs ${unMes.total} + ${unMes.sabados}*0.5`);
+
+    // Un equipo con 300 L en UN mes tiene un ritmo real ~8x mayor que el que daría
+    // dividiéndolo por los días de todo el período.
+    const ritmoCorrecto = 300 / unMes.ponderado;
+    const ritmoMal = 300 / ochoMeses.ponderado;
+    check('normalizado', 'el ritmo por meses propios es varias veces mayor que por período completo',
+        ritmoCorrecto > ritmoMal * 4, `correcto ${ritmoCorrecto.toFixed(2)} vs mal ${ritmoMal.toFixed(2)}`);
+    check('normalizado', 'sin meses con datos no hay denominador (0), no se inventa uno',
+        diasHabilesDeMeses([]).ponderado === 0, `${diasHabilesDeMeses([]).ponderado}`);
 }
 
 // ============================================================ REPORTE

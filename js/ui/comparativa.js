@@ -9,12 +9,19 @@
  * ícono de comparar de una tarjeta (con ese equipo ya cargado); el resto se agrega a mano
  * buscando por interno, dominio o denominación.
  */
+import { coberturaEquipo, coberturaMensual, diasHabilesDeMeses } from '../data/diagnostico.js';
+
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 let filasRef = [];
 let seleccion = [];   // internos, en el orden en que se agregaron
 let overlay = null;
+let periodoRef = null;  // {desde, hasta} del análisis activo — denominador de las tasas
+// 'totales' compara lo que cada equipo hizo; 'normalizado' compara su RITMO. Un equipo con 3
+// cargas y otro con 106 no son comparables por total —el segundo simplemente trabajó más— pero
+// sí por litros/día trabajado. Ver regla 1 de la skill calculos-combustible.
+let modo = 'totales';
 
 /**
  * Métricas mostradas, una fila por cada una. `get` saca el valor numérico de una fila de
@@ -38,6 +45,78 @@ const METRICAS = [
     { key: 'desvio', label: 'Desvío vs meta', unidad: '%', dec: 1, signo: true, get: f => f.metrics.desvio_pct, mejorEsMenor: true }
 ];
 
+/**
+ * Métricas NORMALIZADAS: el mismo dato dividido por la actividad real del equipo, para que dos
+ * equipos con volúmenes de trabajo distintos sean comparables.
+ *
+ * Regla 1 de calculos-combustible: numerador y denominador del MISMO período. Acá el numerador
+ * (litros, km, costo) sale del período analizado y el denominador (días trabajados) también —
+ * `coberturaEquipo()` lo calcula sobre ese mismo período, descontando los días marcados fuera de
+ * servicio. Nunca se prorratea: si un equipo no tiene días trabajados, la celda queda en "—" en
+ * lugar de inventar un ritmo.
+ *
+ * Consumo, meta y desvío NO se re-normalizan: ya son tasas (L/100km, L/hora). Se muestran igual
+ * en los dos modos porque son lo único que siempre fue comparable.
+ */
+const METRICAS_NORMALIZADAS = [
+    { key: 'litros_dia', label: 'Litros por día trabajado', unidad: 'L', dec: 2, mejorEsMenor: null,
+      get: (f, c) => c.dias > 0 ? f.metrics.total_litros / c.dias : null },
+    { key: 'litros_carga', label: 'Litros por carga', unidad: 'L', dec: 1, mejorEsMenor: null,
+      get: f => f.metrics.cantidad_cargas > 0 ? f.metrics.total_litros / f.metrics.cantidad_cargas : null },
+    { key: 'costo_dia', label: 'Costo por día trabajado', unidad: '', dec: 0, money: true, mejorEsMenor: true,
+      get: (f, c) => c.dias > 0 ? f.metrics.total_costo / c.dias : null },
+    { key: 'km_dia', label: 'Km por día trabajado', unidad: 'km', dec: 1, mejorEsMenor: null,
+      get: (f, c) => c.dias > 0 && f.metrics.total_km > 0 ? f.metrics.total_km / c.dias : null },
+    { key: 'hs_dia', label: 'Horas por día trabajado', unidad: 'hs', dec: 2, mejorEsMenor: null,
+      get: (f, c) => c.dias > 0 && f.metrics.total_horas > 0 ? f.metrics.total_horas / c.dias : null },
+    { key: 'cargas_mes', label: 'Cargas por mes con datos', unidad: '', dec: 1, mejorEsMenor: null,
+      get: (f, c) => c.mesesConDatos > 0 ? f.metrics.cantidad_cargas / c.mesesConDatos : null },
+    { key: 'ralenti_pct', label: '% del tiempo en ralentí', unidad: '%', dec: 0, mejorEsMenor: true,
+      get: f => f.metrics.total_horas > 0 ? (f.metrics.horas_ralenti / f.metrics.total_horas * 100) : null },
+    { key: 'consumo', label: 'Consumo real', unidad: '', dec: 2, mejorEsMenor: true,
+      sufijo: f => f.metrics.tipo_calculo, unidadDe: f => f.metrics.tipo_calculo,
+      get: f => f.metrics.consumo_real > 0 ? f.metrics.consumo_real : null },
+    { key: 'meta', label: 'Meta', unidad: '', dec: 2, mejorEsMenor: null, unidadDe: f => f.metrics.tipo_calculo,
+      get: f => f.confirmed && f.confirmed.valor > 0 ? f.confirmed.valor : null },
+    { key: 'desvio', label: 'Desvío vs meta', unidad: '%', dec: 1, signo: true, mejorEsMenor: true,
+      get: f => f.metrics.desvio_pct }
+];
+
+/**
+ * Contexto de normalización por equipo: los denominadores, con su origen.
+ * Se calcula una vez por render y se pasa a cada métrica, para que no haya dos definiciones de
+ * "días trabajados" dando números distintos (invariante 2 del proyecto).
+ */
+function contextoDe(fila) {
+    const cob = periodoRef ? coberturaEquipo(fila, periodoRef, []) : null;
+    const cobMes = periodoRef ? coberturaMensual(fila, periodoRef) : null;
+    const meses = cobMes?.listaMeses || [];
+
+    // EL DENOMINADOR SON LOS MESES DEL PROPIO EQUIPO, NO LOS DEL PERÍODO.
+    // Esto no es un detalle: un equipo con datos en 1 de 8 meses tiene sus litros en ese mes, y
+    // dividirlos por los días hábiles de los 8 da un ritmo 8 veces menor que el real — numerador
+    // y denominador de períodos distintos, que es exactamente lo que prohíbe la regla 1. Se vio
+    // en vivo comparando CM30 (1 de 8 meses) contra TR32 (8 de 8): los dos mostraban "179 días".
+    // diasHabilesDeMeses() es la misma función que usa actividadImplicita(), no una segunda
+    // definición de días hábiles (invariante 2).
+    const dh = meses.length ? diasHabilesDeMeses(meses) : null;
+    let dias = dh ? dh.ponderado : 0;
+    // Los días marcados fuera de servicio se descuentan proporcionalmente a lo que representan
+    // sobre el período completo: no se sabe en cuál de los meses del equipo cayeron.
+    const fueraServicio = cob?.diasFueraServicio || 0;
+    if (fueraServicio > 0 && cob) {
+        const baseCompleta = cob.diasPonderados ?? cob.diasHabiles ?? 0;
+        if (baseCompleta > 0) dias = Math.max(0.5, dias * (1 - fueraServicio / baseCompleta));
+    }
+    return {
+        dias: dias || 0,
+        diasFueraServicio: fueraServicio,
+        mesesConDatos: cobMes?.conDatos || 0,
+        mesesPeriodo: cobMes?.mesesPeriodo || 0,
+        listaMeses: meses
+    };
+}
+
 /** Resumen en frases de las diferencias más relevantes, solo tiene sentido con exactamente 2 equipos. */
 const RESUMEN_ITEMS = [
     { label: 'cargas', unidad: '', dec: 0, verbo: 'hizo', get: f => f.metrics.cantidad_cargas },
@@ -49,6 +128,10 @@ const RESUMEN_ITEMS = [
 
 export function abrirComparativa(analisis, internosIniciales = []) {
     filasRef = analisis?.filas || [];
+    periodoRef = analisis?.totales?.periodo_desde && analisis?.totales?.periodo_hasta
+        ? { desde: analisis.totales.periodo_desde, hasta: analisis.totales.periodo_hasta }
+        : null;
+    modo = 'totales';
     seleccion = [...new Set(internosIniciales)].filter(i => filasRef.some(f => f.equipo.interno === i));
     cerrar();
 
@@ -75,6 +158,10 @@ export function abrirComparativa(analisis, internosIniciales = []) {
             <div class="comparar-chips" id="comparar-chips"></div>
 
             <div id="comparar-resumen"></div>
+
+            <div class="comparar-agregar" style="justify-content:flex-start">
+                <button class="btn-secondary btn-sm" id="comparar-modo" title="Los totales dicen cuánto hizo cada equipo; el ritmo dice a qué velocidad lo hizo. Para equipos que trabajaron distinto, el ritmo es lo comparable."></button>
+            </div>
 
             <div class="table-responsive comparar-tabla">
                 <table class="data-table" id="comparar-table"></table>
@@ -107,9 +194,16 @@ export function abrirComparativa(analisis, internosIniciales = []) {
     };
     document.getElementById('comparar-agregar-btn').addEventListener('click', agregarDesdeInput);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); agregarDesdeInput(); } });
+    document.getElementById('comparar-modo').addEventListener('click', () => {
+        modo = modo === 'normalizado' ? 'totales' : 'normalizado';
+        pintar();
+    });
 
     pintar();
 }
+
+/** Cambiar a modo ritmo desde el aviso de "cargas desiguales". */
+function activarNormalizado() { modo = 'normalizado'; pintar(); }
 
 function escCierra(e) { if (e.key === 'Escape') cerrar(); }
 
@@ -145,11 +239,32 @@ function pintar() {
     chips.querySelectorAll('[data-quitar]').forEach(b => b.addEventListener('click', () => quitar(b.dataset.quitar)));
 
     resumenEl.innerHTML = resumenComparativo(filas);
+    resumenEl.querySelectorAll('.btn-cmp-accion').forEach(b => {
+        if (b.dataset.accion === 'normalizar') b.addEventListener('click', activarNormalizado);
+    });
 
     if (filas.length < 2) {
         tabla.innerHTML = `<caption class="comparar-caption">Agregá al menos dos equipos para ver la comparativa.</caption>`;
         return;
     }
+
+    const ctxs = filas.map(contextoDe);
+    const lista = modo === 'normalizado' ? METRICAS_NORMALIZADAS : METRICAS;
+
+    // El período de cada equipo se declara SIEMPRE, en los dos modos: comparar dos equipos sobre
+    // períodos distintos sin decirlo es exactamente lo que la regla 1 prohíbe. Si uno tiene datos
+    // en 2 meses y el otro en 8, tiene que verse antes de leer cualquier otra fila.
+    const mesesDistintos = new Set(ctxs.map(c => c.mesesConDatos)).size > 1;
+    const filaPeriodo = `<tr class="cmp-fila-periodo">
+        <td class="cell-key">Meses con datos${mesesDistintos ? ' <b>(desiguales)</b>' : ''}</td>
+        ${ctxs.map(c => `<td class="${mesesDistintos ? 'cmp-worst' : ''}" title="${esc(c.listaMeses.join(', '))}">${c.mesesConDatos} de ${c.mesesPeriodo}</td>`).join('')}
+    </tr>`;
+    // El denominador de todas las tasas del modo normalizado, visible como fila propia: sin esto
+    // "12,4 L/día" sería un número sin pasos, que la regla 2 no deja publicar.
+    const filaDias = modo === 'normalizado' ? `<tr class="cmp-fila-periodo">
+        <td class="cell-key">Días trabajados <small>(denominador)</small></td>
+        ${ctxs.map(c => `<td title="Días hábiles ponderados (lun-vie 1, sábado 0,5) de los meses en que ESTE equipo tiene datos: ${esc(c.listaMeses.join(', ')) || 'ninguno'}${c.diasFueraServicio > 0 ? ` — menos ${nf(c.diasFueraServicio)} días por estado del equipo` : ''}">${nf(c.dias, 1)}<small> en ${c.mesesConDatos} mes${c.mesesConDatos === 1 ? '' : 'es'}</small></td>`).join('')}
+    </tr>` : '';
 
     tabla.innerHTML = `
         <thead>
@@ -159,12 +274,19 @@ function pintar() {
             </tr>
         </thead>
         <tbody>
-            ${METRICAS.map(m => filaMetrica(m, filas)).join('')}
+            ${filaPeriodo}
+            ${filaDias}
+            ${lista.map(m => filaMetrica(m, filas, ctxs)).join('')}
         </tbody>`;
+
+    const btn = document.getElementById('comparar-modo');
+    if (btn) btn.innerHTML = modo === 'normalizado'
+        ? '<i class="fa-solid fa-scale-balanced"></i> Viendo ritmo (por día trabajado) — ver totales'
+        : '<i class="fa-solid fa-scale-unbalanced"></i> Viendo totales — comparar por ritmo';
 }
 
-function filaMetrica(m, filas) {
-    const valores = filas.map(m.get);
+function filaMetrica(m, filas, ctxs = []) {
+    const valores = filas.map((f, i) => m.get(f, ctxs[i] || {}));
     // Consumo real y meta se miden en L/Hora o L/100Km según el equipo: si en la selección hay
     // equipos de ambos tipos, ese número no es comparable entre sí y no se resalta mejor/peor.
     const unidadesMezcladas = m.unidadDe && new Set(filas.map((f, i) => valores[i] !== null ? m.unidadDe(f) : null).filter(Boolean)).size > 1;
@@ -220,7 +342,9 @@ function validarCriterios(filas) {
     if (maxCargas > 0 && minCargas > 0 && maxCargas / minCargas > 2) {
         avisos.push({
             tipo: 'cargas', icono: 'fa-gas-pump', color: 'aviso-media',
-            texto: `Cantidad de cargas desigual (${minCargas} vs ${maxCargas}). Para una comparación justa, conviene igualar períodos y verificar que ambos equipos operaron los mismos días.`
+            texto: `Cantidad de cargas desigual (${minCargas} vs ${maxCargas}): comparar los totales de estos dos equipos mide cuánto trabajó cada uno, no cómo consume.`,
+            // El aviso deja de ser solo un cartel: la acción que recomienda está acá al lado.
+            accion: modo === 'normalizado' ? null : { id: 'normalizar', texto: 'Comparar por ritmo (por día trabajado)' }
         });
     }
 
@@ -261,6 +385,7 @@ function validarCriterios(filas) {
                 <div class="comparar-aviso ${a.color}">
                     <i class="fa-solid ${a.icono}"></i>
                     <span>${a.texto}</span>
+                    ${a.accion ? `<button class="btn-xs btn-cmp-accion" data-accion="${esc(a.accion.id)}">${esc(a.accion.texto)}</button>` : ''}
                 </div>`).join('')}
         </div>`;
 }
