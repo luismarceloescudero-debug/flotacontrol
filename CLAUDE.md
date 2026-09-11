@@ -695,6 +695,42 @@ sobre `datos_parciales` con 14 equipos: tildar todos + "Marcar como revisado" de
 "todo atendido" y 0 pendientes. Si vuelve a pasar, hace falta saber desde qué botón, porque hay
 varias rutas que marcan (tarjeta, modal por equipo, acción en bloque) y solo una está confirmada.
 
+**Jornada por tramo: ÁRIDOS trabajó 12-13 hs Lun-Vie en febrero.** ✅ `JORNADA_REFERENCIA` era
+una sola cifra anual (ÁRIDOS 10-12 hs/día hábil). En febrero 2026 la operación cambió —obra de
+mejora de la ripiera, menos personal, jornada extendida— y esa cifra fija es el denominador con
+el que `utilizacion()` decide si un equipo está subutilizado y con el que `actividadImplicita()`
+respalda la estimación de los equipos sin GPS. Con la jornada equivocada, un equipo que trabajó
+lo esperado aparece por debajo y su consumo bajo se lee como eficiencia: la confusión que la
+invariante 3 existe para evitar.
+
+`JORNADA_EXCEPCIONES` (analyzer.js) guarda los tramos con jornada distinta, cada uno con su
+motivo escrito. `jornadaDelMes()` da la de un mes; `jornadaPonderada()` la de un tramo,
+**ponderada por los días Lun-Vie de cada mes** — promediar a secas sería el error obvio, porque
+febrero tiene 18 días hábiles y marzo 21, y tratarlos igual corre el resultado justo en el mes
+que motivó la excepción. De paso se extrajeron `sectorDe()` (de `jornadaEsperada()`) y
+`mesesEntre()` (de `mesesDeRegistro()`), para no escribir una segunda definición de ninguno de
+los dos (invariante 2).
+
+**Los sábados NO entran en la excepción, y eso se midió antes de decidirlo.** Cargas de ÁRIDOS en
+sábado: 13 en febrero (7% del mes) contra 21 en enero (11%), 9 en abril (6%) y 8 en junio (4%).
+Febrero no es el mes con menos sábados del año, así que el cierre de producción no aparece como
+una parada de sábados en las cargas. La excepción es de la jornada Lun-Vie únicamente.
+
+La referencia ponderada casi nunca es entera (un febrero a 12 dentro de ocho meses a 10 da 10,22),
+así que `utilizacion()` devuelve `esperadoTexto` ya formateado — **en un solo lugar, no en los
+cuatro que lo imprimen**— y `jornadaNota`, que la tarjeta muestra como asterisco con el motivo en
+el `title`. Medido: 15 de 67 equipos con utilización tienen febrero en su tramo; les sube de 10-12
+a 10,2-12,1. Ningún total de flota se movió. Regresión en `auditar-declarados.mjs` (grupo
+`jornada`, 12 chequeos) — es el único arnés que puede verla: `verificar` compara totales y la
+jornada no mueve un litro, y en `auditar` la excepción es un mes de ocho y se diluye al 2%.
+
+**`tools/reporte-mensual.mjs`** responde el corte que el usuario pide siempre y la app no da:
+litros y cargas por equipo y por **mes**, con los días trabajados al lado (`node
+tools/reporte-mensual.mjs TR18`). Carga solo Cargas, Consumos Estimados y Equipos, así que corre
+en segundos. Los días salen de `diasHabiles()`, no de un conteo propio. Verificado: 710.794,3 L en
+4.622 cargas — 271,0 L menos que los 711.065,3 L de `invariantes.json`, y esa diferencia son
+exactamente los 3 duplicados exactos que el import aparta a propósito.
+
 ### Deuda técnica conocida (medida, no supuesta)
 
 - **`/api/chat` no tiene rate limiting.** El `APP_SECRET_VALUE` viaja en el JS del navegador y está
