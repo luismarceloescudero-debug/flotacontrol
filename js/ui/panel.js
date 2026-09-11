@@ -3570,12 +3570,55 @@ function abrirElegirReferentes(interno, analisis) {
         }).filter(Boolean);
     const listado = automatica.pares.map(p => ({ ...p, sumado: false })).concat(sumadosAhora);
 
-    // Candidatos para sumar: cualquier equipo medido en la misma unidad que no esté ya en la lista
+    // Ficha de cada equipo: sin marca, modelo, año, potencia y capacidad a la vista no se puede
+    // juzgar si un par es realmente comparable — que es justamente la decisión que este modal le
+    // pide al usuario. Antes solo mostraba interno y consumo, y había que ir a buscar el resto a
+    // Base de Datos para poder decidir.
+    const filaDe = (i) => (analisis.filas || []).find(f => f.equipo.interno === i);
+    const ficha = (eq) => {
+        const modelo = String(eq.modelo || '').trim();
+        const cap = String(eq.capacidad || '').trim();
+        return {
+            marcaModelo: [eq.marca, eq.modelo].filter(Boolean).join(' ') || '—',
+            anio: eq.anio || null,
+            potencia: eq.potencia || '',
+            // En el maestro real, CAPACIDAD a veces repite literalmente el modelo (CM30 trae
+            // "AMAROK DC 2.0L TDI 180CV..." en los dos campos). Repetirlo no agrega información
+            // y empuja fuera de pantalla lo que sí distingue a un equipo de otro.
+            capacidad: (cap && cap.toUpperCase() !== modelo.toUpperCase()) ? cap : '',
+            denominacion: eq.denominacion || ''
+        };
+    };
+    const fEq = fila.equipo;
+    const propio = ficha(fEq);
+    const mismoModeloQue = (eq) => !!(fEq.marca && fEq.modelo && eq.marca === fEq.marca && eq.modelo === fEq.modelo);
+    const distAnio = (eq) => (fEq.anio && eq.anio) ? Math.abs(Number(eq.anio) - Number(fEq.anio)) : 9999;
+
+    // Candidatos para sumar: mismo tipo de cálculo y con consumo medido. Ordenados por parecido
+    // real —mismo marca+modelo primero, después año más cercano— y no alfabéticamente, que no
+    // dice nada sobre si el equipo sirve como referencia.
     const yaEn = new Set(listado.map(p => p.interno));
     const candidatos = (analisis.filas || [])
         .filter(f => f.equipo.interno !== interno && !yaEn.has(f.equipo.interno)
             && f.metrics.consumo_real > 0 && f.metrics.tipo_calculo === fila.metrics.tipo_calculo)
-        .sort((a, b) => a.equipo.interno.localeCompare(b.equipo.interno));
+        .sort((a, b) => {
+            // Prioridad: mismo marca+modelo, después misma denominación, y recién ahí el año.
+            // Ordenar por año a secas ponía a TR20 (MERCEDES 1735, un camión) como primer
+            // candidato para CM30 (una VW Amarok) solo porque coincidía el año — un equipo de
+            // otra categoría nunca es mejor referencia que uno de la misma, por cerca que esté
+            // su año.
+            const mm = (mismoModeloQue(b.equipo) ? 1 : 0) - (mismoModeloQue(a.equipo) ? 1 : 0);
+            if (mm) return mm;
+            const mismaDeno = (eq) => eq.denominacion && eq.denominacion === fEq.denominacion ? 1 : 0;
+            const md = mismaDeno(b.equipo) - mismaDeno(a.equipo);
+            if (md) return md;
+            const mismaMarca = (eq) => eq.marca && eq.marca === fEq.marca ? 1 : 0;
+            const mk = mismaMarca(b.equipo) - mismaMarca(a.equipo);
+            if (mk) return mk;
+            const da = distAnio(a.equipo) - distAnio(b.equipo);
+            if (da) return da;
+            return a.equipo.interno.localeCompare(b.equipo.interno);
+        });
 
     const modalId = 'modal-elegir-referentes';
     document.getElementById(modalId)?.remove();
@@ -3588,23 +3631,41 @@ function abrirElegirReferentes(interno, analisis) {
                     <button class="btn-close" data-close><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <div class="modal-body">
+                    <p class="modal-note" style="margin:0 0 .6rem">
+                        <strong>${esc(interno)}</strong> es ${esc(propio.denominacion)} · <strong>${esc(propio.marcaModelo)}</strong>${propio.anio ? ` · ${esc(String(propio.anio))}` : ''}${propio.potencia ? ` · ${esc(propio.potencia)}` : ''}${propio.capacidad ? ` · ${esc(propio.capacidad)}` : ''}.
+                        Un referente sirve en la medida en que se le parezca en esto.
+                    </p>
+                    <div class="table-responsive">
                     <table class="data-table">
-                        <thead><tr><th style="width:2rem"></th><th>Equipo</th><th>Consumo</th><th>Cargas</th></tr></thead>
+                        <thead><tr><th style="width:2rem"></th><th>Equipo</th><th>Marca y modelo</th><th>Año</th><th>Potencia / capacidad</th><th>Consumo</th><th>Cargas</th></tr></thead>
                         <tbody>
-                            ${listado.map(p => `<tr>
+                            ${listado.map(p => {
+                                const fp = filaDe(p.interno);
+                                const fi = fp ? ficha(fp.equipo) : { marcaModelo: '—', anio: null, potencia: '', capacidad: '' };
+                                const igual = fp && mismoModeloQue(fp.equipo);
+                                const d = fp ? distAnio(fp.equipo) : 9999;
+                                return `<tr>
                                 <td><input type="checkbox" class="chk-ref" data-interno="${esc(p.interno)}"${excl.has(p.interno) ? '' : ' checked'}></td>
-                                <td class="cell-key">${esc(p.interno)}${p.sumado ? ' <small>(sumado a mano)</small>' : ''}</td>
+                                <td class="cell-key">${esc(p.interno)}${p.sumado ? '<br><small>(sumado a mano)</small>' : ''}</td>
+                                <td>${igual ? '<strong>' : ''}${esc(fi.marcaModelo)}${igual ? '</strong> <small>mismo modelo</small>' : ''}</td>
+                                <td class="cell-num">${fi.anio ? esc(String(fi.anio)) : '—'}${d > 0 && d < 9999 ? `<br><small>${d} año${d === 1 ? '' : 's'}</small>` : ''}</td>
+                                <td><small>${esc([fi.potencia, fi.capacidad].filter(Boolean).join(' · ') || '—')}</small></td>
                                 <td class="cell-num">${nf(p.valor, 2)}</td>
                                 <td class="cell-num">${nf(p.cargas)}</td>
-                            </tr>`).join('')}
+                            </tr>`;
+                            }).join('')}
                         </tbody>
                     </table>
+                    </div>
                     <p class="modal-note" id="ref-preview" style="margin-top:.6rem"></p>
                     <label class="correc-field-label" style="margin-top:.8rem">Sumar otro equipo como referente</label>
                     <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
                         <select id="ref-agregar" style="flex:1;min-width:14rem">
                             <option value="">— elegir un equipo —</option>
-                            ${candidatos.map(f => `<option value="${esc(f.equipo.interno)}">${esc(f.equipo.interno)} · ${esc(f.equipo.denominacion || '')} · ${nf(f.metrics.consumo_real, 2)} ${esc(f.metrics.tipo_calculo)}</option>`).join('')}
+                            ${candidatos.map(f => { const fi = ficha(f.equipo); const d = distAnio(f.equipo);
+                                const mismaDen = f.equipo.denominacion === fEq.denominacion;
+                                const sello = mismoModeloQue(f.equipo) ? ' — MISMO MODELO' : (mismaDen ? ` — ${esc(f.equipo.denominacion || '')}` : ` — OTRA CATEGORÍA (${esc(f.equipo.denominacion || 's/d')})`);
+                                return `<option value="${esc(f.equipo.interno)}">${esc(f.equipo.interno)} · ${esc(fi.marcaModelo)}${fi.anio ? ` ${esc(String(fi.anio))}` : ''}${sello}${d < 9999 ? ` (${d} año${d === 1 ? '' : 's'})` : ''} · ${nf(f.metrics.consumo_real, 2)} ${esc(f.metrics.tipo_calculo)}</option>`; }).join('')}
                         </select>
                         <button class="btn-sm" id="btn-ref-agregar"><i class="fa-solid fa-plus"></i> Sumar</button>
                     </div>
@@ -3648,9 +3709,14 @@ function abrirElegirReferentes(interno, analisis) {
         const nuevo = sel.value;
         if (!nuevo) return;
         const f = analisis.filas.find(x => x.equipo.interno === nuevo);
+        const fiN = ficha(f.equipo);
+        const dN = distAnio(f.equipo);
         modal.querySelector('tbody').insertAdjacentHTML('beforeend', `<tr>
             <td><input type="checkbox" class="chk-ref" data-interno="${esc(nuevo)}" checked></td>
-            <td class="cell-key">${esc(nuevo)} <small>(sumado a mano)</small></td>
+            <td class="cell-key">${esc(nuevo)}<br><small>(sumado a mano)</small></td>
+            <td>${mismoModeloQue(f.equipo) ? '<strong>' : ''}${esc(fiN.marcaModelo)}${mismoModeloQue(f.equipo) ? '</strong> <small>mismo modelo</small>' : ''}</td>
+            <td class="cell-num">${fiN.anio ? esc(String(fiN.anio)) : '—'}${dN > 0 && dN < 9999 ? `<br><small>${dN} año${dN === 1 ? '' : 's'}</small>` : ''}</td>
+            <td><small>${esc([fiN.potencia, fiN.capacidad].filter(Boolean).join(' · ') || '—')}</small></td>
             <td class="cell-num">${nf(f.metrics.consumo_real, 2)}</td>
             <td class="cell-num">${nf(f.metrics.cantidad_cargas)}</td></tr>`);
         sel.querySelector(`option[value="${CSS.escape(nuevo)}"]`)?.remove();

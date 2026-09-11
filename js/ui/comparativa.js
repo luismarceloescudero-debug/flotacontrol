@@ -9,7 +9,7 @@
  * ícono de comparar de una tarjeta (con ese equipo ya cargado); el resto se agrega a mano
  * buscando por interno, dominio o denominación.
  */
-import { coberturaEquipo, coberturaMensual, diasHabilesDeMeses } from '../data/diagnostico.js';
+import { coberturaEquipo, coberturaMensual, diasHabilesDeMeses, confiabilidad } from '../data/diagnostico.js';
 
 const nf = (n, d = 0) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -33,16 +33,16 @@ let modo = 'totales';
 const METRICAS = [
     { key: 'litros', label: 'Litros reales', unidad: 'L', dec: 1, get: f => f.metrics.total_litros, mejorEsMenor: null },
     { key: 'costo', label: 'Costo total', unidad: '', dec: 0, money: true, get: f => f.metrics.total_costo, mejorEsMenor: null },
-    { key: 'precio_litro', label: 'Precio por litro', unidad: '$/L', dec: 0, money: true, get: f => f.metrics.total_litros > 0 ? f.metrics.total_costo / f.metrics.total_litros : null, mejorEsMenor: true },
+    { key: 'precio_litro', esTasa: true, label: 'Precio por litro', unidad: '$/L', dec: 0, money: true, get: f => f.metrics.total_litros > 0 ? f.metrics.total_costo / f.metrics.total_litros : null, mejorEsMenor: true },
     { key: 'cargas', label: 'Cantidad de cargas', unidad: '', dec: 0, get: f => f.metrics.cantidad_cargas, mejorEsMenor: null },
     { key: 'gps', label: 'Registros GPS', unidad: '', dec: 0, get: f => f.metrics.cantidad_gps, mejorEsMenor: null },
     { key: 'km', label: 'Kilómetros', unidad: 'km', dec: 0, get: f => f.metrics.total_km > 0 ? f.metrics.total_km : null, mejorEsMenor: null },
     { key: 'horas', label: 'Horas totales (GPS)', unidad: 'hs', dec: 1, get: f => f.metrics.total_horas > 0 ? f.metrics.total_horas : null, mejorEsMenor: null },
     { key: 'ralenti', label: 'Horas en ralentí', unidad: 'hs', dec: 1, get: f => f.metrics.horas_ralenti, mejorEsMenor: true },
-    { key: 'ralenti_pct', label: '% del tiempo en ralentí', unidad: '%', dec: 0, get: f => f.metrics.total_horas > 0 ? (f.metrics.horas_ralenti / f.metrics.total_horas * 100) : null, mejorEsMenor: true },
-    { key: 'consumo', label: 'Consumo real', unidad: '', dec: 2, sufijo: f => f.metrics.tipo_calculo, get: f => f.metrics.consumo_real > 0 ? f.metrics.consumo_real : null, mejorEsMenor: true, unidadDe: f => f.metrics.tipo_calculo },
+    { key: 'ralenti_pct', esTasa: true, label: '% del tiempo en ralentí', unidad: '%', dec: 0, get: f => f.metrics.total_horas > 0 ? (f.metrics.horas_ralenti / f.metrics.total_horas * 100) : null, mejorEsMenor: true },
+    { key: 'consumo', esTasa: true, label: 'Consumo real', unidad: '', dec: 2, sufijo: f => f.metrics.tipo_calculo, get: f => f.metrics.consumo_real > 0 ? f.metrics.consumo_real : null, mejorEsMenor: true, unidadDe: f => f.metrics.tipo_calculo },
     { key: 'meta', label: 'Meta', unidad: '', dec: 2, get: f => f.confirmed && f.confirmed.valor > 0 ? f.confirmed.valor : null, mejorEsMenor: null, unidadDe: f => f.metrics.tipo_calculo },
-    { key: 'desvio', label: 'Desvío vs meta', unidad: '%', dec: 1, signo: true, get: f => f.metrics.desvio_pct, mejorEsMenor: true }
+    { key: 'desvio', esTasa: true, label: 'Desvío vs meta', unidad: '%', dec: 1, signo: true, get: f => f.metrics.desvio_pct, mejorEsMenor: true }
 ];
 
 /**
@@ -59,26 +59,26 @@ const METRICAS = [
  * en los dos modos porque son lo único que siempre fue comparable.
  */
 const METRICAS_NORMALIZADAS = [
-    { key: 'litros_dia', label: 'Litros por día trabajado', unidad: 'L', dec: 2, mejorEsMenor: null,
+    { key: 'litros_dia', esTasa: true, label: 'Litros por día trabajado', unidad: 'L', dec: 2, mejorEsMenor: null,
       get: (f, c) => c.dias > 0 ? f.metrics.total_litros / c.dias : null },
-    { key: 'litros_carga', label: 'Litros por carga', unidad: 'L', dec: 1, mejorEsMenor: null,
+    { key: 'litros_carga', esTasa: true, label: 'Litros por carga', unidad: 'L', dec: 1, mejorEsMenor: null,
       get: f => f.metrics.cantidad_cargas > 0 ? f.metrics.total_litros / f.metrics.cantidad_cargas : null },
-    { key: 'costo_dia', label: 'Costo por día trabajado', unidad: '', dec: 0, money: true, mejorEsMenor: true,
+    { key: 'costo_dia', esTasa: true, label: 'Costo por día trabajado', unidad: '', dec: 0, money: true, mejorEsMenor: true,
       get: (f, c) => c.dias > 0 ? f.metrics.total_costo / c.dias : null },
-    { key: 'km_dia', label: 'Km por día trabajado', unidad: 'km', dec: 1, mejorEsMenor: null,
+    { key: 'km_dia', esTasa: true, label: 'Km por día trabajado', unidad: 'km', dec: 1, mejorEsMenor: null,
       get: (f, c) => c.dias > 0 && f.metrics.total_km > 0 ? f.metrics.total_km / c.dias : null },
-    { key: 'hs_dia', label: 'Horas por día trabajado', unidad: 'hs', dec: 2, mejorEsMenor: null,
+    { key: 'hs_dia', esTasa: true, label: 'Horas por día trabajado', unidad: 'hs', dec: 2, mejorEsMenor: null,
       get: (f, c) => c.dias > 0 && f.metrics.total_horas > 0 ? f.metrics.total_horas / c.dias : null },
-    { key: 'cargas_mes', label: 'Cargas por mes con datos', unidad: '', dec: 1, mejorEsMenor: null,
+    { key: 'cargas_mes', esTasa: true, label: 'Cargas por mes con datos', unidad: '', dec: 1, mejorEsMenor: null,
       get: (f, c) => c.mesesConDatos > 0 ? f.metrics.cantidad_cargas / c.mesesConDatos : null },
-    { key: 'ralenti_pct', label: '% del tiempo en ralentí', unidad: '%', dec: 0, mejorEsMenor: true,
+    { key: 'ralenti_pct', esTasa: true, label: '% del tiempo en ralentí', unidad: '%', dec: 0, mejorEsMenor: true,
       get: f => f.metrics.total_horas > 0 ? (f.metrics.horas_ralenti / f.metrics.total_horas * 100) : null },
-    { key: 'consumo', label: 'Consumo real', unidad: '', dec: 2, mejorEsMenor: true,
+    { key: 'consumo', esTasa: true, label: 'Consumo real', unidad: '', dec: 2, mejorEsMenor: true,
       sufijo: f => f.metrics.tipo_calculo, unidadDe: f => f.metrics.tipo_calculo,
       get: f => f.metrics.consumo_real > 0 ? f.metrics.consumo_real : null },
     { key: 'meta', label: 'Meta', unidad: '', dec: 2, mejorEsMenor: null, unidadDe: f => f.metrics.tipo_calculo,
       get: f => f.confirmed && f.confirmed.valor > 0 ? f.confirmed.valor : null },
-    { key: 'desvio', label: 'Desvío vs meta', unidad: '%', dec: 1, signo: true, mejorEsMenor: true,
+    { key: 'desvio', esTasa: true, label: 'Desvío vs meta', unidad: '%', dec: 1, signo: true, mejorEsMenor: true,
       get: f => f.metrics.desvio_pct }
 ];
 
@@ -108,12 +108,18 @@ function contextoDe(fila) {
         const baseCompleta = cob.diasPonderados ?? cob.diasHabiles ?? 0;
         if (baseCompleta > 0) dias = Math.max(0.5, dias * (1 - fueraServicio / baseCompleta));
     }
+    // ¿Se puede confiar en una TASA de este equipo? Un total es un hecho aunque haya una sola
+    // carga; una tasa es una conclusión, y con 1 carga en 1 mes no hay con qué sostenerla.
+    // `confiabilidad()` es la definición que ya usa el resto de la app — no se escribe otra.
+    const conf = confiabilidad(fila, periodoRef);
     return {
         dias: dias || 0,
         diasFueraServicio: fueraServicio,
         mesesConDatos: cobMes?.conDatos || 0,
         mesesPeriodo: cobMes?.mesesPeriodo || 0,
-        listaMeses: meses
+        listaMeses: meses,
+        confiable: conf.confiable,
+        avisos: conf.avisos || []
     };
 }
 
@@ -290,7 +296,14 @@ function filaMetrica(m, filas, ctxs = []) {
     // Consumo real y meta se miden en L/Hora o L/100Km según el equipo: si en la selección hay
     // equipos de ambos tipos, ese número no es comparable entre sí y no se resalta mejor/peor.
     const unidadesMezcladas = m.unidadDe && new Set(filas.map((f, i) => valores[i] !== null ? m.unidadDe(f) : null).filter(Boolean)).size > 1;
-    const numericos = valores.filter(v => v !== null && v !== undefined && !isNaN(v));
+
+    // Una TASA sobre base floja no compite por "mejor/peor". Sin esto, CM30 —1 carga en 1 mes—
+    // se pintaba de verde como el más eficiente en costo/día contra TR32 (169 cargas), cuando lo
+    // único que pasó es que casi no trabajó. Es el caso de la invariante 3: un número bajo
+    // necesita su contexto antes de ser una conclusión. Los TOTALES sí compiten: 71,6 L es un
+    // hecho aunque venga de una sola carga; "3,11 L/día" es una conclusión.
+    const debil = (i) => m.esTasa && ctxs[i] && ctxs[i].confiable === false;
+    const numericos = valores.filter((v, i) => v !== null && v !== undefined && !isNaN(v) && !debil(i));
     let mejor = null, peor = null;
     if (m.mejorEsMenor !== null && numericos.length >= 2 && !unidadesMezcladas) {
         mejor = m.mejorEsMenor ? Math.min(...numericos) : Math.max(...numericos);
@@ -302,14 +315,18 @@ function filaMetrica(m, filas, ctxs = []) {
             const v = valores[i];
             if (v === null || v === undefined || isNaN(v)) return '<td class="cell-muted">—</td>';
             let cls = '';
-            if (mejor !== null && peor !== null && mejor !== peor) {
+            if (!debil(i) && mejor !== null && peor !== null && mejor !== peor) {
                 if (v === mejor) cls = 'cmp-best';
                 else if (v === peor) cls = 'cmp-worst';
             }
+            // Etiqueta honesta sobre el número flojo: se muestra igual, pero dice de qué base sale.
+            const marca = debil(i)
+                ? ` <span class="cmp-debil" title="${esc((ctxs[i].avisos || []).join(' · '))}">⚠ base floja</span>`
+                : '';
             const num = m.signo && v >= 0 ? `+${nf(v, m.dec)}` : nf(v, m.dec);
             const txt = m.money ? `$${num}` : `${num}${m.unidad ? (m.unidad === '%' ? '%' : ` ${m.unidad}`) : ''}`;
             const suf = m.sufijo ? ` ${esc(m.sufijo(f))}` : '';
-            return `<td class="${cls}">${txt}${suf}</td>`;
+            return `<td class="${cls}${debil(i) ? ' cmp-poco-fiable' : ''}">${txt}${suf}${marca}</td>`;
         }).join('')}
     </tr>`;
 }

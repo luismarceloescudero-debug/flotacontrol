@@ -636,7 +636,25 @@ export function actividadImplicita(fila) {
  * vehículos con patente pero sin interno asignado, y servicios de planta
  * (calderas, caloventores, limpieza, jardinería, herramientas a combustión).
  */
+/**
+ * ¿Este código huérfano aporta algún dato real, o es solo un nombre que vino de Loop?
+ *
+ * La planilla de Cargas es la autoridad: si un código no tiene litros ahí, no es un consumo de
+ * la flota. Pero "sin litros" no alcanza como criterio, porque hay códigos sin litros que SÍ
+ * mueven los KPI: la unidad "PORTATIL" del GPS aportaba 6.903 km y 3.180 hs con cero litros, y
+ * excluirla rompía la invariante 1b (todo KPI de flota = Σ tarjetas + sin_asignar).
+ *
+ * El corte correcto es "no aporta NADA": ni litros, ni km, ni horas. Eso deja afuera a MAQUILA,
+ * GENCO, MONTEVERDI, CARTELLONE y demás — que son nombres de cliente, planta u obra que Loop
+ * trae en sus filas y que nunca fueron equipos. Como aportan 0 a todo, descartarlos no cambia
+ * ningún total; solo dejan de pedirle al usuario que decida sobre algo que no existe.
+ */
+export function huerfanoAporta(h) {
+    return (h.litros || 0) > 0 || (h.km || 0) > 0 || (h.horas || 0) > 0;
+}
+
 export function clasificarNoFlota(huerfanos = [], rawRecords = [], codigosAceptados = new Set()) {
+    huerfanos = huerfanos.filter(huerfanoAporta);
     const cargasPorClave = new Map();
     rawRecords.filter(r => r.type === 'carga').forEach(r => {
         const k = r.interno_key || r.dominio_key;
@@ -710,6 +728,7 @@ export function clasificarNoFlota(huerfanos = [], rawRecords = [], codigosAcepta
  * viéndose igual que antes, agrupado dentro de "Otros consumos sin identificar".
  */
 export function detectarPrefijosNuevos(huerfanos = [], rawRecords = [], prefijosOficiales = []) {
+    huerfanos = huerfanos.filter(huerfanoAporta);
     const prefijosConocidos = new Set([...Object.keys(TIPO_POR_PREFIJO), ...prefijosOficiales.map(p => p.prefijo)]);
 
     const cargasPorClave = new Map();
@@ -1552,7 +1571,14 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // "Códigos válidos así"; una meta alineada se pisa desde "Ajustar metas" o reimportando
     // Consumos Estimados con el valor real de fábrica.
     // alta_interno se omite del hallazgo: agregar un equipo nuevo es la normalidad, no algo a revisar.
-    const accionesRecientes = (extra.accionesRecientes || []).filter(a => !a.revisado && a.tipo !== 'alta_interno');
+    // Además de alta_interno, se omiten las aceptaciones de códigos que no aportan ningún dato
+    // (ver huerfanoAporta): quedaron guardadas de sesiones anteriores, pero pedirle al usuario
+    // que revise una decisión sobre MAQUILA —que nunca tuvo litros, km ni horas— es ruido.
+    const codigosQueAportan = new Set((totales.huerfanos || []).filter(huerfanoAporta)
+        .map(h => normalizeEquipoKey(h.interno)));
+    const accionesRecientes = (extra.accionesRecientes || []).filter(a =>
+        !a.revisado && a.tipo !== 'alta_interno' &&
+        !(a.tipo === 'aceptado_no_flota' && !codigosQueAportan.has(normalizeEquipoKey(a.codigo))));
     if (accionesRecientes.length) {
         const porTipo = { alta_interno: [], aceptado_no_flota: [], meta_alineada: [] };
         accionesRecientes.forEach(a => { (porTipo[a.tipo] || (porTipo[a.tipo] = [])).push(a); });
@@ -1813,6 +1839,16 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
         });
     }
 
+    // El % de ralentí es una razón, y una razón sobre pocas horas no se puede leer al lado de una
+    // sobre cientos: CM43 mostraba "54% de sus 14 hs" junto a CM42 con "46% de sus 1.102 hs",
+    // como si fueran el mismo tipo de dato. Con 14 horas medidas, 8 de ralentí pueden ser un
+    // viaje puntual o un error del GPS — no un patrón. Se marca, no se oculta: el equipo sigue
+    // en la lista, pero el número dice de qué base sale. Misma idea que en la comparativa.
+    const baseRalentiFloja = (fila) => fila.metrics.total_horas < 20 || fila.metrics.cantidad_gps <= 1;
+    const notaBaseRalenti = (fila) => baseRalentiFloja(fila)
+        ? ` · ⚠ base floja: ${fmt(fila.metrics.total_horas, 1)} hs medidas en ${fila.metrics.cantidad_gps} registro${fila.metrics.cantidad_gps === 1 ? '' : 's'} de GPS — el % no es comparable`
+        : '';
+
     // ---------- 6. Ralentí, separando lo que es desperdicio de lo que es el trabajo ----------
     const conRalenti = activos.filter(f => f.metrics.total_horas > 0 && f.metrics.horas_ralenti > 0)
         .map(f => ({ fila: f, pct: f.metrics.horas_ralenti / f.metrics.total_horas * 100, cat: categoriaRalenti(f.equipo.interno) }));
@@ -1868,7 +1904,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             equipos: desperdicio.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.horas_ralenti)} hs en ralentí`,
-                sub: `${fmt(x.pct)}% de sus ${fmt(x.fila.metrics.total_horas)} hs · trabajo de desplazamiento${subSeguimiento(x.fila.equipo.interno)}`,
+                sub: `${fmt(x.pct)}% de sus ${fmt(x.fila.metrics.total_horas)} hs · trabajo de desplazamiento${subSeguimiento(x.fila.equipo.interno)}${notaBaseRalenti(x.fila)}`,
                 valor_ralenti: x.fila.metrics.horas_ralenti
             }))
         });
@@ -1889,7 +1925,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             equipos: camionetas.slice(0, 10).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.fila.metrics.horas_ralenti)} hs en ralentí`,
-                sub: `${fmt(x.pct)}% de sus ${fmt(x.fila.metrics.total_horas)} hs · camioneta${subSeguimiento(x.fila.equipo.interno)}`,
+                sub: `${fmt(x.pct)}% de sus ${fmt(x.fila.metrics.total_horas)} hs · camioneta${subSeguimiento(x.fila.equipo.interno)}${notaBaseRalenti(x.fila)}`,
                 valor_ralenti: x.fila.metrics.horas_ralenti
             }))
         });
@@ -1989,7 +2025,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
     // equipo que sí existe.
     const internosDelMaestro = filas.map(f => f.equipo.interno).filter(Boolean);
     const codigosYaAceptados = new Set(noFlotaAceptados.map(a => a.codigo));
-    const posiblesTypos = (totales.huerfanos || [])
+    const posiblesTypos = (totales.huerfanos || []).filter(huerfanoAporta)
         .filter(h => !codigosYaAceptados.has(h.interno))
         .map(h => ({ huerfano: h, sugerido: sugerirPosibleTypo(h.interno, internosDelMaestro) }))
         .filter(x => x.sugerido);

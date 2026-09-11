@@ -20,7 +20,7 @@
  * Uso:  node tools/auditar-declarados.mjs [--verboso]
  * Sale con código 1 si hay alguna incoherencia.
  */
-import { consumoDesdeActividadDeclarada, generarDiagnostico, parIdentico, sugerirMeta, investigarMeta, metaDesdeConsumoReal, diasHabilesDeMeses } from '../js/data/diagnostico.js';
+import { consumoDesdeActividadDeclarada, generarDiagnostico, parIdentico, sugerirMeta, investigarMeta, metaDesdeConsumoReal, diasHabilesDeMeses, confiabilidad } from '../js/data/diagnostico.js';
 import { diasHabiles } from '../js/data/feriados.js';
 
 const VERBOSO = process.argv.includes('--verboso');
@@ -408,6 +408,43 @@ const PERIODO_6M = { desde: '2026-01-01', hasta: '2026-06-30' };
         ritmoCorrecto > ritmoMal * 4, `correcto ${ritmoCorrecto.toFixed(2)} vs mal ${ritmoMal.toFixed(2)}`);
     check('normalizado', 'sin meses con datos no hay denominador (0), no se inventa uno',
         diasHabilesDeMeses([]).ponderado === 0, `${diasHabilesDeMeses([]).ponderado}`);
+}
+
+// ============================================================ L. BASE FLOJA NO GANA (invariante 3)
+{
+    // El segundo error del caso CM30 vs TR32, más grave que el del denominador: CM30 tenía UNA
+    // carga y salía pintado como "el mejor" en costo por día, porque $905/día es menos que
+    // $487.430/día. La app estaba diciendo que el equipo parado es el eficiente — exactamente
+    // la invariante 3: un número bajo necesita su contexto antes de ser una conclusión.
+    // `confiabilidad()` es quien decide si una tasa se sostiene; acá se verifica esa decisión.
+    const flojo = filaSinGps({ interno: 'CM30', litros: 71.6, cargas: 1 });
+    const solido = filaSinGps({ interno: 'TR32', litros: 37470, cargas: 169 });
+    solido.metrics.total_km = 81453; solido.metrics.consumo_real = 46; solido.metrics.cantidad_gps = 8;
+
+    const cFlojo = confiabilidad(flojo, PERIODO_6M);
+    const cSolido = confiabilidad(solido, PERIODO_6M);
+    check('base_floja', 'un equipo con 1 carga NO es base confiable para una tasa',
+        cFlojo.confiable === false, `${JSON.stringify(cFlojo.avisos)}`);
+    check('base_floja', 'y dice por qué (para poder etiquetarlo, no solo ocultarlo)',
+        (cFlojo.avisos || []).some(a => /carga/.test(a)), `${JSON.stringify(cFlojo.avisos)}`);
+    check('base_floja', 'un equipo con 169 cargas y GPS sí es base confiable',
+        cSolido.confiable === true, `${JSON.stringify(cSolido.avisos)}`);
+
+    // La regla que aplica la comparativa: una TASA de base floja se excluye del mejor/peor.
+    // Sin esto, min() la elegía como "mejor" por ser el número más chico.
+    const esTasa = true;
+    const valores = [905, 487430];              // costo por día de cada uno
+    const debiles = [!cFlojo.confiable, !cSolido.confiable];
+    const elegibles = valores.filter((v, i) => !(esTasa && debiles[i]));
+    check('base_floja', 'la tasa de base floja queda fuera de los candidatos a mejor/peor',
+        elegibles.length === 1 && elegibles[0] === 487430, `${JSON.stringify(elegibles)}`);
+    check('base_floja', 'con un solo candidato no se resalta nada (hacen falta 2)',
+        elegibles.length < 2, `${elegibles.length}`);
+
+    // Un TOTAL sí compite aunque la base sea floja: 71,6 L es un hecho, no una conclusión.
+    const totalElegibles = valores.filter(() => true);
+    check('base_floja', 'los totales NO se filtran por base floja (son hechos, no conclusiones)',
+        totalElegibles.length === 2, `${totalElegibles.length}`);
 }
 
 // ============================================================ REPORTE

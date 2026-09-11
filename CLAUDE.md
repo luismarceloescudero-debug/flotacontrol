@@ -601,15 +601,32 @@ decirlo es lo que la regla 1 prohíbe:
 - **"Días trabajados (denominador)"** como fila propia en modo ritmo, con los meses en el tooltip
   — sin eso "12,4 L/día" sería un número sin pasos, que la regla 2 no deja publicar.
 
-**El denominador son los meses del PROPIO equipo, no los del período.** Esto costó un bug real,
-encontrado en el navegador y no por los arneses: comparando `CM30` (datos en 1 de 8 meses) contra
-`TR32` (8 de 8), los dos mostraban "179 días trabajados", porque el denominador salía de
-`coberturaEquipo()` sobre el período completo. Los 71,6 L de CM30 son de **un** mes; dividirlos
-por los días hábiles de ocho daba 0,40 L/día cuando el ritmo real es 3,11 — **7,8× de error**,
-numerador y denominador de períodos distintos. Se corrigió con `diasHabilesDeMeses()` (la misma
-función que usa `actividadImplicita()`, ahora exportada — no una segunda definición) sobre
-`coberturaMensual().listaMeses`. Hay chequeos dedicados en `auditar-declarados.mjs` (grupo
-`normalizado`) que fallan si alguien vuelve al denominador del período.
+El caso `CM30` vs `TR32` (1 carga contra 169) destapó **dos** errores distintos, los dos
+encontrados en el navegador y ninguno por los arneses. Vale tenerlos escritos porque son dos
+familias de error, no una:
+
+**1. El denominador eran los meses del período, no los del equipo.** Los dos mostraban "179 días
+trabajados" porque salía de `coberturaEquipo()` sobre el período completo. Los 71,6 L de CM30 son
+de **un** mes; dividirlos por los días hábiles de ocho daba 0,40 L/día cuando el ritmo real es
+3,11 — **7,8× de error**, numerador y denominador de períodos distintos (regla 1). Se corrigió con
+`diasHabilesDeMeses()` sobre `coberturaMensual().listaMeses` — la misma función que usa
+`actividadImplicita()`, ahora exportada, no una segunda definición.
+
+**2. Peor: una tasa de base floja ganaba el resaltado.** Con el denominador ya corregido, CM30
+seguía pintándose **verde como "el mejor"** en costo por día ($7.039 contra $487.430) — porque
+`mejorEsMenor: true` toma el mínimo y no pregunta de dónde sale. La app le estaba diciendo al
+usuario que el equipo que hizo **una sola carga en todo el período** es el más eficiente. Es
+exactamente la invariante 3: un número bajo necesita su contexto antes de ser una conclusión.
+
+La regla que quedó: **un TOTAL es un hecho, una TASA es una conclusión.** Las métricas que son
+razones llevan `esTasa: true`; si `confiabilidad()` dice que la base no se sostiene, esa celda
+queda fuera del cálculo de mejor/peor y se muestra atenuada con "⚠ base floja" y el motivo en el
+tooltip ("solo 1 carga · cargó 1 de 179 días hábiles del período (1%)"). Los totales no se marcan
+nunca: 71,6 L es cierto aunque venga de una sola carga.
+
+Chequeos dedicados en `auditar-declarados.mjs`: grupo `normalizado` (falla si alguien vuelve al
+denominador del período) y grupo `base_floja` (falla si una tasa de base débil vuelve a competir
+por el resaltado).
 
 **F · Botón "Actualizar meta al consumo actual" por equipo.** ✅ **HECHO (09/09/2026).**
 `abrirActualizarMeta()` en panel.js, botón en la tarjeta en edición y en el overlay, visible solo
@@ -625,6 +642,58 @@ consumo actual **deja el desvío en cero y puede tapar un sobreconsumo real**. Q
 De paso se eliminó `metaDesdeConsumoRealLocal()` de panel.js, que era una copia recortada de
 `metaDesdeConsumoReal()` — dos definiciones del mismo concepto, justo lo que la invariante 2
 prohíbe.
+
+### Ronda del 11/09/2026 — lo que reportó el usuario contra las capturas
+
+**MAQUILA y compañía: si no tiene litros, km ni horas, se descarta.** ✅ El aviso de correcciones
+automáticas listaba 8 códigos aceptados; 7 de ellos (MAQUILA, GENCO, MONTEVERDI, CARTELLONE,
+EXTERNO, y dos patentes) son **nombres de cliente, planta u obra que trae Loop** y nunca fueron
+equipos: 0 cargas, 0 L, 0 km, 0 hs. La planilla de Cargas es la autoridad — lo que no está ahí no
+es consumo de la flota.
+
+El corte NO puede ser "sin litros" a secas: la unidad `PORTATIL` del GPS aporta 6.903 km y 3.180
+hs con cero litros, y excluirla rompe la invariante 1b. El criterio correcto es **no aportar
+nada**: `huerfanoAporta()` en diagnostico.js (litros, km u horas > 0), aplicado en
+`clasificarNoFlota`, `detectarPrefijosNuevos`, el hallazgo de typos y el de acciones automáticas.
+Como aportan 0 a todo, descartarlos no mueve ningún total. Medido: el aviso pasó de 8 códigos a 1.
+
+**"37 sin asignar" en Base de Datos: el conteo estaba bien, el rótulo no.** ✅ Se midió antes de
+tocar nada: de las 53 cargas que no resuelven contra el maestro, **49 traen patente válida**
+(5.283,7 L) y solo **4** son códigos inidentificables (GR01, SURTIDOR, MANTENIMIENTO — 191,4 L).
+
+Las 49 son el caso que la regla permanente declara correcto: *"DOMINIO SIN INTERNO no es un
+error. Nunca se marca como advertencia"*. Estaban contadas bajo un badge naranja con ícono de
+peligro. Ahora se separan: **"Sin identificar (4)"** en advertencia, y las 49 se informan en gris
+como "con patente, sin interno" — siguen siendo asignables desde cada fila, pero dejaron de
+pedir una corrección que no corresponde.
+
+De paso, `esHuerfanaDe()` en datatable.js pasó a usar `indexarMaestro` + `resolverEquipo` (la
+misma resolución que `analizarFlota`, que prueba interno **y** dominio) en vez de mirar solo
+`interno_key`. Sobre los archivos actuales no cambió el conteo —0 cargas rescatadas— pero elimina
+la posibilidad de que la tabla y el análisis discrepen sobre qué está asignado (invariante 2).
+
+**Ralentí en camionetas: el % sobre pocas horas no es comparable.** ✅ CM43 mostraba "54% de sus
+14 hs" al lado de CM42 con "46% de sus 1.102 hs", como si fueran el mismo tipo de dato. Con 14
+horas medidas en 1 registro de GPS, 8 de ralentí pueden ser un viaje puntual o un error del
+equipo — no un patrón. Se marca, no se oculta: `notaBaseRalenti()` agrega "⚠ base floja: 13,9 hs
+medidas en 1 registro de GPS — el % no es comparable". Misma idea que la de la comparativa.
+
+**Elegir referentes: sin la ficha no se puede decidir.** ✅ El modal mostraba interno, consumo y
+cargas — con eso no hay forma de saber si un par es comparable, que es exactamente lo que pide
+decidir. Ahora muestra **marca, modelo, año, potencia y capacidad**, con la ficha del propio
+equipo arriba para contrastar.
+
+Dos correcciones que salieron de mirarlo funcionando: `CAPACIDAD` a veces repite literalmente el
+modelo en el maestro (CM30 trae "AMAROK DC 2.0L TDI..." en los dos campos) y se omite cuando
+coincide; y el orden de candidatos pasó a ser **mismo modelo → misma denominación → misma marca →
+año más cercano**, porque ordenar por año a secas ponía a `TR20` (MERCEDES 1735, un camión) como
+primer candidato para `CM30` (una VW Amarok) solo porque coincidía el año. Los de otra categoría
+se rotulan "OTRA CATEGORÍA (TRACTOR C/CABINA)" en el selector.
+
+**"No se marcan todos como atendidos": no reproducido.** La ruta en bloque funciona — verificado
+sobre `datos_parciales` con 14 equipos: tildar todos + "Marcar como revisado" deja el badge en
+"todo atendido" y 0 pendientes. Si vuelve a pasar, hace falta saber desde qué botón, porque hay
+varias rutas que marcan (tarjeta, modal por equipo, acción en bloque) y solo una está confirmada.
 
 ### Deuda técnica conocida (medida, no supuesta)
 

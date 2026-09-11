@@ -1,10 +1,10 @@
 {
-  "generado": "2026-09-08T15:40:01.930Z",
+  "generado": "2026-09-11T13:29:21.819Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
       "tipo": "CARGAS",
-      "filas": 4511,
+      "filas": 4625,
       "etiqueta": "Cargas de Combustible"
     },
     {
@@ -100,8 +100,8 @@
   ],
   "equipos_maestro": 189,
   "cargas": {
-    "filas": 4511,
-    "litros_totales": 690989.1,
+    "filas": 4625,
+    "litros_totales": 711065.3,
     "sin_fecha": 0,
     "sin_litros": 0
   },
@@ -158,7 +158,7 @@
   },
   "duplicados_exactos_detectados": 3,
   "equipos_analizados": 189,
-  "hallazgos_generados": 22,
+  "hallazgos_generados": 20,
   "hallazgos_por_id": {
     "sobreconsumo": 1,
     "ralenti": 1,
@@ -170,7 +170,6 @@
     "huerfanos_gps": 1,
     "datos_parciales": 1,
     "calidad_planilla": 1,
-    "entregas_conflicto_remito": 1,
     "nofl_vehiculo_sin_interno": 1,
     "prefijos_nuevos": 1,
     "acciones_automaticas": 1,
@@ -178,7 +177,6 @@
     "sin_gps_estimado": 1,
     "nofl_otros": 1,
     "anomalas": 1,
-    "bajo_uso": 1,
     "meses_sin_gps": 1,
     "ahorro": 1,
     "normalizaciones": 1
