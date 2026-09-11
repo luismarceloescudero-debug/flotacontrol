@@ -711,10 +711,56 @@ que motivó la excepción. De paso se extrajeron `sectorDe()` (de `jornadaEspera
 `mesesEntre()` (de `mesesDeRegistro()`), para no escribir una segunda definición de ninguno de
 los dos (invariante 2).
 
+**El tramo es febrero a junio**, los cinco meses en que la ripiera estuvo con el proyecto en
+marcha, sin producción propia y con menos personal.
+
+**Las siete bateas quedan afuera de la excepción** (TR14, TR18, TR20, TR21, TR23, TR32, TR35),
+aunque comparten el centro de costo ÁRIDOS: la jornada de 12-13 hs es la del personal que se quedó
+EN la ripiera, y las bateas salieron a traer áridos de terceros justamente porque no había
+producción propia. Se midió antes de decidirlo — horas de motor por día hábil:
+
+| Mes | Bateas | Ripiera |
+|---|---|---|
+| Enero | 9,61 | 4,56 |
+| Febrero | 9,07 | 5,13 |
+| Marzo | 8,75 | 3,81 |
+| Junio | 9,93 | 5,12 |
+
+Las bateas se mantienen entre 8,5 y 9,9 todo el año, cerca de la referencia habitual y nunca cerca
+de 12: subirles el umbral las marcaría como subutilizadas justo en los meses en que más
+trabajaron. **Los equipos de la ripiera corren 4-5 horas de motor: la jornada de 12-13 es de la
+gente, no del motor de la máquina.** Febrero (5,13) es el mes más alto del año junto con junio
+(5,12), un +12,5% sobre enero que coincide con el +13,6% que implica pasar de 10-12 a 12-13.
+`excepto_internos` cruza por `normalizeEquipoKey()`, no por igualdad de string.
+
 **Los sábados NO entran en la excepción, y eso se midió antes de decidirlo.** Cargas de ÁRIDOS en
 sábado: 13 en febrero (7% del mes) contra 21 en enero (11%), 9 en abril (6%) y 8 en junio (4%).
 Febrero no es el mes con menos sábados del año, así que el cierre de producción no aparece como
 una parada de sábados en las cargas. La excepción es de la jornada Lun-Vie únicamente.
+
+**Las bateas, sobre el período común de cada una (Cargas ∩ GPS, ene-ago 2026).** Ninguna tiene
+meses de cargas fuera del período común, así que el corte es limpio:
+
+| Equipo | Meses | Litros | Km | L/100km | Meta | Desvío |
+|---|---|---|---|---|---|---|
+| TR14 | 4 | 8.158,0 | 12.074 | 67,57 | 38 | +78% |
+| TR18 | 8 | 31.615,1 | 73.541 | 42,99 | 40 | +7% |
+| TR20 | 8 | 28.193,6 | 83.583 | 33,73 | 40 | −16% |
+| TR21 | 7 | 27.674,1 | 70.210 | 39,42 | 42 | −6% |
+| TR23 | 8 | 39.293,4 | 85.738 | 45,83 | 45 | +2% |
+| TR32 | 8 | 37.831,0 | 81.454 | 46,44 | 45 | +3% |
+| TR35 | 8 | 23.456,9 | 70.556 | 33,25 | 45 | −26% |
+
+Total alineado: 196.222,2 L sobre 477.155 km = 41,12 L/100km. **TR14 es el caso a mirar**: solo
+cuatro meses (ene-abr, después deja de aparecer) y 78% sobre su meta.
+
+**`Viajes de Aridos 2026.xlsx` (planilla manual de km por chofer y día) todavía NO se importa, y
+hay una razón medida.** Trae km por chofer × día con códigos de ausencia (F, V de vacaciones, L de
+licencia, T), que es la fuente natural para los días realmente trabajados del ítem 2. Pero contra
+el GPS de las siete bateas no cierra: enero da 109.931 km en la planilla contra 50.678 del GPS
+—más del doble, imposible si la planilla es un subconjunto— mientras que de febrero a julio la
+relación se estabiliza entre 71% y 79%, que sí parece una relación real de km cargado sobre km
+total. Hasta entender qué mide la planilla en enero, no se usa como denominador.
 
 La referencia ponderada casi nunca es entera (un febrero a 12 dentro de ocho meses a 10 da 10,22),
 así que `utilizacion()` devuelve `esperadoTexto` ya formateado — **en un solo lugar, no en los
