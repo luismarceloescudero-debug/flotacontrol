@@ -508,6 +508,9 @@
 }
 .card-util i { font-size: 0.72rem; opacity: 0.85; }
 .card-util strong { color: var(--text-primary); font-weight: 700; }
+/* Marca de que la jornada esperada de este tramo no fue la habitual (JORNADA_EXCEPCIONES).
+   El motivo va en el title: sin él, un umbral distinto se lee como un error de la app. */
+.card-util .util-excep { cursor: help; font-weight: 700; opacity: 0.9; }
 .card-util.util-ok { border-color: rgba(52, 199, 89, 0.3); }
 .card-util.util-ok i { color: var(--accent-green, #34c759); }
 .card-util.util-baja { border-color: rgba(255, 179, 0, 0.35); }

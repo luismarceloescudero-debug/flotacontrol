@@ -4681,8 +4681,8 @@ function utilizacionHTML(f, periodoFlota) {
     const txt = u.estado === 'normal' ? 'en la jornada esperada'
         : u.estado === 'alta' ? 'por encima de la jornada esperada'
         : 'por debajo de la jornada esperada';
-    return `<div class="card-util ${cls}" title="${nf(u.horas, 0)} hs de GPS en ${u.diasHabiles} días hábiles (${u.desde} → ${u.hasta}). Referencia: ${u.esperadoMin}-${u.esperadoMax} hs por día hábil (${esc(u.nota)}, ${esc(u.base)}). Un consumo bajo con utilización baja no es eficiencia: es un equipo que trabajó menos.">
-        <i class="fa-solid ${icono}"></i> <strong>${nf(u.hsPorDia, 1)}</strong> hs/día hábil · esperado ${u.esperadoMin}-${u.esperadoMax} — ${txt}
+    return `<div class="card-util ${cls}" title="${nf(u.horas, 0)} hs de GPS en ${u.diasHabiles} días hábiles (${u.desde} → ${u.hasta}). Referencia: ${u.esperadoTexto} hs por día hábil (${esc(u.nota)}, ${esc(u.base)})${u.jornadaNota ? ' — ' + esc(u.jornadaNota) : ''}. Un consumo bajo con utilización baja no es eficiencia: es un equipo que trabajó menos.">
+        <i class="fa-solid ${icono}"></i> <strong>${nf(u.hsPorDia, 1)}</strong> hs/día hábil · esperado ${u.esperadoTexto} — ${txt}${u.jornadaNota ? ' <span class="util-excep" title="' + esc(u.jornadaNota) + '">*</span>' : ''}
     </div>`;
 }
 

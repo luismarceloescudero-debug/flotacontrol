@@ -13,6 +13,7 @@
  */
 
 import { normalizeEquipoKey, getPrefijo, getDenominacion, partesFecha, getProvincia, getNombreCentroCosto, tipoLugarCarga, getBandera } from './normalizer.js';
+import { diasHabiles } from './feriados.js';
 
 export const RULE_L_100KM = ['TR', 'CM', 'CH', 'FG', 'AU'];
 // CA (CALDERA) y LM (LIMPIEZA) se suman acá a propósito: consumen por tiempo de uso, no por
@@ -236,13 +237,11 @@ function mesDe(r) {
  * todo su rango: los archivos mensuales cubren un mes, pero un "Resumen de Flota Ene-Jul"
  * cubre siete y no se puede tratar como si fuera de enero.
  */
-export function mesesDeRegistro(r) {
-    const ini = mesDe(r);
-    if (!ini) return [];
-    const finRaw = String(r.fecha_hasta || r.fecha || '').slice(0, 7);
-    const fin = /^\d{4}-\d{2}$/.test(finRaw) && finRaw > ini ? finRaw : ini;
+export function mesesEntre(iniYM, finYM) {
+    if (!/^\d{4}-\d{2}$/.test(String(iniYM || ''))) return [];
+    const fin = /^\d{4}-\d{2}$/.test(String(finYM || '')) && finYM > iniYM ? finYM : iniYM;
     const out = [];
-    let [y, m] = ini.split('-').map(Number);
+    let [y, m] = String(iniYM).split('-').map(Number);
     for (let i = 0; i < 120; i++) {
         const ym = `${y}-${String(m).padStart(2, '0')}`;
         out.push(ym);
@@ -250,6 +249,12 @@ export function mesesDeRegistro(r) {
         m++; if (m > 12) { m = 1; y++; }
     }
     return out;
+}
+
+export function mesesDeRegistro(r) {
+    const ini = mesDe(r);
+    if (!ini) return [];
+    return mesesEntre(ini, String(r.fecha_hasta || r.fecha || '').slice(0, 7));
 }
 
 /**
@@ -341,11 +346,15 @@ export const JORNADA_REFERENCIA = {
  */
 const SIN_JORNADA = ['GRUPO ELECTRÓGENO', 'GRUPO ELECTROGENO', 'CALOVENTOR', 'PRODUCTORA DE HIELO', 'MOTOCOMPRESOR', 'BOMBA'];
 
+export function sectorDe(equipo, ubicacion = null) {
+    return String((ubicacion && (ubicacion.centroCosto || ubicacion.lugarCarga)) || equipo?.centro_costo || '')
+        .toUpperCase().replace(/[ÁÀÄÂ]/g, 'A').replace(/[ÉÈËÊ]/g, 'E').replace(/[ÍÌÏÎ]/g, 'I').replace(/[ÓÒÖÔ]/g, 'O').replace(/[ÚÙÜÛ]/g, 'U');
+}
+
 export function jornadaEsperada(equipo, ubicacion = null) {
     const denoRaw = String(equipo?.denominacion || '').toUpperCase();
     if (SIN_JORNADA.some(d => denoRaw.includes(d))) return null;
-    const sector = String((ubicacion && (ubicacion.centroCosto || ubicacion.lugarCarga)) || equipo?.centro_costo || '')
-        .toUpperCase().replace(/[ÁÀÄÂ]/g, 'A').replace(/[ÉÈËÊ]/g, 'E').replace(/[ÍÌÏÎ]/g, 'I').replace(/[ÓÒÖÔ]/g, 'O').replace(/[ÚÙÜÛ]/g, 'U');
+    const sector = sectorDe(equipo, ubicacion);
     for (const [clave, ref] of Object.entries(JORNADA_REFERENCIA.por_sector)) {
         if (sector.includes(clave)) return { ...ref, base: `sector ${clave}` };
     }
@@ -353,6 +362,97 @@ export function jornadaEsperada(equipo, ubicacion = null) {
     const ref = JORNADA_REFERENCIA.por_denominacion[deno];
     if (ref) return { ...ref, base: deno.toLowerCase() };
     return null;
+}
+
+/**
+ * Tramos en que un sector trabajó una jornada distinta de la habitual.
+ *
+ * JORNADA_REFERENCIA es una sola cifra para todo el año, y eso alcanza mientras la operación no
+ * cambie. Cuando cambia, dejar la cifra fija mete el error en el denominador de TODO lo que se
+ * compara contra ella: utilización, actividad implícita y, por esa vía, si un equipo aparece
+ * como "subutilizado" o no.
+ *
+ * El dato NO sale de los archivos: lo informa la operación, igual que JORNADA_REFERENCIA. Por eso
+ * cada excepción lleva su motivo escrito — sin el motivo, dentro de seis meses es un número
+ * mágico que nadie se anima a tocar.
+ *
+ * Lo que sí se midió, y por eso NO se toca acá: los sábados de ÁRIDOS siguieron en febrero. Las
+ * cargas en sábado fueron 13 (7% del mes), contra 21 en enero (11%), 9 en abril (6%) y 8 en junio
+ * (4%) — febrero no es el mes con menos sábados del año. La excepción es de la jornada Lun-Vie
+ * únicamente; la del sábado sigue siendo la de JORNADA_REFERENCIA.sabado.
+ */
+export const JORNADA_EXCEPCIONES = [
+    {
+        sector: 'ARIDOS',
+        desde: '2026-02', hasta: '2026-02',
+        min: 12, max: 13,
+        nota: 'obra de mejora de la ripiera: menos personal y jornada extendida Lun-Vie (informado por operaciones)'
+    }
+];
+
+/**
+ * Jornada esperada de un equipo EN UN MES concreto: la excepción del tramo si la hay, si no la
+ * de siempre. Devuelve null para los equipos que no siguen jornada (grupos electrógenos y demás).
+ */
+export function jornadaDelMes(equipo, ubicacion, ym) {
+    const base = jornadaEsperada(equipo, ubicacion);
+    if (!base) return null;
+    if (!/^\d{4}-\d{2}$/.test(String(ym || ''))) return base;
+    const sector = sectorDe(equipo, ubicacion);
+    for (const ex of JORNADA_EXCEPCIONES) {
+        if (!sector.includes(ex.sector)) continue;
+        if (ym < ex.desde || ym > ex.hasta) continue;
+        return { min: ex.min, max: ex.max, nota: ex.nota, base: `sector ${ex.sector} (${ym})`, excepcion: ex };
+    }
+    return base;
+}
+
+/**
+ * Jornada de referencia de un equipo a lo largo de VARIOS meses, ponderada por los días Lun-Vie
+ * de cada uno.
+ *
+ * Promediar a secas sería el error obvio: un febrero de 18 días hábiles a 12 hs pesa distinto que
+ * un marzo de 21 a 10, y tratarlos igual corre el resultado justo en el mes que motivó la
+ * excepción. El peso es el día hábil, que es la unidad en la que la jornada se gasta.
+ *
+ * Devuelve además `tramos`, con qué jornada rigió en cada mes, para que el número pueda mostrar
+ * sus pasos en la UI en vez de aparecer cambiado sin explicación.
+ */
+export function jornadaPonderada(equipo, ubicacion, meses = []) {
+    const base = jornadaEsperada(equipo, ubicacion);
+    if (!base || !meses.length) return base;
+
+    let pesoTotal = 0, sumaMin = 0, sumaMax = 0;
+    const tramos = [];
+    let hayExcepcion = false;
+
+    for (const ym of meses) {
+        const ref = jornadaDelMes(equipo, ubicacion, ym);
+        if (!ref) continue;
+        const [anio, mes] = String(ym).split('-').map(Number);
+        if (!anio || !mes) continue;
+        const ultimo = new Date(anio, mes, 0).getDate();
+        const dh = diasHabiles(`${ym}-01`, `${ym}-${String(ultimo).padStart(2, '0')}`);
+        const peso = dh.dias;   // Lun-Vie: la jornada del sábado no la toca la excepción
+        if (peso <= 0) continue;
+        pesoTotal += peso;
+        sumaMin += ref.min * peso;
+        sumaMax += ref.max * peso;
+        if (ref.excepcion) hayExcepcion = true;
+        tramos.push({ mes: ym, dias: peso, min: ref.min, max: ref.max, excepcion: ref.excepcion || null });
+    }
+
+    if (pesoTotal <= 0) return base;
+    return {
+        min: sumaMin / pesoTotal,
+        max: sumaMax / pesoTotal,
+        base: base.base,
+        nota: base.nota,
+        tramos,
+        // Solo cuando algún mes salió de la excepción: si no, es la jornada de siempre y no hay
+        // nada que aclararle al usuario.
+        excepciones: hayExcepcion ? tramos.filter(t => t.excepcion) : []
+    };
 }
 
 /**

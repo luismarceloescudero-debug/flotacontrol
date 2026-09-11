@@ -11,7 +11,7 @@
 
 import { getPrefijo, clasificarIdentificador, MESES, normalizeEquipoKey, TIPO_POR_PREFIJO, provinciaDeCentroCosto, sugerirPosibleTypo } from './normalizer.js';
 import { diasHabiles, esDiaHabil } from './feriados.js';
-import { jornadaEsperada } from './analyzer.js';
+import { jornadaEsperada, jornadaPonderada, jornadaDelMes, mesesEntre } from './analyzer.js';
 
 // `hallazgo.detalle` se renderiza como HTML crudo en panel.js (para poder llevar <strong>
 // intencional alrededor de los números) — cualquier texto libre del Excel (combustible,
@@ -330,6 +330,13 @@ export function utilizacion(fila, periodo = null, ubicacion = null) {
     const dh = diasHabiles(desde, hasta);
     if (!dh || dh.diasPonderados <= 0) return null;
 
+    // La jornada esperada sale de LOS MESES que entran al ratio, no de una cifra fija anual:
+    // si en alguno de esos meses el sector trabajó otra jornada (JORNADA_EXCEPCIONES), compararlo
+    // contra la habitual mete el error justo en el mes que cambió. `ref` de arriba sigue siendo el
+    // caso base — esto solo lo reemplaza cuando hay meses concretos con los que ponderar.
+    const mesesRatio = meses || mesesEntre(desde.slice(0, 7), hasta.slice(0, 7));
+    const refPond = jornadaPonderada(fila.equipo, ubicacion || fila.ubicacion, mesesRatio) || ref;
+
     // Denominador ponderado: Lun-Vie=1, Sab=0.5 (4-6 hs confirmado por operaciones).
     // El GPS registra horas reales incluyendo sábados, así que el denominador debe incluirlos
     // para que el ratio tenga sentido.
@@ -337,16 +344,27 @@ export function utilizacion(fila, periodo = null, ubicacion = null) {
     // Más de 24 hs por día ponderado: GPS reportando horas imposibles (problema de dato, no
     // de operación — ya tiene su hallazgo propio).
     const estado = hsPorDia > 24 ? 'no_representativa'
-        : hsPorDia < ref.min * 0.6 ? 'muy_baja'
-        : hsPorDia < ref.min ? 'baja'
-        : hsPorDia > ref.max * 1.25 ? 'alta'
+        : hsPorDia < refPond.min * 0.6 ? 'muy_baja'
+        : hsPorDia < refPond.min ? 'baja'
+        : hsPorDia > refPond.max * 1.25 ? 'alta'
         : 'normal';
     return {
         hsPorDia, diasHabiles: dh.dias, sabados: dh.sabados, diasPonderados: dh.diasPonderados,
         horas, desde, hasta,
-        esperadoMin: ref.min, esperadoMax: ref.max, base: ref.base, nota: ref.nota,
+        esperadoMin: refPond.min, esperadoMax: refPond.max, base: refPond.base, nota: refPond.nota,
+        // La referencia ponderada casi nunca es un entero (un febrero a 12 hs dentro de ocho meses
+        // a 10 da 10,22). Se formatea acá y no en cada lugar que la imprime: son cuatro hoy y
+        // cualquiera que se agregue después mostraría 10.217391304347826.
+        esperadoTexto: `${fmt(refPond.min, Number.isInteger(refPond.min) ? 0 : 1)}-${fmt(refPond.max, Number.isInteger(refPond.max) ? 0 : 1)}`,
+        // Cuando la jornada esperada no fue la de siempre, viaja con el resultado para que la UI
+        // pueda decirlo: un umbral que se movió sin explicación se lee como un error.
+        jornadaExcepciones: refPond.excepciones || [],
+        jornadaTramos: refPond.tramos || null,
+        jornadaNota: (refPond.excepciones && refPond.excepciones.length)
+            ? `incluye ${refPond.excepciones.map(t => t.mes).join(', ')} con jornada de ${refPond.excepciones[0].min}-${refPond.excepciones[0].max} hs (${refPond.excepciones[0].excepcion.nota})`
+            : '',
         estado,
-        pct: Math.round((hsPorDia / ref.min) * 100)
+        pct: Math.round((hsPorDia / refPond.min) * 100)
     };
 }
 
@@ -614,8 +632,20 @@ export function actividadImplicita(fila) {
             // Usar días ponderados (Sab=0.5) en el denominador asume que la proporción Lun-Vie/Sab
             // se refleja en la actividad total; sumarlo explícito da el rango real más ajustado.
             const jorSab = { min: 4, max: 6 }; // JORNADA_REFERENCIA.sabado
-            const horasMin = dh.total * ref.min + dh.sabados * jorSab.min;
-            const horasMax = dh.total * ref.max + dh.sabados * jorSab.max;
+            // Los días Lun-Vie se suman MES A MES con la jornada que rigió en cada uno: un tramo
+            // con jornada extendida (JORNADA_EXCEPCIONES) esperaba más horas por el mismo día, y
+            // aplanarlo al promedio anual corre el cross-check en el único mes donde importa.
+            let horasMin = 0, horasMax = 0;
+            const tramosJornada = [];
+            for (const ym of mesesCargas) {
+                const refMes = jornadaDelMes(fila.equipo, fila.ubicacion, ym) || ref;
+                const dhMes = diasHabilesDeMeses([ym]);
+                horasMin += dhMes.total * refMes.min;
+                horasMax += dhMes.total * refMes.max;
+                if (refMes.excepcion) tramosJornada.push({ mes: ym, dias: dhMes.total, min: refMes.min, max: refMes.max, nota: refMes.nota });
+            }
+            horasMin += dh.sabados * jorSab.min;
+            horasMax += dh.sabados * jorSab.max;
             if (horasMin > 0) {
                 // Tolerancia amplia (mitad del piso a el doble del techo): esto no busca precisión,
                 // busca detectar cuando el número está en otro orden de magnitud.
@@ -623,7 +653,10 @@ export function actividadImplicita(fila) {
                 imp.referencia = {
                     dias_habiles: dh.total, sabados: dh.sabados, dias_ponderados: dh.ponderado,
                     horas_min: horasMin, horas_max: horasMax, jornada: ref, respalda,
-                    formula: `${dh.total} días Lun-Vie × ${ref.min}-${ref.max} hs + ${dh.sabados} sáb × ${jorSab.min}-${jorSab.max} hs`
+                    jornadaExcepciones: tramosJornada,
+                    formula: tramosJornada.length
+                        ? `${dh.total} días Lun-Vie (jornada distinta en ${tramosJornada.map(t => t.mes).join(', ')}) + ${dh.sabados} sáb × ${jorSab.min}-${jorSab.max} hs`
+                        : `${dh.total} días Lun-Vie × ${ref.min}-${ref.max} hs + ${dh.sabados} sáb × ${jorSab.min}-${jorSab.max} hs`
                 };
             }
         }
@@ -1681,7 +1714,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             no_comparar: true,
             internos_todos: subutilizados.map(x => x.fila.equipo.interno),
             titulo: `${subutilizados.length} equipos trabajaron por debajo de la jornada esperada`,
-            detalle: `La referencia operativa es de <strong>${ref.esperadoMin}-${ref.esperadoMax} horas por día hábil</strong> ` +
+            detalle: `La referencia operativa es de <strong>${ref.esperadoTexto} horas por día hábil</strong> ` +
                 `(áridos y mixers). Estos equipos quedaron por debajo${muyBajos ? `, y ${muyBajos} de ellos por menos de la mitad` : ''}. ` +
                 `Esto <strong>no es un problema de consumo</strong>: es contexto para leerlo. ` +
                 (conAhorroAparente
@@ -1693,7 +1726,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             equipos: subutilizados.slice(0, 12).map(x => ({
                 interno: x.fila.equipo.interno, denominacion: x.fila.equipo.denominacion,
                 texto: `${fmt(x.u.hsPorDia, 1)} hs/día hábil`,
-                sub: `esperado ${x.u.esperadoMin}-${x.u.esperadoMax} (${x.u.base}) · ${fmt(x.u.horas, 0)} hs en ${x.u.diasHabiles} días hábiles` +
+                sub: `esperado ${x.u.esperadoTexto} (${x.u.base}) · ${fmt(x.u.horas, 0)} hs en ${x.u.diasHabiles} días hábiles` +
                      (x.fila.metrics.desvio_pct !== null && x.fila.metrics.desvio_pct < 0 ? ` · figura ${fmt(Math.abs(x.fila.metrics.desvio_pct))}% bajo su meta` : '')
             }))
         });

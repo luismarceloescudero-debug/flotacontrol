@@ -22,6 +22,7 @@
  */
 import { consumoDesdeActividadDeclarada, generarDiagnostico, parIdentico, sugerirMeta, investigarMeta, metaDesdeConsumoReal, diasHabilesDeMeses, confiabilidad } from '../js/data/diagnostico.js';
 import { diasHabiles } from '../js/data/feriados.js';
+import { jornadaEsperada, jornadaDelMes, jornadaPonderada, JORNADA_EXCEPCIONES, mesesEntre } from '../js/data/analyzer.js';
 
 const VERBOSO = process.argv.includes('--verboso');
 const fallas = [];
@@ -445,6 +446,73 @@ const PERIODO_6M = { desde: '2026-01-01', hasta: '2026-06-30' };
     const totalElegibles = valores.filter(() => true);
     check('base_floja', 'los totales NO se filtran por base floja (son hechos, no conclusiones)',
         totalElegibles.length === 2, `${totalElegibles.length}`);
+}
+
+// ============================================================ JORNADA POR TRAMO
+// La jornada de referencia dejo de ser una cifra fija anual: ARIDOS trabajo 12-13 hs Lun-Vie en
+// febrero 2026 por la obra de la ripiera. Ese numero es el denominador contra el que se decide si
+// un equipo esta subutilizado, asi que un error aca no falla: reetiqueta equipos en silencio.
+//
+// Ninguno de los otros dos arneses puede atrapar esto. `verificar` compara totales de flota, y la
+// jornada no mueve ni un litro; `auditar-calculos` recomputa formulas sobre los archivos reales,
+// donde la excepcion es un mes de ocho y se diluye al 2%. Aca se ejercita el mes solo.
+{
+    const equipoAridos = { interno: 'TR18', denominacion: 'TRACTOR C/CABINA', centro_costo: 'ARIDOS' };
+    const equipoOtro = { interno: 'MX01', denominacion: 'MIXER', centro_costo: 'PLANTA' };
+
+    const feb = jornadaDelMes(equipoAridos, null, '2026-02');
+    const ene = jornadaDelMes(equipoAridos, null, '2026-01');
+    check('jornada', 'ARIDOS en febrero 2026 usa la jornada extendida',
+        feb && feb.min === 12 && feb.max === 13, `${feb && feb.min}-${feb && feb.max}`);
+    check('jornada', 'ARIDOS fuera del tramo vuelve a la jornada habitual',
+        ene && ene.min === 10 && ene.max === 12, `${ene && ene.min}-${ene && ene.max}`);
+    check('jornada', 'la excepcion es por sector: un mixer de planta no la hereda',
+        (() => { const j = jornadaDelMes(equipoOtro, null, '2026-02'); return j && j.min === 10 && j.max === 12; })(),
+        JSON.stringify(jornadaDelMes(equipoOtro, null, '2026-02')));
+
+    // El peso es el dia habil de cada mes, no el mes. Febrero 2026 tiene 18 dias Lun-Vie y marzo
+    // 21: promediarlos a secas daria 11, ponderado da menos. Si alguien cambia el peso por
+    // "un mes = un mes", este chequeo falla.
+    const dosMeses = jornadaPonderada(equipoAridos, null, ['2026-02', '2026-03']);
+    const dhFeb = diasHabiles('2026-02-01', '2026-02-28').dias;
+    const dhMar = diasHabiles('2026-03-01', '2026-03-31').dias;
+    const esperadoMin = (12 * dhFeb + 10 * dhMar) / (dhFeb + dhMar);
+    check('jornada', 'la ponderacion usa dias habiles de cada mes, no el mes como unidad',
+        casi(dosMeses.min, esperadoMin, 1e-9), `${dosMeses.min} vs ${esperadoMin} (feb ${dhFeb} d, mar ${dhMar} d)`);
+    check('jornada', 'promediar a secas daria otro numero (el chequeo de arriba no es trivial)',
+        Math.abs(esperadoMin - 11) > 0.05, `${esperadoMin}`);
+
+    // Sin febrero adentro, la ponderada tiene que dar exactamente la de siempre: la excepcion no
+    // puede filtrarse a tramos que no la tocan.
+    const sinFeb = jornadaPonderada(equipoAridos, null, ['2026-03', '2026-04', '2026-05']);
+    check('jornada', 'un tramo sin el mes de la excepcion no se mueve',
+        casi(sinFeb.min, 10) && casi(sinFeb.max, 12), `${sinFeb.min}-${sinFeb.max}`);
+    check('jornada', 'y no declara excepciones que no aplicaron',
+        (sinFeb.excepciones || []).length === 0, JSON.stringify(sinFeb.excepciones));
+
+    const conFeb = jornadaPonderada(equipoAridos, null, mesesEntre('2026-01', '2026-08'));
+    check('jornada', 'un tramo que incluye febrero declara cual mes cambio',
+        (conFeb.excepciones || []).length === 1 && conFeb.excepciones[0].mes === '2026-02',
+        JSON.stringify(conFeb.excepciones));
+    check('jornada', 'con febrero adentro la referencia sube, pero poco (1 mes de 8)',
+        conFeb.min > 10 && conFeb.min < 10.5, `${conFeb.min}`);
+
+    // Los equipos sin jornada (grupos electrogenos y demas) siguen sin tenerla aunque esten en
+    // ARIDOS: la excepcion no puede darles una que antes no tenian.
+    const ge = { interno: 'GE01', denominacion: 'GRUPO ELECTRÓGENO', centro_costo: 'ARIDOS' };
+    check('jornada', 'un equipo sin jornada no gana una por la excepcion',
+        jornadaDelMes(ge, null, '2026-02') === null && jornadaEsperada(ge, null) === null,
+        JSON.stringify(jornadaDelMes(ge, null, '2026-02')));
+
+    // El sabado NO entra en la excepcion: se midio que ARIDOS siguio cargando los sabados en
+    // febrero (13 cargas, 7% del mes, contra 6% en abril y 4% en junio). Si alguien agrega un
+    // min/max de sabado a JORNADA_EXCEPCIONES sin medirlo de nuevo, esto falla.
+    check('jornada', 'las excepciones no tocan la jornada de sabado',
+        JORNADA_EXCEPCIONES.every(ex => ex.sabado === undefined),
+        JSON.stringify(JORNADA_EXCEPCIONES.map(ex => ex.sabado)));
+    check('jornada', 'toda excepcion declara su motivo por escrito',
+        JORNADA_EXCEPCIONES.every(ex => typeof ex.nota === 'string' && ex.nota.length > 20),
+        JSON.stringify(JORNADA_EXCEPCIONES.map(ex => ex.nota)));
 }
 
 // ============================================================ REPORTE
