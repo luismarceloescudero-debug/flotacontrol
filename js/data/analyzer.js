@@ -384,9 +384,18 @@ export function jornadaEsperada(equipo, ubicacion = null) {
 export const JORNADA_EXCEPCIONES = [
     {
         sector: 'ARIDOS',
-        desde: '2026-02', hasta: '2026-02',
+        desde: '2026-02', hasta: '2026-06',
         min: 12, max: 13,
-        nota: 'obra de mejora de la ripiera: menos personal y jornada extendida Lun-Vie (informado por operaciones)'
+        // Las bateas quedan afuera a propósito. La jornada extendida es la del personal que se
+        // quedó EN la ripiera con el proyecto en marcha y sin producción; las bateas no estaban
+        // ahí: salieron a traer áridos de terceros, y por eso sumaron kilómetros.
+        //
+        // Medido, y por eso no es una decisión de gusto: sus horas de motor por día hábil se
+        // mantuvieron entre 8,5 y 9,9 de enero a julio (9,61 en enero · 9,07 en febrero · 8,75 en
+        // marzo · 9,93 en junio), cerca de la referencia habitual y nunca cerca de 12. Subirles
+        // el umbral las marcaría como subutilizadas justo en los meses en que más trabajaron.
+        excepto_internos: ['TR14', 'TR18', 'TR20', 'TR21', 'TR23', 'TR32', 'TR35'],
+        nota: 'proyecto de mejora de la ripiera (feb-jun): sin producción propia, menos personal y jornada extendida Lun-Vie — no aplica a las bateas, que salieron a traer áridos de terceros'
     }
 ];
 
@@ -399,9 +408,13 @@ export function jornadaDelMes(equipo, ubicacion, ym) {
     if (!base) return null;
     if (!/^\d{4}-\d{2}$/.test(String(ym || ''))) return base;
     const sector = sectorDe(equipo, ubicacion);
+    const key = normalizeEquipoKey(equipo?.interno || '');
     for (const ex of JORNADA_EXCEPCIONES) {
         if (!sector.includes(ex.sector)) continue;
         if (ym < ex.desde || ym > ex.hasta) continue;
+        // Un equipo del sector puede estar exceptuado de la excepción: comparte centro de costo
+        // pero no la operación que cambió la jornada.
+        if ((ex.excepto_internos || []).some(i => normalizeEquipoKey(i) === key)) continue;
         return { min: ex.min, max: ex.max, nota: ex.nota, base: `sector ${ex.sector} (${ym})`, excepcion: ex };
     }
     return base;
