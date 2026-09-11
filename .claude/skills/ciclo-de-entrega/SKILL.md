@@ -188,6 +188,32 @@ git ls-remote origin refs/heads/main
 `git push` diciendo "Everything up-to-date" justo después de commitear **no** significa que
 falló: el hook ya lo hizo.
 
+## El costo de la sesión
+
+Trabajar sin pedir confirmación no autoriza a gastar sin límite. Una sesión que agota el crédito
+a la mitad deja el repo peor que una que no empezó: con cambios sin verificar y sin nadie que los
+termine. La regla es hacer el trabajo con la evidencia más barata que alcance.
+
+- **Elegí el arnés por lo que tocaste, no por costumbre.** `declarados` tarda un segundo;
+  `verificar` y `auditar` tardan minutos cada uno. Si el cambio es de UI, los lentos no prueban
+  nada y no se corren.
+- **No repitas una prueba que ya pasó.** Un arnés verde sigue verde si no volviste a tocar ese
+  código. Volver a correrlo "por las dudas" antes de commitear es gasto puro.
+- **Cargar las planillas en el navegador cuesta 30-60 s y una recarga entera.** Hacelo una vez por
+  sesión y seguí trabajando sobre `window.ultimoAnalisis`, en vez de recargar después de cada
+  ajuste.
+- **Leé con `grep -n` y `sed -n`, no abriendo archivos enteros.** `diagnostico.js` y `panel.js`
+  pasan las 3.000 líneas: traerlos completos para mirar una función es el gasto más fácil de
+  evitar.
+- **No abras subagentes para lo que se resuelve con una búsqueda.** Cada uno arranca sin contexto
+  y vuelve a averiguar lo que vos ya sabés.
+- **Tres intentos y parás.** Si el tercer ciclo de arreglo no cierra, el problema no es el
+  siguiente intento: es que falta entender algo. Contá qué probaste, qué descartaste y dónde
+  quedó, y dejá el árbol en un estado del que se pueda seguir.
+
+Cuando haya varios pedidos juntos, ordenalos y entregá de a uno, commiteando lo que ya cierra.
+Un arreglo publicado vale más que seis a medio hacer que se pierden cuando se corta la sesión.
+
 ## Cuándo sí frenar y preguntar
 
 La autonomía es para ejecutar, no para decidir por el usuario. Frená cuando:
