@@ -35,7 +35,8 @@ globalThis.FileReader = FileReaderShim;
 
 const { parseXLSX } = await import('../js/parsers/xlsx-parser.js');
 const { initDB, getAllEquipos, getAllRawRecords, getAllEstimados, getRalentiEstados, getNoFlotaAceptados, getEquiposExcluidos, getAccionesAutomaticas } = await import('../js/data/database.js');
-const { analizarFlota, mesesDeRegistro, alinearCargasYGps } = await import('../js/data/analyzer.js');
+const { analizarFlota, mesesDeRegistro, alinearCargasYGps, jornadaDelMes, jornadaEsperada, sectorDe } = await import('../js/data/analyzer.js');
+const { normalizeEquipoKey: normKey } = await import('../js/data/normalizer.js');
 const { generarDiagnostico, coberturaEquipo, utilizacion, calcularExceso, actividadImplicita } = await import('../js/data/diagnostico.js');
 const { aplicarCorreccionesAutomaticas } = await import('../js/data/autocorreccion.js');
 const { normalizeEquipoKey } = await import('../js/data/normalizer.js');
@@ -389,6 +390,64 @@ for (const f of filas.filter(x => (x.cargas || []).length && (x.gps || []).lengt
     const litros = rec.cargas.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0);
     check('alineacion', `${f.equipo.interno}: litros alineados recalculados coinciden`,
         casi(litros, m.litros_alineados, 1e-9, 0.05), `${litros} vs ${m.litros_alineados}`);
+}
+
+// ============================================================ H. ROSTER DE ARIDOS Y JORNADA
+// La jornada extendida de feb-jun se decide por el SECTOR que resuelve la app, y ese sector sale
+// de las cargas del equipo, no del maestro. Un equipo que cargo esporadicamente en otro sector
+// puede cambiar de lado sin que nadie lo note: la excepcion dejaria de aplicarle, su umbral
+// volveria a 10-12 y aparecerian o desapareceria del hallazgo de subutilizacion en silencio.
+//
+// Esto no lo puede ver auditar-declarados.mjs, que arma sus equipos a mano y nunca toca los
+// archivos reales. Aca el roster se fija contra los datos de verdad.
+//
+// La lista la declaro el usuario. Las mezclas de sector son reales y estan medidas: TR32 tiene 38
+// cargas en CEMENTO sobre 179, TR23 tiene 2 en TUNUYAN, CF37 una en ALTAMIRA. La mayoria manda, y
+// ese es justamente el comportamiento que hay que congelar.
+{
+    const RIPIERA = ['CF25', 'CF27', 'CF37', 'EX01', 'TP01', 'VL09', 'VL10', 'MX102', 'MX83', 'MX89', 'CM42'];
+    const BATEAS = ['TR14', 'TR18', 'TR20', 'TR21', 'TR23', 'TR32', 'TR35'];
+    const SIN_JORNADA_ARIDOS = ['GE01', 'GE02', 'GE03'];
+    const filaDe = interno => filas.find(x => x.equipo.interno_key === normKey(interno));
+
+    for (const interno of [...RIPIERA, ...BATEAS, ...SIN_JORNADA_ARIDOS]) {
+        const f = filaDe(interno);
+        check('roster_aridos', `${interno}: sigue estando en el analisis`, !!f, 'no aparece');
+        if (!f) continue;
+        check('roster_aridos', `${interno}: la app lo sigue resolviendo al sector ARIDOS`,
+            String(sectorDe(f.equipo, f.ubicacion)).includes('ARIDOS'), sectorDe(f.equipo, f.ubicacion));
+    }
+
+    // Los de la ripiera toman la jornada extendida en el tramo, y solo en el tramo.
+    for (const interno of RIPIERA) {
+        const f = filaDe(interno); if (!f) continue;
+        const feb = jornadaDelMes(f.equipo, f.ubicacion, '2026-02');
+        const ago = jornadaDelMes(f.equipo, f.ubicacion, '2026-08');
+        check('roster_aridos', `${interno}: jornada extendida en feb (dentro del tramo)`,
+            feb && feb.min === 12 && feb.max === 13, `${feb && feb.min}-${feb && feb.max}`);
+        check('roster_aridos', `${interno}: jornada habitual en ago (fuera del tramo)`,
+            ago && ago.min === 10 && ago.max === 12, `${ago && ago.min}-${ago && ago.max}`);
+    }
+
+    // Las bateas NO la toman en ningun mes: se midio que sus horas de motor por dia habil se
+    // mantuvieron entre 8,5 y 9,9 todo el año.
+    for (const interno of BATEAS) {
+        const f = filaDe(interno); if (!f) continue;
+        const feb = jornadaDelMes(f.equipo, f.ubicacion, '2026-02');
+        const base = jornadaEsperada(f.equipo, f.ubicacion);
+        check('roster_aridos', `${interno}: la batea NO toma la jornada extendida`,
+            feb && base && feb.min === base.min && feb.max === base.max,
+            `${feb && feb.min}-${feb && feb.max} vs base ${base && base.min}-${base && base.max}`);
+    }
+
+    // Los grupos electrogenos de ARIDOS no tienen jornada y la excepcion no puede darles una:
+    // un GE puede quedar encendido de corrido, medirlo en horas por dia habil no significa nada.
+    for (const interno of SIN_JORNADA_ARIDOS) {
+        const f = filaDe(interno); if (!f) continue;
+        check('roster_aridos', `${interno}: sigue sin jornada pese a estar en ARIDOS`,
+            jornadaDelMes(f.equipo, f.ubicacion, '2026-02') === null,
+            JSON.stringify(jornadaDelMes(f.equipo, f.ubicacion, '2026-02')));
+    }
 }
 
 // ============================================================ REPORTE
