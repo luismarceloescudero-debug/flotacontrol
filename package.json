@@ -5,6 +5,7 @@
     "verificar:actualizar": "node tools/verificar-datos-reales.mjs --actualizar",
     "auditar": "node tools/auditar-calculos.mjs",
     "declarados": "node tools/auditar-declarados.mjs",
+    "buscar": "node tools/buscar-cargas.mjs",
     "probar": "npm run declarados && npm run verificar && npm run auditar"
   },
   "devDependencies": {

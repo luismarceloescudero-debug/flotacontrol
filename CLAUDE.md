@@ -777,6 +777,52 @@ en segundos. Los días salen de `diasHabiles()`, no de un conteo propio. Verific
 4.622 cargas — 271,0 L menos que los 711.065,3 L de `invariantes.json`, y esa diferencia son
 exactamente los 3 duplicados exactos que el import aparta a propósito.
 
+**`tools/buscar-cargas.mjs`** (`npm run buscar`) baja un nivel más: **la fila**. El panel agrega
+por equipo, `reporte-mensual.mjs` agrega por mes, y cuando lo que hay que corregir es una carga
+puntual ("TR35 aparece en MIXER") ninguno de los dos dice *cuál*. Este imprime fecha, hora,
+litros, importe, combustible, lugar, centro de costo, sector, tipo, chofer, archivo y **número de
+fila de Excel** — que es lo único con lo que se puede abrir la planilla y editarla. Corre el
+pipeline real (solo Cargas + Equipos, segundos) así que lo que muestra es exactamente lo que la
+app leyó.
+
+```bash
+node tools/buscar-cargas.mjs TR35 --centro MIXER    # la carga que no corresponde
+node tools/buscar-cargas.mjs TR35                   # todas las de un equipo, con su reparto
+node tools/buscar-cargas.mjs --centro ALTAMIRA      # gasto de un tercero
+node tools/buscar-cargas.mjs --sin-centro           # cargas sin centro de costo
+node tools/buscar-cargas.mjs TR --lugar TUNUYAN     # todos los tractores en un lugar
+```
+
+Los filtros de texto son "contiene", sin acentos ni mayúsculas; el de equipo es por prefijo de
+clave normalizada, así que `TR35` agarra `TR-35`, `TR 35` y `TR035`. Cuando se filtra por equipo
+imprime además **el reparto de todas sus cargas** por centro de costo y por lugar: sin ese
+contraste, una fila suelta no se distingue de un equipo que de verdad trabaja en dos lados. Los
+duplicados exactos quedan fuera por defecto (igual que en el análisis) pero se pueden listar con
+`--incluir-duplicados`: siguen siendo filas de la planilla y pueden ser justo la que hay que
+editar.
+
+### Contexto de flota declarado por el usuario (12/09/2026)
+
+Esto lo dijo el dueño de la operación mirando las cargas reales. Son hechos del negocio, no
+lecturas de los archivos: sirven para **no volver a reportar como error** algo que ya está
+explicado.
+
+- **MX63 era de Áridos y se trasladó a San Juan**, casa central de la empresa. Un cambio de sector
+  a mitad de año en ese equipo es real.
+- **TR32 es comodín pero está asignado a Áridos.** Por eso tiene 38 cargas en CEMENTO sobre 179 y
+  sigue en el roster de bateas de `auditar-calculos.mjs`. La mezcla de sectores es correcta.
+- **VL11 con muchas cargas en Áridos: el usuario lo está revisando.** Hay dos explicaciones
+  plausibles y compatibles — llevar material a la obra del proyecto de la ripiera (si las cargas
+  caen dentro del tramo feb-jun), y viajes de áridos con guía de la Dirección de Minería de
+  Mendoza. En cualquiera de los dos casos la carga en la planta de **Luján de Cuyo**, donde carga
+  la flota de áridos, es esperable.
+- **Cargas de algún TR en Tunuyán o San Martín no son un error**: son destinos a los que la
+  empresa provee áridos.
+- **ALTAMIRA ESPERANZA S.A.S no es un centro de costo faltante.** Es otra empresa, propiedad de
+  uno de los socios gerentes, a la que se le prestan servicios. El gasto **existe y es real**,
+  pero no es consumo propio: hay que asociarlo y **cobrarlo como servicio**. Tratarlo como "carga
+  sin centro de costo" o como sobreconsumo de la flota es leerlo mal en las dos direcciones.
+
 ### Deuda técnica conocida (medida, no supuesta)
 
 - **`/api/chat` no tiene rate limiting.** El `APP_SECRET_VALUE` viaja en el JS del navegador y está
