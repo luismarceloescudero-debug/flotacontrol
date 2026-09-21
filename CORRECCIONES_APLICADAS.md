@@ -1219,3 +1219,33 @@ de aceptar. Al ejecutar `renderPanel()`, justo antes de renderizar, `ralentiEsta
 `noFlotaAceptadosCache` se filtran a los que solapan con el período del análisis actual
 (`periodosCoinciden()`). Registros sin `periodo` (anteriores a v13) aplican siempre — backward
 compat. Todos los call sites de los setters en `panel.js` pasan `periodoDeAnalisis(analisis)`.
+## 14/09/2026 — Dexie.js evaluado y descartado
+
+Se intentó migrar `database.js` a Dexie.js (vendorizado en `vendor/dexie.mjs`) para
+eliminar por construcción el race condition de `insertEntregasLoop()` documentado el
+03/09/2026. La estrategia fue migración incremental: Dexie abierto en paralelo a la
+conexión cruda, sobre la misma base (`DB_NAME` compartido), migrando una función
+por vez y validando cada paso contra `verificar-datos-reales.mjs`.
+
+**Descartado.** La coexistencia de las dos conexiones no funciona: Dexie intenta un
+upgrade al abrir y queda bloqueado por la conexión cruda ya abierta
+(`Upgrade 'FlotaControlDB' blocked by other connection holding version 1.4`, con
+`fake-indexeddb`). La única forma limpia de tener Dexie sería reemplazar `database.js`
+completo en un solo cambio, eliminando la coexistencia — pero eso sacrifica la
+posibilidad de validar cada función migrada por separado contra `invariantes.json`,
+que era el objetivo original de la migración incremental.
+
+**El race condition ya está resuelto** por el `Map<id, cambios>` de la versión actual
+de `insertEntregasLoop()` (IndexedDB crudo, una sola transacción al final). Dexie no
+era necesario para ese fix — era una mejora de mantenibilidad, no una corrección. El
+costo (reescribir todo `database.js` de una, perder la validación incremental) supera
+el beneficio medido.
+
+Si en el futuro se retoma: la única forma razonable es la Fase 6 del plan
+(`reemplazar database.js completo por la versión Dexie`), sin coexistencia. El
+archivo `db-dexie.js` que se generó durante este intento estaba completo y funcional
+si se quiere recuperar (ver git history, rama `feature/dexie-migration`).
+
+Verificación post-revert: `verificar-datos-reales.mjs` corre limpio, todos los
+invariantes coinciden (`55.364,5 m³` de Loop, `711.065,3 L`, 189 equipos, 20
+hallazgos).
