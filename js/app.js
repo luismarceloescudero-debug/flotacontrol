@@ -5,6 +5,7 @@ import { initDB, clearAllData, clearMovimientos, getDBStats } from './data/datab
 import { initUploadUI, renderDBStatus } from './ui/upload.js';
 import { renderPanel, initPanelControls, buscarEquipo, setMesesFiltro } from './ui/panel.js';
 import { renderDataTable, initDataTableControls, exportarTablaVisible, abrirTablaConBusqueda } from './ui/datatable.js';
+import { renderRendimiento } from './ui/rendimiento.js';
 import { renderSeguimiento } from './ui/seguimiento.js';
 import { initCalcPopover } from './ui/calcpopover.js';
 import { openConfigModal } from './ui/config.js';
@@ -128,6 +129,7 @@ export function irA(vista) {
     if (vista === 'panel') renderPanel();
     if (vista === 'datos') renderDataTable();
     if (vista === 'seguimiento') renderSeguimiento();
+    if (vista === 'rendimiento') renderRendimiento(document.getElementById('view-rendimiento'), window.ultimoAnalisis);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 

@@ -22,7 +22,7 @@
  */
 import { consumoDesdeActividadDeclarada, generarDiagnostico, parIdentico, sugerirMeta, investigarMeta, metaDesdeConsumoReal, diasHabilesDeMeses, confiabilidad } from '../js/data/diagnostico.js';
 import { diasHabiles } from '../js/data/feriados.js';
-import { jornadaEsperada, jornadaDelMes, jornadaPonderada, JORNADA_EXCEPCIONES, mesesEntre } from '../js/data/analyzer.js';
+import { jornadaEsperada, jornadaDelMes, jornadaPonderada, JORNADA_EXCEPCIONES, mesesEntre, alinearCargasYEntregas, MIN_ENTREGAS_L_M3 } from '../js/data/analyzer.js';
 
 const VERBOSO = process.argv.includes('--verboso');
 const fallas = [];
@@ -540,6 +540,67 @@ const PERIODO_6M = { desde: '2026-01-01', hasta: '2026-06-30' };
     check('jornada', 'toda excepcion declara su motivo por escrito',
         JORNADA_EXCEPCIONES.every(ex => typeof ex.nota === 'string' && ex.nota.length > 20),
         JSON.stringify(JORNADA_EXCEPCIONES.map(ex => ex.nota)));
+}
+
+// ============================================================ L/m3 (CARGAS x ENTREGAS)
+// El periodo comun de cargas∩GPS y el de cargas∩entregas NO son el mismo. Un mixer puede tener
+// GPS de ocho meses y entregas de cinco; dividir los litros alineados al GPS por los m3 de Loop
+// mezcla dos periodos, que es exactamente lo que la regla 1 prohibe. Por eso hay una alineacion
+// propia, y por eso tiene chequeo propio.
+//
+// Ninguno de los otros dos arneses lo cubre: `verificar` compara totales de flota y el L/m3 no
+// mueve ningun total, y `auditar-calculos` recomputa lo que la app ya publica — esto todavia no
+// se publica en ninguna tarjeta.
+{
+    const carga = (periodo, litros) => ({ periodo, litros });
+    const entrega = (periodo, volumen) => ({ periodo, volumen });
+
+    // Cargas de ene a mar, entregas solo de feb y mar: el comun son dos meses.
+    const a = alinearCargasYEntregas(
+        [carga('2026-01', 1000), carga('2026-02', 200), carga('2026-03', 300)],
+        [entrega('2026-02', 50), entrega('2026-03', 50)]
+    );
+    check('l_m3', 'el periodo comun son los meses que tienen las DOS fuentes',
+        JSON.stringify(a.meses) === JSON.stringify(['2026-02', '2026-03']), JSON.stringify(a.meses));
+    check('l_m3', 'los litros salen solo de los meses comunes, no del total',
+        casi(a.litros, 500), `${a.litros} (el total del equipo es 1500)`);
+    check('l_m3', 'el enero sin entregas queda afuera y NO infla el cociente',
+        casi(a.consumo_l_m3, 5), `${a.consumo_l_m3} (sin alinear daria ${1500 / 100})`);
+    check('l_m3', 'y la diferencia es grande: el chequeo de arriba no es trivial',
+        Math.abs(5 - 1500 / 100) > 5, `${1500 / 100} vs 5`);
+
+    // Un mes con entregas pero volumen 0 no aporta denominador y no puede ser "comun".
+    const b = alinearCargasYEntregas(
+        [carga('2026-01', 100), carga('2026-02', 100)],
+        [entrega('2026-01', 0), entrega('2026-02', 40)]
+    );
+    check('l_m3', 'un mes con entregas de volumen 0 no cuenta como mes comun',
+        JSON.stringify(b.meses) === JSON.stringify(['2026-02']), JSON.stringify(b.meses));
+
+    // Sin m3 no hay cociente, y tiene que ser null: un 0 se leeria como "no consume".
+    const c = alinearCargasYEntregas([carga('2026-01', 100)], [entrega('2026-01', 0)]);
+    check('l_m3', 'sin m3 el consumo es null, nunca 0',
+        c.consumo_l_m3 === null, `${c.consumo_l_m3}`);
+
+    // Base floja: el umbral existe porque se midio, no porque suene bien.
+    const pocas = Array.from({ length: MIN_ENTREGAS_L_M3 - 1 }, () => entrega('2026-01', 5));
+    const justas = Array.from({ length: MIN_ENTREGAS_L_M3 }, () => entrega('2026-01', 5));
+    check('l_m3', `con menos de ${MIN_ENTREGAS_L_M3} entregas la base se marca floja`,
+        alinearCargasYEntregas([carga('2026-01', 100)], pocas).base_floja === true, '');
+    check('l_m3', `con ${MIN_ENTREGAS_L_M3} entregas ya no`,
+        alinearCargasYEntregas([carga('2026-01', 100)], justas).base_floja === false, '');
+    check('l_m3', 'el umbral sigue siendo el medido sobre los archivos reales',
+        MIN_ENTREGAS_L_M3 === 10, `${MIN_ENTREGAS_L_M3}`);
+
+    // Sin ningun mes en comun hay que poder distinguirlo de "no hay datos".
+    const d = alinearCargasYEntregas([carga('2026-01', 100)], [entrega('2026-05', 40)]);
+    check('l_m3', 'sin mes comun se declara, y el consumo queda en null',
+        d.sinMesComun === true && d.consumo_l_m3 === null, `${d.sinMesComun} / ${d.consumo_l_m3}`);
+
+    // Un equipo sin entregas no es un error: simplemente no tiene L/m3.
+    const e = alinearCargasYEntregas([carga('2026-01', 100)], []);
+    check('l_m3', 'un equipo sin entregas da null sin marcar sinMesComun',
+        e.consumo_l_m3 === null && e.sinMesComun === false, `${e.consumo_l_m3} / ${e.sinMesComun}`);
 }
 
 // ============================================================ REPORTE

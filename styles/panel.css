@@ -1888,3 +1888,49 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
 .act-rango { display: flex; align-items: center; gap: 0.4rem; }
 .act-rango input { width: 110px; }
 .act-por { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+
+/* ============================================================ VISTA RENDIMIENTO (L/m³)
+   Ítem 10 del roadmap. Reusa los tokens del panel a propósito: un color nuevo acá haría que
+   la misma severidad se lea distinta según la pestaña (ver skill flotacontrol-graficos). */
+.rend-header { margin-bottom: 1.25rem; }
+.rend-header h2 { display: flex; align-items: center; gap: .6rem; margin: 0 0 .4rem; }
+.rend-intro { color: var(--text-secondary); max-width: 68ch; line-height: 1.55; margin: 0; }
+.rend-nota { color: var(--text-muted); font-size: .9rem; max-width: 60ch; }
+
+.rend-kpis { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem; }
+.rend-kpi {
+    background: var(--bg-card); border: 1px solid var(--border-color);
+    border-radius: 10px; padding: .85rem 1.1rem; min-width: 160px;
+    display: flex; flex-direction: column; gap: .15rem;
+}
+.rend-kpi-valor { font-size: 1.6rem; font-weight: 700; color: var(--accent-cyan); line-height: 1.1; }
+.rend-kpi-label { font-size: .85rem; color: var(--text-primary); }
+.rend-kpi-sub { font-size: .78rem; color: var(--text-muted); }
+
+/* Altura fija: Chart.js con maintainAspectRatio:false necesita que el contenedor la defina,
+   si no el canvas crece en cada redibujo. */
+.rend-grafico-caja {
+    background: var(--bg-card); border: 1px solid var(--border-color);
+    border-radius: 10px; padding: 1rem; height: 380px; margin-bottom: .6rem;
+}
+.rend-leyenda {
+    color: var(--text-muted); font-size: .85rem; line-height: 1.5;
+    max-width: 78ch; margin: 0 0 1.5rem;
+}
+
+.rend-tabla-caja { margin-bottom: 2rem; }
+.rend-tabla tr.rend-alto td:nth-child(2) { color: var(--accent-red); }
+.rend-tabla tr.rend-bajo td:nth-child(2) { color: var(--accent-green); }
+/* La base floja se atenúa entera, no solo la celda: la fila completa es menos confiable. */
+.rend-tabla tr.rend-floja { opacity: .55; }
+.rend-badge-floja {
+    background: var(--bg-input); color: var(--text-muted);
+    border: 1px solid var(--border-color); border-radius: 99px;
+    padding: .1rem .5rem; font-size: .75rem; white-space: nowrap;
+}
+
+.rend-vacio {
+    text-align: center; padding: 3rem 1rem; color: var(--text-muted);
+}
+.rend-vacio i { font-size: 2.5rem; opacity: .5; display: block; margin-bottom: .8rem; }
+.rend-vacio p { max-width: 62ch; margin: .5rem auto; line-height: 1.55; }

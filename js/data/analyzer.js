@@ -309,6 +309,70 @@ export function alinearCargasYGps(cargasList = [], gpsList = []) {
 }
 
 /**
+ * Mínimo de entregas para que un L/m³ compita como dato comparable.
+ *
+ * No es un número elegido a ojo. Medido sobre los archivos reales: de los 26 mixers con L/m³
+ * calculable, 24 caen entre 2,54 y 5,74 L/m³ — un factor 2,3 entre el mejor y el peor, que es
+ * variación operativa razonable. Los dos que se salen son MX70 (19,6 L/m³ sobre 4 entregas) y
+ * MX102 (47,1 sobre 5): mixers que en su único mes común apenas entregaron pero igual cargaron
+ * combustible, porque estuvieron haciendo otra cosa. Con ese denominador, el cociente no mide
+ * eficiencia — mide que el denominador es chico.
+ *
+ * Es la misma regla que ya rige la comparativa: un TOTAL es un hecho, una TASA es una conclusión
+ * y necesita su base antes de poder leerse (invariante 3).
+ */
+export const MIN_ENTREGAS_L_M3 = 10;
+
+/**
+ * Alinea las cargas y las entregas de Loop de UN equipo a los meses que tienen dato de LAS DOS
+ * fuentes, igual que `alinearCargasYGps()` hace con el GPS. Es la misma regla 1: los litros y los
+ * m³ de una razón tienen que venir de los mismos meses.
+ *
+ * Por qué hace falta una función aparte y no alcanza la de GPS: el período común de cargas∩GPS
+ * y el de cargas∩entregas son distintos. Un mixer puede tener GPS de ocho meses y entregas de
+ * cinco; usar los litros alineados al GPS contra los m³ de Loop mezclaría dos períodos, que es
+ * exactamente lo que la regla prohíbe.
+ *
+ * Las entregas son puntuales como las cargas (un remito tiene una fecha), así que acá alcanza
+ * con `mesDe()` — no hace falta `mesesDeRegistro()`, que existe para los reportes multi-mes del
+ * GPS.
+ */
+export function alinearCargasYEntregas(cargasList = [], entregasList = []) {
+    const mesesCargas = new Set();
+    cargasList.forEach(c => { const m = mesDe(c); if (m) mesesCargas.add(m); });
+
+    // Un mes con entregas pero volumen 0 no aporta denominador: queda afuera del común.
+    const volPorMes = new Map();
+    entregasList.forEach(e => {
+        const m = mesDe(e); if (!m) return;
+        volPorMes.set(m, (volPorMes.get(m) || 0) + (Number(e.volumen) || 0));
+    });
+    const mesesEntregas = new Set([...volPorMes.entries()].filter(([, v]) => v > 0).map(([m]) => m));
+
+    const comunes = new Set([...mesesCargas].filter(m => mesesEntregas.has(m)));
+
+    const cargas = cargasList.filter(c => { const m = mesDe(c); return m && comunes.has(m); });
+    const entregas = entregasList.filter(e => { const m = mesDe(e); return m && comunes.has(m); });
+
+    const litros = cargas.reduce((s, c) => s + (parseFloat(c.litros) || 0), 0);
+    const m3 = entregas.reduce((s, e) => s + (Number(e.volumen) || 0), 0);
+
+    return {
+        cargas, entregas,
+        meses: [...comunes].sort(),
+        mesesCargas: [...mesesCargas].sort(),
+        mesesEntregas: [...mesesEntregas].sort(),
+        litros, m3,
+        cantidad_entregas: entregas.length,
+        // null y no 0 cuando no se puede calcular: un 0 se lee como "consume nada".
+        consumo_l_m3: m3 > 0 ? litros / m3 : null,
+        // La base la declara el dato, no la interpreta quien lo lee.
+        base_floja: entregas.length < MIN_ENTREGAS_L_M3,
+        sinMesComun: comunes.size === 0 && mesesCargas.size > 0 && mesesEntregas.size > 0
+    };
+}
+
+/**
  * Jornada operativa de referencia, en horas por día hábil, según lo que informa la operación
  * (no sale de los datos: es el dato de negocio contra el cual se contrasta lo que miden).
  *
@@ -848,10 +912,19 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         const g = porEquipo.get(eq.interno) || { cargas: [], gps: [], otros: [] };
         const confirmed = getConfirmedConsumption(eq, estimados);
         const metrics = calculateMetrics(eq, g.cargas, g.gps, confirmed);
+        // L/m³ de Loop: alineación propia, con su propio período común. No se deriva de
+        // `metrics.alineacion`, que es el de cargas∩GPS y casi nunca coincide con el de
+        // cargas∩entregas. Es contexto, no reemplaza al L/hora ni al L/100km: distingue
+        // "consume mucho" de "trabajó mucho".
+        const entregasEq = (g.otros || []).filter(r => r && r.type === 'entrega');
+        const alineacionEntregas = entregasEq.length
+            ? alinearCargasYEntregas(g.cargas, entregasEq)
+            : null;
         return {
             equipo: { ...eq, denominacion: eq.denominacion || getDenominacion(eq.interno, eq.tipo) },
             prefijo: getPrefijo(eq.interno),
             metrics, confirmed,
+            alineacionEntregas,
             ubicacion: resumenUbicacion(eq, g.cargas),
             cargas: g.cargas, gps: g.gps, otros: g.otros
         };
