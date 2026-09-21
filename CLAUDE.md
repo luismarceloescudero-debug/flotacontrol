@@ -777,6 +777,37 @@ en segundos. Los días salen de `diasHabiles()`, no de un conteo propio. Verific
 4.622 cargas — 271,0 L menos que los 711.065,3 L de `invariantes.json`, y esa diferencia son
 exactamente los 3 duplicados exactos que el import aparta a propósito.
 
+**Ítem 10 — L/m³ por mixer.** ✅ Vista "Rendimiento" (`js/ui/rendimiento.js`), con Chart.js
+vendorizado en `vendor/`. Responde lo que el L/hora y el L/100km no pueden: si un mixer consume
+mucho porque rinde mal o porque trabajó mucho. Es **contexto**, no reemplaza a la unidad
+declarada del equipo.
+
+**El período común de cargas∩GPS y el de cargas∩entregas NO son el mismo**, y esa es la razón de
+que exista `alinearCargasYEntregas()` en analyzer.js en vez de reusar `metrics.alineacion`. Un
+mixer puede tener GPS de ocho meses y entregas de cinco; mezclarlos viola la regla 1. Medido
+sobre MX97: alineado da 2,543 L/m³, sin alinear 2,962 — 16% de diferencia.
+
+`MIN_ENTREGAS_L_M3 = 10` se midió, no se eligió: de los 26 mixers con L/m³ calculable, 24 caen
+entre 2,54 y 5,74 (factor 2,3). Los dos que se salen son MX70 (19,6 sobre 4 entregas) y MX102
+(47,1 sobre 5), que en su único mes común apenas entregaron pero igual cargaron. La mediana sale
+**solo de los de base sólida**: con los flojos adentro se corre de 3,621 a 3,792. Los dos se
+muestran en gris, no se ocultan — invariante 3, un TOTAL es un hecho y una TASA es una conclusión.
+
+Chart.js entró vendorizado sin build step. **El bundle `+esm` de jsDelivr importa @kurkle/color
+desde la red en runtime**, lo que rompería la app sin internet: se vendorizó también esa
+dependencia y se reescribió el import a la ruta local. Si alguna vez se actualiza Chart.js, hay
+que repetir ese paso o la app queda con una dependencia de red silenciosa.
+
+Regresión en `auditar-declarados.mjs` (grupo `l_m3`, 11 chequeos). Es el único arnés que puede
+verlo: `verificar` compara totales y el L/m³ no mueve ninguno.
+
+**Los archivos de ARCHIVOS cambiaron el 14/09 y los invariantes se refijaron el 21/09.** Cargas
+pasó de 4.625 a 4.683 filas (711.065,3 → 720.231,7 L): son los días 11, 12 y 14 de septiembre,
+que no existían cuando se congelaron. Los duplicados exactos pasaron de 3 a 4 (431,0 L).
+**`Resumen de viaje.xlsx` ya no está en ARCHIVOS** —solo quedó el PDF—, por eso el GPS bajó de
+908 a 907 filas equipo-mes. Es el archivo que el ítem 8 reserva para comparar CM-43 contra CM-48
+en igualdad de período: si hace falta esa comparación, hay que volver a exportarlo.
+
 ### Deuda técnica conocida (medida, no supuesta)
 
 - **`/api/chat` no tiene rate limiting.** El `APP_SECRET_VALUE` viaja en el JS del navegador y está
