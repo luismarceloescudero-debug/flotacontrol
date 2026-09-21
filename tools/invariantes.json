@@ -1,10 +1,10 @@
 {
-  "generado": "2026-09-11T13:29:21.819Z",
+  "generado": "2026-09-21T14:00:28.598Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
       "tipo": "CARGAS",
-      "filas": 4625,
+      "filas": 4683,
       "etiqueta": "Cargas de Combustible"
     },
     {
@@ -90,23 +90,17 @@
       "tipo": "GPS",
       "filas": 120,
       "etiqueta": "Resumen de Flota (GPS)"
-    },
-    {
-      "archivo": "Resumen de viaje.xlsx",
-      "tipo": "GPS_RESUMEN_VIAJE",
-      "filas": 1,
-      "etiqueta": "Resumen de viaje (GPS)"
     }
   ],
   "equipos_maestro": 189,
   "cargas": {
-    "filas": 4625,
-    "litros_totales": 711065.3,
+    "filas": 4683,
+    "litros_totales": 720231.7,
     "sin_fecha": 0,
     "sin_litros": 0
   },
   "gps": {
-    "filas_equipo_mes": 908,
+    "filas_equipo_mes": 907,
     "cobertura_por_mes": [
       {
         "mes": "2026-01",
@@ -156,7 +150,7 @@
     "remitos_en_conflicto": 6,
     "filas_en_conflicto": 12
   },
-  "duplicados_exactos_detectados": 3,
+  "duplicados_exactos_detectados": 4,
   "equipos_analizados": 189,
   "hallazgos_generados": 20,
   "hallazgos_por_id": {
