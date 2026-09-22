@@ -13,7 +13,7 @@
  */
 
 import { normalizeEquipoKey, getPrefijo, getDenominacion, partesFecha, getProvincia, getNombreCentroCosto, tipoLugarCarga, getBandera } from './normalizer.js';
-import { diasHabiles } from './feriados.js';
+import { diasHabiles, ultimoDiaHabilDelMes } from './feriados.js';
 
 export const RULE_L_100KM = ['TR', 'CM', 'CH', 'FG', 'AU'];
 // CA (CALDERA) y LM (LIMPIEZA) se suman acá a propósito: consumen por tiempo de uso, no por
@@ -272,14 +272,65 @@ export function mesesDeRegistro(r) {
  * Un reporte de GPS que abarca meses sin cargas queda afuera en vez de repartirse a
  * prorrata: repartirlo sería inventar km que nadie midió.
  */
-export function alinearCargasYGps(cargasList = [], gpsList = []) {
+/**
+ * Meses que una fuente cubre ENTEROS, y los que cubre a medias.
+ *
+ * Por qué hace falta: una razón de consumo divide litros por actividad, y si la planilla de
+ * cargas llega hasta el 14 mientras el GPS cubre el mes completo, el numerador es de medio mes
+ * y el denominador de uno entero. El número sale, es plausible, y está mal por casi la mitad.
+ * Es la regla 1 otra vez, pero en el eje que `alinearCargasYGps()` no miraba: esa función
+ * intersecta los meses que cada fuente TOCA, sin preguntar si los cubre hasta el final.
+ *
+ * La completitud es una propiedad de la FUENTE, no del equipo. Un equipo puede no haber cargado
+ * la última semana del mes por motivos suyos y eso no vuelve al mes incompleto; lo que lo vuelve
+ * incompleto es que la planilla entera se corte ahí. Por eso esto se calcula una vez sobre todos
+ * los registros de la fuente y se aplica igual a todos los equipos.
+ *
+ * `campoFin` distingue los dos tipos de registro: las cargas son puntuales (`fecha`) y los
+ * reportes de GPS declaran su propio rango (`fecha_hasta`), así que un GPS mensual cubre el mes
+ * entero por declaración aunque su última fila sea del día 20.
+ *
+ * Medido sobre los archivos reales de 2026: los ocho meses de enero a agosto dan completos
+ * —incluido mayo, cuyo 31 es domingo y cuya última carga es del 30— y septiembre da incompleto
+ * (última carga el 14 de 30).
+ */
+export function mesesCompletosDeFuente(registros = [], campoFin = 'fecha') {
+    const finPorMes = new Map();
+    for (const r of registros) {
+        if (!r) continue;
+        const fin = String(r[campoFin] || r.fecha || '');
+        if (!/^\d{4}-\d{2}-\d{2}/.test(fin)) continue;
+        // Un reporte multi-mes cierra TODOS los meses que cubre salvo el último, que es el
+        // que puede quedar a medias.
+        for (const ym of mesesDeRegistro(r)) {
+            const prev = finPorMes.get(ym);
+            if (!prev || fin > prev) finPorMes.set(ym, fin);
+        }
+    }
+    const completos = new Set(), incompletos = new Map();
+    for (const [ym, fin] of finPorMes) {
+        const corte = ultimoDiaHabilDelMes(ym);
+        if (corte && fin.slice(0, 10) >= corte) completos.add(ym);
+        else incompletos.set(ym, { hasta: fin.slice(0, 10), esperado: corte });
+    }
+    return { completos, incompletos };
+}
+
+export function alinearCargasYGps(cargasList = [], gpsList = [], mesesIncompletos = new Set()) {
     const mesesCargas = new Set();
     cargasList.forEach(c => { const m = mesDe(c); if (m) mesesCargas.add(m); });
 
     const mesesGps = new Set();
     gpsList.forEach(g => mesesDeRegistro(g).forEach(m => mesesGps.add(m)));
 
-    const comunes = new Set([...mesesCargas].filter(m => mesesGps.has(m)));
+    let comunes = new Set([...mesesCargas].filter(m => mesesGps.has(m)));
+
+    // Un mes que alguna de las dos fuentes cubre a medias sale del comun: el ratio quedaria con
+    // el numerador de medio mes y el denominador de uno entero. `mesesIncompletos` se pasa desde
+    // `analizarFlota()`, que lo calcula UNA vez sobre toda la fuente — la completitud es de la
+    // planilla, no del equipo (ver mesesCompletosDeFuente).
+    const recortados = [...comunes].filter(m => mesesIncompletos.has(m)).sort();
+    if (recortados.length) comunes = new Set([...comunes].filter(m => !mesesIncompletos.has(m)));
 
     const cargas = cargasList.filter(c => { const m = mesDe(c); return m && comunes.has(m); });
     // Solo el GPS que cae ENTERO dentro de los meses comunes: uno que además cubre meses sin
@@ -304,7 +355,11 @@ export function alinearCargasYGps(cargasList = [], gpsList = []) {
         sinMesComun: comunes.size === 0 && mesesCargas.size > 0 && mesesGps.size > 0,
         cargasFuera: cargasList.length - cargas.length,
         gpsFuera: gpsList.length - gps.length,
-        gpsParcial
+        gpsParcial,
+        // Se declara, no se esconde: un mes que salio del calculo tiene que poder nombrarse en
+        // la UI. "Que falte un mes NO es un error" (decision cerrada 1), asi que esto es
+        // informacion, nunca una advertencia.
+        mesesIncompletosRecortados: recortados
     };
 }
 
@@ -535,7 +590,7 @@ export function jornadaPonderada(equipo, ubicacion, meses = []) {
 /**
  * Métricas de un equipo, con los pasos del cálculo incluidos.
  */
-export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirmed = null) {
+export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirmed = null, mesesIncompletos = new Set()) {
     const calcType = determineConsumptionType(equipo, cargasList, confirmed);
 
     let totalLitros = 0, totalCosto = 0;
@@ -548,7 +603,7 @@ export function calculateMetrics(equipo, cargasList = [], gpsList = [], confirme
     const totalHoras = horas.total;
 
     // Base ALINEADA del ratio: mismos meses de los dos lados (ver alinearCargasYGps).
-    const alin = alinearCargasYGps(cargasList, gpsList);
+    const alin = alinearCargasYGps(cargasList, gpsList, mesesIncompletos);
     let litrosAlin = 0;
     alin.cargas.forEach(c => { litrosAlin += parseFloat(c.litros) || 0; });
     let kmAlin = 0;
@@ -908,10 +963,17 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
     gps.forEach(r => asignar(r, 'gps'));
     otros.forEach(r => asignar(r, 'otros'));
 
+    // Completitud de cada fuente: se calcula UNA vez sobre todas las filas, no por equipo. Un
+    // equipo que no cargó la última semana no vuelve al mes incompleto; lo vuelve incompleto que
+    // la planilla entera se corte ahí (ver mesesCompletosDeFuente).
+    const compCargas = mesesCompletosDeFuente(allCargas, 'fecha');
+    const compGps = mesesCompletosDeFuente(allGps, 'fecha_hasta');
+    const mesesIncompletos = new Set([...compCargas.incompletos.keys(), ...compGps.incompletos.keys()]);
+
     const filas = equipos.map(eq => {
         const g = porEquipo.get(eq.interno) || { cargas: [], gps: [], otros: [] };
         const confirmed = getConfirmedConsumption(eq, estimados);
-        const metrics = calculateMetrics(eq, g.cargas, g.gps, confirmed);
+        const metrics = calculateMetrics(eq, g.cargas, g.gps, confirmed, mesesIncompletos);
         // L/m³ de Loop: alineación propia, con su propio período común. No se deriva de
         // `metrics.alineacion`, que es el de cargas∩GPS y casi nunca coincide con el de
         // cargas∩entregas. Es contexto, no reemplaza al L/hora ni al L/100km: distingue
@@ -992,6 +1054,18 @@ export function analizarFlota({ equipos = [], rawRecords = [], estimados = [], f
         // KPI = Σ tarjetas + esto, exactamente.
         sin_asignar: { litros: litrosHuerfanos, km: kmHuerfanos, horas: horasHuerfanas, codigos: huerfanos.length },
         fuera_de_periodo: fueraDePeriodo,
+        // Meses que alguna planilla cubre a medias. Se publica para que la UI pueda declararlo:
+        // el usuario tiene que poder ver POR QUE un mes no entro al calculo, sin que se le
+        // presente como un error suyo (decision cerrada 1: que falte un mes NO es un error).
+        meses_incompletos: [...mesesIncompletos].sort().map(ym => {
+            const c = compCargas.incompletos.get(ym), g = compGps.incompletos.get(ym);
+            return {
+                mes: ym,
+                cargas_hasta: c ? c.hasta : null,
+                gps_hasta: g ? g.hasta : null,
+                esperado_hasta: (c || g).esperado
+            };
+        }),
         cantidad_cargas: cargas.length, cantidad_gps: gps.length, cantidad_otros: otros.length,
         con_meta: filas.filter(f => f.confirmed).length,
         sobre_meta: filas.filter(f => f.metrics.desvio_pct !== null && f.metrics.desvio_pct > 15).length,

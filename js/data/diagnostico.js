@@ -1459,6 +1459,36 @@ export function investigarMeta(fila, todas = [], estimadosCrudos = []) {
 
 // ============================================================ HALLAZGOS
 
+/**
+ * Frase que declara los meses que alguna planilla cubre a medias, para pegarla al hallazgo que
+ * ya explica el período analizado.
+ *
+ * Se declara y NO se advierte: la decisión cerrada 1 dice que un mes que falta no es un error
+ * del usuario. La diferencia práctica es que un mes a medias SÍ cambiaría el consumo si entrara
+ * —medio mes de litros contra un mes entero de actividad—, así que el usuario tiene derecho a
+ * saber por qué no está, sin que se le pida que lo arregle.
+ */
+function notaMesesIncompletos(totales) {
+    const inc = (totales && totales.meses_incompletos) || [];
+    if (!inc.length) return '';
+    const detalle = inc.map(m => {
+        const cuales = [
+            m.cargas_hasta ? `Cargas hasta el ${esc(m.cargas_hasta.slice(8))}` : null,
+            m.gps_hasta ? `GPS hasta el ${esc(m.gps_hasta.slice(8))}` : null
+        ].filter(Boolean).join(' · ');
+        return `<strong>${esc(m.mes)}</strong> (${cuales}, el mes cierra el ${esc(String(m.esperado_hasta || '').slice(8))})`;
+    }).join(', ');
+    return ` <br><br>Además, ${inc.length === 1 ? 'un mes está' : `${inc.length} meses están`} cubierto${inc.length === 1 ? '' : 's'} solo en parte: ${detalle}. ` +
+porQueNoEntraAlCalculo();
+}
+
+/** Separado para que la frase larga no quede ilegible dentro del template de arriba. */
+function porQueNoEntraAlCalculo() {
+    return `Un mes a medias <strong>no entra al cálculo de consumo</strong>: dividiría los litros ` +
+        `de media parte del mes por la actividad de un mes entero. Los litros siguen contando en ` +
+        `los totales y en la tabla de cargas — lo único que no se hace sobre ese mes es la razón.`;
+}
+
 export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ralentiEstados = [], noFlotaAceptados = [], equiposExcluidos = [], extra = {}) {
     const { prefijosOficiales = [], prefijosIgnorados = [] } = extra;
     const hallazgos = [];
@@ -2380,7 +2410,7 @@ export function generarDiagnostico(filas = [], totales = {}, rawRecords = [], ra
             id: 'meses_sin_gps', severidad: 'baja', icono: 'fa-calendar-days',
             no_comparar: true,
             titulo: `Período analizado: ${cal.mesesGps.length} mes${cal.mesesGps.length === 1 ? '' : 'es'} en común entre Cargas y GPS`,
-            detalle: `El análisis de consumo se hace sobre los meses que tienen datos en <strong>ambas fuentes</strong> (Cargas y Resumen de Flota). Es así por diseño: dividir litros de un período por actividad de otro daría un número sin sentido. Los ${cal.mesesSinGps.length} mes${cal.mesesSinGps.length === 1 ? '' : 'es'} sin Resumen de Flota tienen <strong>${fmt(nCargas)} cargas (${fmt(litros)} L, $${fmt(costo)})</strong> que se muestran en la tabla de cargas pero quedan fuera del período analizado — el desglose del KPI de litros lo detalla. Meses con GPS: ${cal.mesesGps.join(', ') || '—'}.`,
+            detalle: `El análisis de consumo se hace sobre los meses que tienen datos en <strong>ambas fuentes</strong> (Cargas y Resumen de Flota). Es así por diseño: dividir litros de un período por actividad de otro daría un número sin sentido. Los ${cal.mesesSinGps.length} mes${cal.mesesSinGps.length === 1 ? '' : 'es'} sin Resumen de Flota tienen <strong>${fmt(nCargas)} cargas (${fmt(litros)} L, $${fmt(costo)})</strong> que se muestran en la tabla de cargas pero quedan fuera del período analizado — el desglose del KPI de litros lo detalla. Meses con GPS: ${cal.mesesGps.join(', ') || '—'}.` + notaMesesIncompletos(totales),
             impacto_costo: 0,
             equipos: cal.mesesSinGps.map(m => ({
                 interno: m.periodo, denominacion: `${m.equipos} equipos con cargas`,

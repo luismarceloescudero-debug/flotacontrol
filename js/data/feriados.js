@@ -72,6 +72,25 @@ export function esDiaHabil(fechaISO) {
  * feriados móviles cargados, solo se descuentan fines de semana para ese tramo (se avisa
  * con `completo:false` para que la UI pueda aclararlo).
  */
+/**
+ * Último día hábil de un mes "YYYY-MM".
+ *
+ * Existe para poder decidir si un mes está COMPLETO en una planilla sin caer en la trampa
+ * obvia: "hay dato el último día del mes" falla cuando el 31 cae domingo. Medido sobre los
+ * archivos reales de 2026, mayo es exactamente ese caso —el 31 es domingo, la última carga es
+ * del 30— y con la regla ingenua quedaría marcado como incompleto sin serlo.
+ */
+export function ultimoDiaHabilDelMes(ym) {
+    if (!/^\d{4}-\d{2}$/.test(String(ym || ''))) return null;
+    const [anio, mes] = String(ym).split('-').map(Number);
+    const ultimo = new Date(anio, mes, 0).getDate();
+    for (let d = ultimo; d >= 1; d--) {
+        const iso = `${ym}-${String(d).padStart(2, '0')}`;
+        if (esDiaHabil(iso)) return iso;
+    }
+    return `${ym}-01`;
+}
+
 export function diasHabiles(desdeISO, hastaISO) {
     if (!desdeISO || !hastaISO) return { dias: 0, sabados: 0, diasPonderados: 0, totalCorridos: 0, completo: true };
     const desde = new Date(desdeISO + 'T00:00:00');

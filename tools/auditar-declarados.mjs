@@ -22,7 +22,8 @@
  */
 import { consumoDesdeActividadDeclarada, generarDiagnostico, parIdentico, sugerirMeta, investigarMeta, metaDesdeConsumoReal, diasHabilesDeMeses, confiabilidad } from '../js/data/diagnostico.js';
 import { diasHabiles } from '../js/data/feriados.js';
-import { jornadaEsperada, jornadaDelMes, jornadaPonderada, JORNADA_EXCEPCIONES, mesesEntre, alinearCargasYEntregas, MIN_ENTREGAS_L_M3 } from '../js/data/analyzer.js';
+import { jornadaEsperada, jornadaDelMes, jornadaPonderada, JORNADA_EXCEPCIONES, mesesEntre, alinearCargasYEntregas, MIN_ENTREGAS_L_M3, mesesCompletosDeFuente, alinearCargasYGps } from '../js/data/analyzer.js';
+import { ultimoDiaHabilDelMes } from '../js/data/feriados.js';
 
 const VERBOSO = process.argv.includes('--verboso');
 const fallas = [];
@@ -601,6 +602,83 @@ const PERIODO_6M = { desde: '2026-01-01', hasta: '2026-06-30' };
     const e = alinearCargasYEntregas([carga('2026-01', 100)], []);
     check('l_m3', 'un equipo sin entregas da null sin marcar sinMesComun',
         e.consumo_l_m3 === null && e.sinMesComun === false, `${e.consumo_l_m3} / ${e.sinMesComun}`);
+}
+
+// ============================================================ MES COMPLETO
+// El caso que esto atrapa no se ve hoy en los archivos reales, y por eso necesita chequeo propio:
+// septiembre 2026 tiene cargas hasta el 14 pero NO tiene GPS, asi que no entra en la alineacion
+// de nadie y ningun total se mueve. El dia que llegue el GPS de septiembre, sin esta regla el
+// ratio dividiria medio mes de litros por un mes entero de actividad — plausible y mal por casi
+// la mitad.
+//
+// `verificar` no puede verlo (compara totales, y hoy no cambia ninguno) y `auditar-calculos`
+// tampoco (recomputa sobre los datos reales, donde el caso no existe). Solo se prueba armando
+// el mes incompleto a mano, que es lo que hace este arnes.
+{
+    // La trampa obvia seria "hay dato el ultimo dia del mes". Mayo 2026 la desarma: el 31 es
+    // domingo, la ultima carga es del 30, y el mes esta completo.
+    check('mes_completo', 'el corte es el ultimo dia HABIL, no el ultimo dia del mes',
+        ultimoDiaHabilDelMes('2026-05') === '2026-05-29', ultimoDiaHabilDelMes('2026-05'));
+    check('mes_completo', 'cuando el ultimo dia del mes es habil, ese es el corte',
+        ultimoDiaHabilDelMes('2026-07') === '2026-07-31', ultimoDiaHabilDelMes('2026-07'));
+    check('mes_completo', 'un ym invalido no rompe, devuelve null',
+        ultimoDiaHabilDelMes('cualquier cosa') === null, String(ultimoDiaHabilDelMes('cualquier cosa')));
+
+    const carga = (fecha, litros) => ({ fecha, periodo: fecha.slice(0, 7), litros });
+    const gpsMes = (ym, km, horas) => {
+        const [y, m] = ym.split('-').map(Number);
+        const ult = new Date(y, m, 0).getDate();
+        return { fecha: `${ym}-01`, fecha_hasta: `${ym}-${String(ult).padStart(2, '0')}`, periodo: ym, distancia: km, horas: { total: horas } };
+    };
+
+    // Mayo completo (ultima carga el 30, con el 31 domingo) y septiembre a medias.
+    const comp = mesesCompletosDeFuente(
+        [carga('2026-05-30', 100), carga('2026-09-14', 100)], 'fecha');
+    check('mes_completo', 'mayo con carga el 30 y el 31 domingo cuenta como COMPLETO',
+        comp.completos.has('2026-05'), [...comp.completos].join(','));
+    check('mes_completo', 'septiembre con carga hasta el 14 cuenta como INCOMPLETO',
+        comp.incompletos.has('2026-09'), [...comp.incompletos.keys()].join(','));
+    check('mes_completo', 'y el incompleto declara hasta donde llego y hasta donde deberia',
+        comp.incompletos.get('2026-09')?.hasta === '2026-09-14' && comp.incompletos.get('2026-09')?.esperado === '2026-09-30',
+        JSON.stringify(comp.incompletos.get('2026-09')));
+
+    // El caso que motiva todo: medio mes de litros contra un mes entero de actividad.
+    const cargas = [carga('2026-08-15', 1000), carga('2026-08-31', 1000), carga('2026-09-10', 1000)];
+    const gps = [gpsMes('2026-08', 10000, 200), gpsMes('2026-09', 10000, 200)];
+    const incompletos = new Set(['2026-09']);
+
+    const sinRegla = alinearCargasYGps(cargas, gps);
+    const conRegla = alinearCargasYGps(cargas, gps, incompletos);
+    check('mes_completo', 'sin la regla, el mes a medias entra al periodo comun',
+        sinRegla.meses.length === 2, JSON.stringify(sinRegla.meses));
+    check('mes_completo', 'con la regla, queda solo el mes completo',
+        JSON.stringify(conRegla.meses) === JSON.stringify(['2026-08']), JSON.stringify(conRegla.meses));
+    check('mes_completo', 'y se declara cual mes se recorto, no desaparece en silencio',
+        JSON.stringify(conRegla.mesesIncompletosRecortados) === JSON.stringify(['2026-09']),
+        JSON.stringify(conRegla.mesesIncompletosRecortados));
+
+    // El numero: sin la regla el ratio sale 15% mas bajo, porque suma los litros de medio mes de
+    // septiembre contra los km de un mes entero.
+    const lSin = sinRegla.cargas.reduce((s, c) => s + c.litros, 0);
+    const kSin = sinRegla.gps.reduce((s, g) => s + g.distancia, 0);
+    const lCon = conRegla.cargas.reduce((s, c) => s + c.litros, 0);
+    const kCon = conRegla.gps.reduce((s, g) => s + g.distancia, 0);
+    const ratioSin = lSin / kSin * 100, ratioCon = lCon / kCon * 100;
+    check('mes_completo', 'el mes a medias corre el consumo de verdad (no es un chequeo trivial)',
+        Math.abs(ratioSin - ratioCon) > 1, `sin regla ${ratioSin.toFixed(2)} vs con regla ${ratioCon.toFixed(2)} L/100km`);
+    check('mes_completo', 'con la regla el ratio usa 2.000 L sobre 10.000 km',
+        casi(lCon, 2000) && casi(kCon, 10000), `${lCon} L / ${kCon} km`);
+
+    // Un GPS mensual cubre el mes entero por declaracion, aunque su ultima fila sea del dia 20.
+    const compGps = mesesCompletosDeFuente([gpsMes('2026-08', 1, 1)], 'fecha_hasta');
+    check('mes_completo', 'un GPS mensual cubre el mes entero por su rango declarado',
+        compGps.completos.has('2026-08'), [...compGps.completos].join(','));
+
+    // Sin meses incompletos, la alineacion tiene que dar exactamente lo de siempre.
+    const soloCompletos = alinearCargasYGps([carga('2026-08-31', 100)], [gpsMes('2026-08', 100, 10)], new Set());
+    check('mes_completo', 'sin meses incompletos la alineacion no se mueve',
+        JSON.stringify(soloCompletos.meses) === JSON.stringify(['2026-08']) && soloCompletos.mesesIncompletosRecortados.length === 0,
+        JSON.stringify(soloCompletos.meses));
 }
 
 // ============================================================ REPORTE
