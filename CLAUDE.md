@@ -914,6 +914,35 @@ el maestro) se movió a un botón "Empezar de cero" dentro de ese mismo panel �
 `confirm()` propio porque es irreversible y borra ediciones a mano, pero ahora se decide viendo el
 dato, no a ciegas en el primer click.
 
+**El modal "Revisar columnas antes de importar" de la captura no existe en este repo.** La
+captura del usuario mostraba un popup con "¿Qué es esta planilla?" y una tabla "Corresponde a"
+por columna, para archivos que no matchean ningún formato conocido. `grep` sobre todo `js/` no
+encontró ese texto en ningún lado, y `dispatchFileParser()` (js/parsers/index.js) hoy solo tiene
+dos caminos: parsea con `parseXLSX()` o tira un error de "formato no soportado" — sin ningún paso
+intermedio de mapeo de columnas. Conclusión: ese modal nunca se llegó a integrar al código que
+corre — es una captura de una propuesta (posiblemente armada con Stitch u otra herramienta de
+diseño) que no llegó a mergearse. No había nada que eliminar. Si alguna vez se construye un flujo
+así para columnas no reconocidas, tiene que respetar el orden que pidió el usuario: normalizar →
+alinear períodos → calcular, y recién ahí (si hace falta) pedir una decisión — nunca antes.
+
+**Las filas de hallazgo con una nota larga corrían la columna de botones.** ✅ `.diag-eq`/`.diag-val`
+(la lista de equipos dentro de cada tarjeta de Diagnóstico automático) no tenían ancho fijo, así
+que una nota de contexto larga en una sola fila (ej. CM43: *"⚠ base floja: 13,9 hs medidas en 1
+registro de GPS — el % no es comparable"*) estiraba esa fila entera y corría sus botones de acción
+a la derecha respecto de las demás filas de la misma lista — es lo que el usuario reportó como
+*"el contenido no se ve alineado"* en subutilización y en ralentí de camionetas. Ahora las dos
+columnas tienen `flex: 0 0 130px` / `flex: 0 0 300px` (con `flex-basis: auto` de vuelta en el
+breakpoint mobile, donde la fila pasa a columna) y `.diag-val small` envuelve en vez de truncar
+con ellipsis — la nota larga se lee completa, en más líneas, sin romper la alineación de las filas
+vecinas. Verificado en el navegador: 9 filas con esa nota, los 9 botones "Investigar y marcar
+aceptable" en el mismo X.
+
+**Dos botones de la tarjeta de equipo salían con el estilo por defecto del navegador.**
+✅ "Elegir referentes" y "Actualizar meta al consumo actual" llevaban `class="btn-sm ..."` sin
+ninguna clase base de color (`.btn-sm` en panel.css solo define tamaño, no fondo ni texto) — por
+eso salían blancos con texto negro, en vez del tema oscuro del resto de los botones vecinos. Se
+les agregó `.btn-secondary`, igual que "Declarar horas/km estimados" y "Ver detalle de cálculo".
+
 ### Deuda técnica conocida (medida, no supuesta)
 
 - **`/api/chat` no tiene rate limiting.** El `APP_SECRET_VALUE` viaja en el JS del navegador y está
