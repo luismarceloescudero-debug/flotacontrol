@@ -19,7 +19,8 @@ import {
 } from '../data/database.js';
 import {
     parseDate, parseNumber, normalizeString, normalizeEquipoKey, aggregateHours, parseExcelHours,
-    getDenominacion, parseConsumoEstimado, extraerIdentidad, partesFecha, slugCampo, parseHoraDeFecha
+    getDenominacion, parseConsumoEstimado, extraerIdentidad, partesFecha, slugCampo, parseHoraDeFecha,
+    corregirCodigoConocido, corregirCaloventorPorLugar
 } from '../data/normalizer.js';
 
 // Nombres de columna que identifican al equipo, en orden de preferencia.
@@ -251,7 +252,16 @@ function identidadDeFila(row, mapeo) {
         const v = getValFuzzy(row, [c]);
         if (v) candidatas.push(v);
     });
-    return extraerIdentidad(...candidatas);
+    return aplicarCorreccionConocida(extraerIdentidad(...candidatas));
+}
+
+// Aplica corregirCodigoConocido() (normalizer.js) a la identidad ya extraída de la fila —
+// corrección confirmada por HSV, no heurística, se aplica en cualquier tipo de planilla.
+function aplicarCorreccionConocida(id) {
+    if (!id.interno) return id;
+    const corregido = corregirCodigoConocido(id.interno);
+    if (corregido === id.interno) return id;
+    return { ...id, interno: corregido, interno_key: normalizeEquipoKey(corregido) };
 }
 
 /** Campos comunes a todo movimiento: identidad, fecha desglosada y columnas originales. */
@@ -382,11 +392,19 @@ function unirDistinto(a, b) {
 async function handleCargas(filas, filename, mapeo) {
     const recs = [];
     filas.forEach(row => {
-        const id = identidadDeFila(row, mapeo);
+        let id = identidadDeFila(row, mapeo);
         if (!id.interno && !id.dominio) return;
 
         const fechaVal = val(row, 'fecha', ['FECHA', 'DATE'], mapeo);
         const fecha = parseDate(fechaVal);
+        const lugar_carga = normalizeString(val(row, 'lugar', ['LUGAR DE CARGA', 'LUGAR', 'SURTIDOR'], mapeo)) || '';
+        // CALOVENTOR/MANTENIMIENTO/SURTIDOR en la columna de vehículo: caloventor de sede, no
+        // equipo rodante — se resuelve con el lugar de carga de esta misma fila (ver
+        // corregirCaloventorPorLugar en normalizer.js).
+        const internoCorregido = corregirCaloventorPorLugar(id.interno, lugar_carga);
+        if (internoCorregido !== id.interno) {
+            id = { ...id, interno: internoCorregido, interno_key: normalizeEquipoKey(internoCorregido) };
+        }
         recs.push({
             ...baseMovimiento(row, id, fecha, filename),
             type: 'carga',
@@ -412,7 +430,7 @@ async function handleCargas(filas, filename, mapeo) {
             tipo: normalizeString((mapeo && mapeo.tipo && row[mapeo.tipo] !== undefined) ? row[mapeo.tipo] : row['TIPO']) || '',
             sector: normalizeString(val(row, 'sector', ['SECTOR'], mapeo)) || '',
             centro_costo: normalizeString(val(row, 'centro_costo', ['CENTRO DE COSTO', 'C. COSTO'], mapeo)) || '',
-            lugar_carga: normalizeString(val(row, 'lugar', ['LUGAR DE CARGA', 'LUGAR', 'SURTIDOR'], mapeo)) || ''
+            lugar_carga
         });
     });
     if (recs.length) await insertRawRecords(recs);

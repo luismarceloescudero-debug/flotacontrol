@@ -332,6 +332,43 @@ function aUnaEdicion(a, b) {
  * Devuelve el interno real más parecido, o null si no aplica. Nunca corrige solo: es una
  * sugerencia para que una persona confirme contra el comprobante, no una asignación automática.
  */
+/**
+ * Correcciones de código confirmadas por HSV contra el comprobante real — a diferencia de
+ * sugerirPosibleTypo() (que solo sugiere, para que una persona confirme), estas ya están
+ * confirmadas y se aplican directo, sin pasar por revisión manual ni por "parece error de
+ * tipeo": GR01 es justamente el caso real que motivó aUnaEdicion()/sugerirPosibleTypo() más
+ * arriba (un chofer tipeó GR01 en vez de GE01 esa semana) — confirmado, deja de quedar como
+ * hallazgo. TP0101 es TP01 con un cero de más (no calzaba con sugerirPosibleTypo porque el
+ * prefijo TP ya es conocido — ver el filtro de esa función — así que quedaba aceptado en
+ * silencio como gasto fuera de flota en vez de señalado).
+ */
+const CODIGOS_CORREGIDOS = { GR01: 'GE01', TP0101: 'TP01' };
+
+export function corregirCodigoConocido(interno) {
+    const clave = normalizeString(interno).replace(/[\s\-_]/g, '');
+    return CODIGOS_CORREGIDOS[clave] || interno;
+}
+
+/**
+ * CALOVENTOR / MANTENIMIENTO / SURTIDOR en la columna de vehículo de Cargas no son un equipo
+ * rodante: son cargas para el caloventor de una sede. HSV tiene un solo caloventor por sede
+ * (CL02 Godoy Cruz, CL03 Tunuyán, CL04 San Martín — confirmado por HSV), así que el LUGAR DE
+ * CARGA de esa misma fila alcanza para resolver cuál, sin ambigüedad ni revisión manual.
+ */
+const CODIGOS_CALOVENTOR = new Set(['CALOVENTOR', 'MANTENIMIENTO', 'SURTIDOR']);
+const CALOVENTOR_POR_SEDE = [
+    ['GODOY CRUZ', 'CL02'],
+    ['TUNUYAN', 'CL03'],
+    ['SAN MARTIN', 'CL04']
+];
+
+export function corregirCaloventorPorLugar(interno, lugarCarga) {
+    if (!CODIGOS_CALOVENTOR.has(normalizeString(interno))) return interno;
+    const sede = normalizeString(lugarCarga);
+    const match = CALOVENTOR_POR_SEDE.find(([nombre]) => sede.includes(nombre));
+    return match ? match[1] : interno;
+}
+
 export function sugerirPosibleTypo(codigo, internosReales) {
     const clave = normalizeEquipoKey(codigo);
     if (!clave) return null;
