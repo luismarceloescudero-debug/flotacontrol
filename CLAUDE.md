@@ -808,6 +808,45 @@ que no existían cuando se congelaron. Los duplicados exactos pasaron de 3 a 4 (
 908 a 907 filas equipo-mes. Es el archivo que el ítem 8 reserva para comparar CM-43 contra CM-48
 en igualdad de período: si hace falta esa comparación, hay que volver a exportarlo.
 
+**Mes completo: una fuente que cubre el mes a medias no entra al ratio.** ✅
+`alinearCargasYGps()` intersectaba los meses que cada fuente **toca**, sin preguntar si los cubre
+hasta el final. Con las cargas cortadas el 14 y el GPS cubriendo el mes entero, el ratio queda con
+numerador de medio mes y denominador de uno completo: sale plausible y está mal por casi la mitad.
+
+**La completitud es de la FUENTE, no del equipo.** Un equipo puede no haber cargado la última
+semana por motivos suyos y eso no vuelve al mes incompleto. `mesesCompletosDeFuente()` se calcula
+una vez en `analizarFlota()` sobre `allCargas`/`allGps` —las listas **sin filtrar por período**— y
+se aplica igual a todos. Calcularlo sobre las filtradas fue el primer intento y no detectaba nada:
+septiembre ya salía del conjunto antes de llegar ahí.
+
+**El corte es el último día HÁBIL**, no el último del mes, y eso lo obligan los datos: mayo 2026
+termina domingo 31 y su última carga es del sábado 30, así que "hay dato el último día" lo marcaría
+incompleto sin serlo. `ultimoDiaHabilDelMes()` vive en feriados.js, al lado de `diasHabiles()`. Un
+GPS mensual cubre el mes entero por su rango declarado aunque su última fila sea del día 20, así
+que la función mira `fecha_hasta` en los registros con rango y `fecha` en las cargas.
+
+Se declara en el hallazgo que ya explica el período, como **información y no advertencia**
+(decisión cerrada 1). Medido: detecta `2026-09` (cargas hasta el 14, cierra el 30) y recorta **0
+equipos**, porque septiembre no tiene GPS. Es protección latente — el día que llegue ese GPS, sin
+esto el consumo de toda la flota se correría. Regresión en `auditar-declarados.mjs` (grupo
+`mes_completo`, 13 chequeos), el único arnés que puede verlo.
+
+**Estado medido de las dos unidades y del cálculo inverso (22/09/2026).** Sobre 183 equipos:
+
+| Situación | Equipos |
+|---|---|
+| Con L/hora **y** L/100km, mostradas juntas en la tarjeta | 67 |
+| Solo una de las dos | 2 |
+| Sin ninguna | 114 |
+
+De esos 114, **solo 9 son candidatos al cálculo inverso**: 59 no aparecen en ninguna planilla (0 L,
+0 GPS) y 46 tienen GPS pero ninguna carga, así que no hay litros que invertir. De los 9: seis ya
+reciben estimación de `actividadImplicita()` desde su propia meta, tres tienen par con datos medidos
+(CF38→CF37, CM10→CM09, CM43→CM48) y **tres no tienen rescate posible** (CL02, MT01, TP01): son los
+únicos de su denominación en toda la flota y ninguno de su tipo tiene consumo medido, así que
+ampliar la búsqueda a potencia o capacidad no cambia nada. Cobertura del maestro para esa búsqueda:
+marca 99%, modelo 97%, año 94%, potencia 76%, capacidad 58%.
+
 ### Deuda técnica conocida (medida, no supuesta)
 
 - **`/api/chat` no tiene rate limiting.** El `APP_SECRET_VALUE` viaja en el JS del navegador y está
