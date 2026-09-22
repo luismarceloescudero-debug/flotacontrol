@@ -4996,8 +4996,8 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
                 <small>${esc(sug.base_con_referentes || sug.base)} · rango real ${nf(sug.minimo, 1)}–${nf(sug.maximo, 1)}${sug.ajustada ? ' · <b>referentes elegidos a mano</b>' : ''}</small>
             </button>
             <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>
-            <button class="btn-sm btn-elegir-referentes" data-interno="${esc(f.equipo.interno)}" title="Sacar un par que no es comparable, o sumar uno que la regla no vio"><i class="fa-solid fa-users-gear"></i> Elegir referentes</button>` : ''}
-            ${m.consumo_real > 0 ? `<button class="btn-sm btn-actualizar-meta" data-interno="${esc(f.equipo.interno)}" title="Mover la meta de este equipo a lo que viene consumiendo de verdad. Se hace de a un equipo: alinear todas de golpe silenciaría el sobreconsumo."><i class="fa-solid fa-arrows-rotate"></i> Actualizar meta al consumo actual</button>` : ''}
+            <button class="btn-secondary btn-sm btn-elegir-referentes" data-interno="${esc(f.equipo.interno)}" title="Sacar un par que no es comparable, o sumar uno que la regla no vio"><i class="fa-solid fa-users-gear"></i> Elegir referentes</button>` : ''}
+            ${m.consumo_real > 0 ? `<button class="btn-secondary btn-sm btn-actualizar-meta" data-interno="${esc(f.equipo.interno)}" title="Mover la meta de este equipo a lo que viene consumiendo de verdad. Se hace de a un equipo: alinear todas de golpe silenciaría el sobreconsumo."><i class="fa-solid fa-arrows-rotate"></i> Actualizar meta al consumo actual</button>` : ''}
             <div class="edit-actions">
                 <button class="btn-primary btn-card-save"><i class="fa-solid fa-check"></i> Guardar</button>
                 <button class="btn-secondary btn-card-cancel">Cancelar</button>
@@ -5257,8 +5257,8 @@ function abrirOverlayEquipo(fila, analisis) {
                 <small>${esc(sug.base_con_referentes || sug.base)} · rango real ${nf(sug.minimo, 1)}–${nf(sug.maximo, 1)}${sug.ajustada ? ' · <b>referentes elegidos a mano</b>' : ''}</small>
               </button>
               <button class="btn-sugerencia-detalle" ${sugAttrs}><i class="fa-solid fa-circle-info"></i> ¿De qué equipos sale?</button>
-              <button class="btn-sm btn-elegir-referentes" data-interno="${esc(fila.equipo.interno)}" title="Sacar un par que no es comparable, o sumar uno que la regla no vio"><i class="fa-solid fa-users-gear"></i> Elegir referentes</button>` : ''}
-              ${m.consumo_real > 0 ? `<button class="btn-sm btn-actualizar-meta" data-interno="${esc(fila.equipo.interno)}" title="Mover la meta de este equipo a lo que viene consumiendo de verdad"><i class="fa-solid fa-arrows-rotate"></i> Actualizar meta al consumo actual</button>` : ''}
+              <button class="btn-secondary btn-sm btn-elegir-referentes" data-interno="${esc(fila.equipo.interno)}" title="Sacar un par que no es comparable, o sumar uno que la regla no vio"><i class="fa-solid fa-users-gear"></i> Elegir referentes</button>` : ''}
+              ${m.consumo_real > 0 ? `<button class="btn-secondary btn-sm btn-actualizar-meta" data-interno="${esc(fila.equipo.interno)}" title="Mover la meta de este equipo a lo que viene consumiendo de verdad"><i class="fa-solid fa-arrows-rotate"></i> Actualizar meta al consumo actual</button>` : ''}
               <div class="edit-actions overlay-edit-actions">
                 <button class="btn-primary btn-card-save"><i class="fa-solid fa-check"></i> Guardar</button>
                 <button class="btn-secondary btn-overlay-close-cancel">Cancelar</button>

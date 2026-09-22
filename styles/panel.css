@@ -194,9 +194,14 @@
 .diag-lista li:last-child { border-radius: 0 0 8px 8px; }
 .diag-lista li:hover { background: var(--bg-card-hover); }
 .diag-lista .chk-ralenti-promedio { width: 15px; height: 15px; flex-shrink: 0; margin-right: 0.6rem; accent-color: var(--accent-cyan); cursor: pointer; }
-.diag-eq { display: flex; flex-direction: column; font-weight: 600; color: var(--accent-cyan); font-size: 0.88rem; }
+/* Ancho fijo en las dos columnas de texto: sin esto, una nota larga en una sola fila (p.ej.
+   "⚠ base floja: ..." en CM43) estira esa fila y corre los botones de acción a la derecha,
+   mientras el resto de las filas de la misma lista los deja más a la izquierda — la columna de
+   acciones deja de estar alineada entre filas. Con ancho fijo, la nota larga se envuelve en más
+   líneas dentro de su propia columna en vez de ensanchar la fila. */
+.diag-eq { display: flex; flex-direction: column; flex: 0 0 130px; min-width: 0; font-weight: 600; color: var(--accent-cyan); font-size: 0.88rem; }
 .diag-eq small { font-weight: 400; color: var(--text-muted); font-size: 0.72rem; }
-.diag-val { display: flex; flex-direction: column; text-align: right; font-weight: 600; color: var(--text-primary); font-size: 0.85rem; }
+.diag-val { display: flex; flex-direction: column; flex: 0 0 300px; min-width: 0; text-align: right; font-weight: 600; color: var(--text-primary); font-size: 0.85rem; }
 .diag-val small { font-weight: 400; color: var(--text-muted); font-size: 0.72rem; }
 
 .diag-bajo-promedio {
@@ -294,6 +299,9 @@
 @media (max-width: 720px) {
     .diag-body { padding-left: 1.1rem; }
     .diag-lista li { flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+    /* La fila pasa a columna: el ancho fijo de escritorio (pensado para alinear la columna de
+       acciones en una fila horizontal) ya no aplica, y dejarlo fijo solo recortaría el texto. */
+    .diag-eq, .diag-val { flex-basis: auto; width: 100%; }
     .diag-val { text-align: left; }
     .diag-acciones-bar { flex-direction: column; align-items: stretch; }
     .diag-acciones-sep { display: none; }
@@ -726,8 +734,11 @@
 .card-status { align-items: flex-start; }
 .card-status span { overflow-wrap: anywhere; line-height: 1.35; }
 .diag-titulo h3 { overflow-wrap: anywhere; }
-.diag-eq, .diag-val { min-width: 0; }
-.diag-eq small, .diag-val small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diag-eq small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* .diag-val small NO trunca: una nota de contexto larga (base floja, no comparable) vale más
+   completa que cortada — con el ancho fijo de arriba, se envuelve en su propia columna en vez
+   de romper la alineación de las filas vecinas. */
+.diag-val small { overflow-wrap: break-word; white-space: normal; }
 
 /* --- Identidad de la tarjeta: interno + dominio siempre visibles --- */
 .card-ident { min-width: 0; flex: 1; }
