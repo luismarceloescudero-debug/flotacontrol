@@ -1322,7 +1322,7 @@ button.meta-periodo-warn:hover { background: rgba(255, 179, 0, 0.12); border-sty
     font-size: 0.76rem; color: var(--text-secondary);
     cursor: help;
 }
-.card-cross-check i { color: #8b5cf6; font-size: 0.72rem; flex-shrink: 0; }
+.card-cross-check i { color: var(--accent-purple); font-size: 0.72rem; flex-shrink: 0; }
 .card-cross-check strong { color: var(--text-primary); }
 .card-cross-check small { color: var(--text-muted); margin-left: auto; }
 
@@ -1463,8 +1463,8 @@ button.meta-periodo-warn:hover { background: rgba(255, 179, 0, 0.12); border-sty
    ================================================================ */
 
 /* Fila huérfana (interno no en el maestro) */
-.carga-huerfana > td { background: rgba(245, 166, 35, 0.07) !important; }
-.carga-huerfana .cell-key { color: #f5a623; font-weight: 700; }
+.carga-huerfana > td { background: rgba(245, 158, 11, 0.07) !important; }
+.carga-huerfana .cell-key { color: var(--accent-amber); font-weight: 700; }
 .carga-corregida > td { background: rgba(52, 199, 89, 0.06) !important; }
 
 /* Badge "Sin asignar" */
@@ -1472,8 +1472,8 @@ button.meta-periodo-warn:hover { background: rgba(255, 179, 0, 0.12); border-sty
     display: inline-flex; align-items: center; gap: 0.35em;
     font-size: 0.72rem; font-weight: 700; padding: 0.15em 0.65em;
     border-radius: 999px;
-    background: rgba(245, 166, 35, 0.18); color: #f5a623;
-    border: 1px solid rgba(245, 166, 35, 0.4);
+    background: rgba(245, 158, 11, 0.18); color: var(--accent-amber);
+    border: 1px solid rgba(245, 158, 11, 0.4);
 }
 
 /* Badge "Corregido" */
@@ -1495,13 +1495,13 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
 
 /* Botón "Corregir" (naranja) */
 .btn-warn {
-    background: rgba(245, 166, 35, 0.15); color: #f5a623;
-    border: 1px solid rgba(245, 166, 35, 0.32);
+    background: rgba(245, 158, 11, 0.15); color: var(--accent-amber);
+    border: 1px solid rgba(245, 158, 11, 0.32);
     border-radius: 6px; cursor: pointer; font-size: 0.78rem; font-weight: 600;
     padding: 0.25em 0.75em; transition: background 0.15s;
     display: inline-flex; align-items: center; gap: 0.35em;
 }
-.btn-warn:hover { background: rgba(245, 166, 35, 0.3); }
+.btn-warn:hover { background: rgba(245, 158, 11, 0.3); }
 
 /* Botón "Eliminar" (rojo) */
 .btn-danger {
@@ -1623,9 +1623,9 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
 /* ---- Botón filtro huérfanas (Sin asignar activo) ---- */
 .btn-filtro-huerfanas { vertical-align: middle; }
 .btn-filtro-huerfanas.btn-warn-active {
-    background: rgba(245,166,35,0.25);
-    border-color: #f5a623;
-    color: #f5a623;
+    background: rgba(245, 158, 11, 0.25);
+    border-color: var(--accent-amber);
+    color: var(--accent-amber);
 }
 
 /* ---- Panel corrección: campos extra ---- */
@@ -1817,7 +1817,7 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
 .diag-estado-badge {
     display: inline-block; margin-left: 0.4rem; font-size: 0.7rem; font-weight: 700;
     padding: 0.12rem 0.45rem; border-radius: 6px;
-    background: rgba(224,160,0,0.13); color: var(--accent-yellow, #e0a000); white-space: nowrap;
+    background: rgba(245, 158, 11, 0.13); color: var(--accent-amber); white-space: nowrap;
 }
 .btn-diag-desatender:hover { color: var(--accent-amber); border-color: var(--accent-amber); }
 
