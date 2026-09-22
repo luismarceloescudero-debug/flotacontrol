@@ -1,10 +1,10 @@
 {
-  "generado": "2026-09-21T14:00:28.598Z",
+  "generado": "2026-09-22T18:13:57.699Z",
   "archivos": [
     {
       "archivo": "Cargas_Combustible_HSV_2026.xlsx",
       "tipo": "CARGAS",
-      "filas": 4683,
+      "filas": 4843,
       "etiqueta": "Cargas de Combustible"
     },
     {
@@ -94,8 +94,8 @@
   ],
   "equipos_maestro": 189,
   "cargas": {
-    "filas": 4683,
-    "litros_totales": 720231.7,
+    "filas": 4843,
+    "litros_totales": 745289,
     "sin_fecha": 0,
     "sin_litros": 0
   },
@@ -150,7 +150,7 @@
     "remitos_en_conflicto": 6,
     "filas_en_conflicto": 12
   },
-  "duplicados_exactos_detectados": 4,
+  "duplicados_exactos_detectados": 5,
   "equipos_analizados": 189,
   "hallazgos_generados": 20,
   "hallazgos_por_id": {
