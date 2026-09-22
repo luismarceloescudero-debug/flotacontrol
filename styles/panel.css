@@ -18,6 +18,12 @@
 .db-status-inner i { color: var(--accent-cyan); margin-right: 0.4rem; }
 .db-status-inner strong { color: var(--text-primary); }
 .db-status-files { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; }
+.btn-link-danger {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-muted); font-size: 0.78rem;
+    margin-top: 0.6rem; padding: 0; display: inline-flex; align-items: center; gap: 0.35rem;
+}
+.btn-link-danger:hover { color: var(--accent-red); }
 .chip {
     background: var(--bg-input);
     border: 1px solid var(--border-color);
@@ -1386,6 +1392,31 @@ button.meta-periodo-warn:hover { background: rgba(255, 179, 0, 0.12); border-sty
     flex-wrap: wrap; gap: 0.35rem;
     margin-top: 0.25rem;
 }
+
+/* Hallazgos de Diagnóstico automático que mencionan a este equipo, centralizados en su propia
+   tarjeta (overlay). Reusa la paleta de severidad de .diag-card — mismo significado de color,
+   una sola definición de qué es "alta"/"media"/"baja" (invariante 2). */
+.overlay-hallazgos { margin-top: 0.85rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.overlay-hallazgos-lista { display: flex; flex-direction: column; gap: 0.4rem; }
+.overlay-hallazgo-item {
+    display: flex; align-items: center; gap: 0.5rem;
+    width: 100%; text-align: left; cursor: pointer;
+    background: var(--bg-card); border: 1px solid var(--border-color); border-left-width: 3px;
+    border-radius: 6px; padding: 0.45rem 0.6rem;
+    font-size: 0.8rem; color: var(--text-secondary);
+    transition: background var(--transition-fast);
+}
+.overlay-hallazgo-item:hover { background: var(--bg-card-hover); }
+.overlay-hallazgo-titulo { flex: 1; }
+.overlay-hallazgo-item .diag-badge { font-size: 0.6rem; }
+.overlay-hallazgo-item.sev-alta { border-left-color: var(--accent-red); }
+.overlay-hallazgo-item.sev-alta i, .overlay-hallazgo-item.sev-alta .diag-badge { color: var(--accent-red); }
+.overlay-hallazgo-item.sev-media { border-left-color: var(--accent-amber); }
+.overlay-hallazgo-item.sev-media i, .overlay-hallazgo-item.sev-media .diag-badge { color: var(--accent-amber); }
+.overlay-hallazgo-item.sev-baja { border-left-color: var(--accent-blue); }
+.overlay-hallazgo-item.sev-baja i, .overlay-hallazgo-item.sev-baja .diag-badge { color: var(--accent-blue); }
+.overlay-hallazgo-item.sev-ok { border-left-color: var(--accent-green); }
+.overlay-hallazgo-item.sev-ok i, .overlay-hallazgo-item.sev-ok .diag-badge { color: var(--accent-green); }
 
 /* Columna edición */
 .equip-overlay-edit {

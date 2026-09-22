@@ -5,7 +5,7 @@
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
 import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta } from '../data/database.js';
-import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro, kmPorHoraDeTrabajo, KM_POR_HORA_MINIMO_COMPARABLE } from '../data/analyzer.js';
+import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro, kmPorHoraDeTrabajo } from '../data/analyzer.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
 import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica } from '../data/autocorreccion.js';
@@ -28,6 +28,12 @@ const RALENTI_INFO = {
     espera: { texto: 'espera operativa', clase: 'ralenti-warn', icono: 'fa-truck-ramp-box' },
     desperdicio: { texto: 'a revisar', clase: 'ralenti-alert', icono: 'fa-hourglass-half' }
 };
+
+// Severidad de un hallazgo: clase CSS y etiqueta. Vive acá porque la usan tanto la lista
+// principal de Diagnóstico automático como la sección de hallazgos por equipo del overlay
+// (invariante 2: una sola definición).
+const SEV_CLASE = { alta: 'sev-alta', media: 'sev-media', baja: 'sev-baja', ok: 'sev-ok' };
+const SEV_TEXTO = { alta: 'Prioridad alta', media: 'Revisar', baja: 'Menor', ok: 'Positivo' };
 
 let ultimoAnalisis = null;
 let datosCrudos = null;
@@ -857,8 +863,7 @@ function renderDiagnostico(analisis, rawRecords = []) {
         return;
     }
 
-    const sev = { alta: 'sev-alta', media: 'sev-media', baja: 'sev-baja', ok: 'sev-ok' };
-    const txt = { alta: 'Prioridad alta', media: 'Revisar', baja: 'Menor', ok: 'Positivo' };
+    const sev = SEV_CLASE, txt = SEV_TEXTO;
 
     const esHallazgoRalenti = (id) => id === 'ralenti' || id === 'ralenti_inverosimil' || id === 'ralenti_camionetas';
 
@@ -4711,6 +4716,23 @@ function actividadDelCalculo(m) {
     };
 }
 
+/**
+ * Consumo estimado a partir de horas/km DECLARADOS a mano (modal "Declarar actividad
+ * estimada"), para el equipo que no tiene ni GPS ni meta — el caso de CL02, MT01, TP01: sin
+ * eso, lo que se declaraba quedaba guardado pero la tarjeta seguía mostrando "sin medir", como
+ * si nunca se hubiera cargado nada.
+ *
+ * Corre la MISMA función que ya usa la pestaña Consumo Real de Base de Datos
+ * (`consumoDesdeActividadDeclarada`, diagnostico.js) — no una segunda definición (invariante 2).
+ * Devuelve null si no hay GPS Y tampoco hay declaración: en ese caso la tarjeta sigue mostrando
+ * "sin medir", sin inventar un cálculo.
+ */
+function consumoDeclaradoDe(f) {
+    if (!ultimoAnalisis?.totales) return null;
+    const periodo = { desde: ultimoAnalisis.totales.periodo_desde, hasta: ultimoAnalisis.totales.periodo_hasta };
+    return consumoDesdeActividadDeclarada(f, actividadEstimadaCache || [], periodo);
+}
+
 function desalineadoInfo(f) {
     const fechasC = f.cargas.map(c => c.fecha).filter(Boolean).sort();
     const fechasG = f.gps.map(g => g.fecha).filter(Boolean).sort();
@@ -4800,12 +4822,14 @@ function cardPeriodoInfo(f, m, ubi, ralentiTag) {
         </div>`;
 }
 
-function estadoDe(m, confirmed, implicita = null) {
+function estadoDe(m, confirmed, implicita = null, declEst = null) {
     if (m.tipo_calculo === 'No Aplica') return { cls: 'neutral', txt: 'Sin motor propio', icon: 'fa-ban' };
-    // Si no hay GPS pero se pudo estimar la actividad por cálculo inverso (litros ÷ meta), no
-    // repetir la misma advertencia de "falta GPS" acá abajo: ya se explica arriba, junto al número.
+    // Si no hay GPS pero se pudo estimar la actividad por cálculo inverso (litros ÷ meta) o por
+    // horas/km declarados a mano, no repetir la misma advertencia de "falta GPS" acá abajo: ya
+    // se explica arriba, junto al número.
     if (m.motivo_sin_calculo) {
         if (implicita) return { cls: 'warn', txt: 'Sin GPS · actividad estimada por cálculo inverso', icon: 'fa-calculator' };
+        if (declEst) return { cls: 'warn', txt: 'Sin GPS · consumo estimado por actividad declarada', icon: 'fa-calculator' };
         return { cls: 'warn', txt: m.motivo_sin_calculo, icon: 'fa-circle-info' };
     }
     if (!confirmed || !confirmed.valor) return { cls: 'neutral', txt: 'Consumo calculado, falta meta', icon: 'fa-circle-question' };
@@ -4882,10 +4906,13 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
         </div>`;
     }
 
-    // --- Sin GPS pero con litros: cálculo inverso (litros ÷ meta) como actividad estimada ---
+    // --- Sin GPS pero con litros: cálculo inverso (litros ÷ meta) como actividad estimada, o
+    // consumo estimado por horas/km declarados a mano cuando no hay meta contra la que inferir
+    // (ver consumoDeclaradoDe más arriba) ---
     const sinActividad = factor <= 0 && m.total_litros > 0;
     const implicita = sinActividad ? actividadImplicita(f) : null;
-    const est = estadoDe(m, confirmed, implicita);
+    const declEst = sinActividad ? consumoDeclaradoDe(f) : null;
+    const est = estadoDe(m, confirmed, implicita, declEst);
 
     // --- Ralentí, interpretado según el tipo de equipo (un GE quieto está trabajando; un TR quieto, no) ---
     let ralentiTag = '';
@@ -4987,35 +5014,30 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
                 <span class="stat-label"><i class="fa-solid fa-sack-dollar"></i> Costo</span>
                 <span class="stat-value">${money(m.total_costo)}</span>
             </div>
-            <div class="stat ${implicita ? 'stat-implicita' : ''}">
-                <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>
-                <span class="stat-value ${implicita ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0)} <small class="stat-unit">${uf}</small></span>
+            <div class="stat ${implicita || declEst ? 'stat-implicita' : ''}">
+                <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : (declEst ? ' <i class="fa-solid fa-gauge-high" title="Declarado a mano"></i>' : '')}</span>
+                <span class="stat-value ${implicita || declEst ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : (declEst ? '≈ ' + nf(declEst.actividad, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0))} <small class="stat-unit">${uf}</small></span>
                 ${implicita ? `<span class="stat-nota">estimado: ${esc(implicita.formula)}</span>` : ''}
                 ${implicita && implicita.referencia ? `<span class="stat-nota" title="${esc(implicita.referencia.formula)}"><i class="fa-solid ${implicita.referencia.respalda ? 'fa-check' : 'fa-triangle-exclamation'}"></i> ${implicita.referencia.respalda ? 'confirmado' : 'no confirmado'} por jornada de referencia (${esc(implicita.referencia.jornada.nota)}: ${nf(implicita.referencia.horas_min, 0)}-${nf(implicita.referencia.horas_max, 0)} hs esperadas)</span>` : ''}
-                ${!implicita && act.parcial ? `<span class="stat-nota" title="Solo se usan los meses que tienen cargas Y GPS: dividir todos los litros por la actividad de menos meses daría un consumo inflado.">de ${nf(act.total, esHora ? 1 : 0)} ${uf} del período · meses con las dos fuentes</span>` : ''}
+                ${!implicita && declEst ? `<span class="stat-nota">declarado a mano</span>` : ''}
+                ${!implicita && !declEst && act.parcial ? `<span class="stat-nota" title="Solo se usan los meses que tienen cargas Y GPS: dividir todos los litros por la actividad de menos meses daría un consumo inflado.">de ${nf(act.total, esHora ? 1 : 0)} ${uf} del período · meses con las dos fuentes</span>` : ''}
             </div>
             <div class="stat stat-clickable" ${attrsConsumo} role="button" tabindex="0">
                 <span class="stat-label">Consumo real <i class="fa-solid fa-calculator"></i></span>
-                <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? `${nf(m.consumo_real, 2)} <small class="stat-unit">${esc(unidadConsumoLabel(m.tipo_calculo))}</small>` : '—'}</span>
+                <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? `${nf(m.consumo_real, 2)} <small class="stat-unit">${esc(unidadConsumoLabel(m.tipo_calculo))}</small>` : (declEst ? `≈ ${nf(declEst.valor, 2)} <small class="stat-unit">${esc(declEst.unidad)}</small>` : '—')}</span>
                 ${m.consumo_real > 0 && m.alineacion && m.alineacion.meses.length < m.alineacion.meses_cargas.length ? `<span class="stat-nota" title="El consumo se calcula sobre ${m.alineacion.meses.length} mes${m.alineacion.meses.length !== 1 ? 'es' : ''} con datos de Cargas Y GPS a la vez. El equipo cargó en ${m.alineacion.meses_cargas.length} mes${m.alineacion.meses_cargas.length !== 1 ? 'es' : ''} en total.">${m.alineacion.meses.length} de ${m.alineacion.meses_cargas.length} meses</span>` : ''}
+                ${!m.consumo_real && declEst ? `<span class="stat-nota" title="${esc(declEst.base)}">estimado por actividad declarada: ${esc(declEst.base)}</span>` : ''}
             </div>
         </div>
         ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? (() => {
-            // Un equipo que trabaja parado casi no recorre km, así que su L/100km se dispara sin
-            // decir nada: GE03 hace 0,04 km por hora y da 13.187 L/100km. No se oculta —el
-            // usuario pidió ver siempre las dos— se le agrega el contexto que lo vuelve legible.
+            // El control de consumo lo da la unidad declarada del equipo (tipo_calculo), no la
+            // velocidad. Los km/h se muestran igual, como dato de referencia para análisis
+            // futuros (p.ej. detectar equipos estacionarios) — sin que decidan qué se atenúa acá.
             const kmh = kmPorHoraDeTrabajo(m);
-            const enElLugar = kmh !== null && kmh < KM_POR_HORA_MINIMO_COMPARABLE;
-            const notaKmh = kmh === null ? ''
-                : ` Recorre ${nf(kmh, 1)} km por hora de trabajo` +
-                  (enElLugar
-                    ? `: trabaja en el lugar, así que su L/100km no es comparable con el de un vehículo. Sirve para seguirlo contra sí mismo, no contra la flota.`
-                    : `.`);
-            return `<div class="card-cross-check${enElLugar ? ' cross-check-parcial' : ''}" title="Las dos unidades, calculadas sobre la misma base (${nf(m.litros_alineados || m.total_litros, 1)} L, ${nf(m.horas_alineadas || m.total_horas, 1)} hs, ${nf(m.km_alineados || m.total_km)} km). No son alternativas: donde las distancias son largas pero además hay ralentí en obra —Tunuyán es el caso típico— hace falta mirar las dos para entender el consumo.${esc(notaKmh)}">
+            return `<div class="card-cross-check" title="Las dos unidades, calculadas sobre la misma base (${nf(m.litros_alineados || m.total_litros, 1)} L, ${nf(m.horas_alineadas || m.total_horas, 1)} hs, ${nf(m.km_alineados || m.total_km)} km). No son alternativas: donde las distancias son largas pero además hay ralentí en obra —Tunuyán es el caso típico— hace falta mirar las dos para entender el consumo. El control de consumo es ${esc(m.tipo_calculo)}, según la unidad declarada del equipo.">
             <i class="fa-solid fa-arrows-left-right"></i>
-            <span>Medido de las dos formas: <strong class="${m.tipo_calculo === 'L/Hora' ? 'unidad-principal' : ''}">${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong class="${m.tipo_calculo === 'L/100Km' ? 'unidad-principal' : (enElLugar ? 'unidad-no-comparable' : '')}">${nf(m.consumo_l_100km, 2)} L/100Km</strong></span>
-            <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs y ${nf(m.km_alineados || m.total_km)} km${kmh !== null ? ` · ${nf(kmh, 1)} km/h` : ''})</small>
-            ${enElLugar ? `<small class="cross-check-nota">trabaja en el lugar — el L/100km no es comparable con el de un vehículo</small>` : ''}
+            <span>Medido de las dos formas: <strong class="${m.tipo_calculo === 'L/Hora' ? 'unidad-principal' : ''}">${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong class="${m.tipo_calculo === 'L/100Km' ? 'unidad-principal' : ''}">${nf(m.consumo_l_100km, 2)} L/100Km</strong></span>
+            <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs y ${nf(m.km_alineados || m.total_km)} km${kmh !== null ? ` · ${nf(kmh, 1)} km/h de referencia` : ''})</small>
         </div>`;
         })() : ''}
         ${confirmed ? `<div class="card-meta-hero">
@@ -5067,10 +5089,12 @@ function abrirOverlayEquipo(fila, analisis) {
 
     // Sin GPS pero con litros: mismo cálculo inverso (litros ÷ meta) que se usa en la tarjeta,
     // para no repetir acá el bug de mostrar "0,0 hs" y "Consumo real —" cuando en realidad se
-    // puede estimar la actividad a partir de lo cargado.
+    // puede estimar la actividad a partir de lo cargado. O, si no hay meta contra la que
+    // inferir, consumo estimado a partir de horas/km declarados a mano.
     const sinActividad = factor <= 0 && m.total_litros > 0;
     const implicita = sinActividad ? actividadImplicita(fila) : null;
-    const est = estadoDe(m, confirmed, implicita);
+    const declEst = sinActividad ? consumoDeclaradoDe(fila) : null;
+    const est = estadoDe(m, confirmed, implicita, declEst);
 
     // Sugerencia de meta (igual que en la tarjeta)
     const sug = ultimoAnalisis ? sugerirMeta(fila, ultimoAnalisis.filas, referentesMetaCache.get(fila.equipo.interno)) : null;
@@ -5078,6 +5102,17 @@ function abrirOverlayEquipo(fila, analisis) {
 
     // Estado de comparación
     const enComparacion = comparSeleccion.has(eq.interno);
+
+    // Hallazgos de Diagnóstico automático que mencionan a este equipo, centralizados acá —
+    // pedido del usuario después de medir que 49 equipos aparecían repartidos en varias
+    // tarjetas de hallazgo (sobreconsumo + subutilización + ralentí, por ejemplo) sin verse
+    // nunca juntos. No reemplaza "revisar y decidir" por hallazgo, que sigue siendo la forma de
+    // actuar: esto es solo la vista consolidada por equipo que pidió el usuario.
+    const hallazgosEquipo = ultimoAnalisis
+        ? generarDiagnostico(ultimoAnalisis.filas, ultimoAnalisis.totales, datosCrudos?.rawRecords || [],
+            ralentiEstadosCache, noFlotaAceptadosCache, equiposExcluidosCache, extraDiag())
+            .filter(h => (h.equipos || []).some(e => e.interno === eq.interno) || (h.internos_todos || []).includes(eq.interno))
+        : [];
 
     // Desvío
     let desvioHTML = '';
@@ -5139,20 +5174,23 @@ function abrirOverlayEquipo(fila, analisis) {
                 <span class="stat-label"><i class="fa-solid fa-sack-dollar"></i> Costo</span>
                 <span class="stat-value">${Math.abs(m.total_costo) >= 1e6 ? `$${nf(m.total_costo / 1e6, 1)} M` : `$${nf(m.total_costo)}`}</span>
               </div>
-              <div class="stat ${implicita ? 'stat-implicita' : ''}">
-                <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : ''}</span>
-                <span class="stat-value ${implicita ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0)} <small class="stat-unit">${uf}</small></span>
+              <div class="stat ${implicita || declEst ? 'stat-implicita' : ''}">
+                <span class="stat-label">${esHora ? 'Horas' : 'Distancia'}${implicita ? ' <i class="fa-solid fa-calculator" title="Sin GPS: estimado por cálculo inverso"></i>' : (declEst ? ' <i class="fa-solid fa-gauge-high" title="Declarado a mano"></i>' : '')}</span>
+                <span class="stat-value ${implicita || declEst ? 'stat-muted' : ''}">${implicita ? '≈ ' + nf(implicita.valor, esHora ? 1 : 0) : (declEst ? '≈ ' + nf(declEst.actividad, esHora ? 1 : 0) : nf(factor, esHora ? 1 : 0))} <small class="stat-unit">${uf}</small></span>
                 ${implicita ? `<span class="stat-nota">estimado: ${esc(implicita.formula)}</span>` : ''}
                 ${implicita && implicita.referencia ? `<span class="stat-nota" title="${esc(implicita.referencia.formula)}"><i class="fa-solid ${implicita.referencia.respalda ? 'fa-check' : 'fa-triangle-exclamation'}"></i> ${implicita.referencia.respalda ? 'confirmado' : 'no confirmado'} por jornada de referencia (${esc(implicita.referencia.jornada.nota)}: ${nf(implicita.referencia.horas_min, 0)}-${nf(implicita.referencia.horas_max, 0)} hs esperadas)</span>` : ''}
-                ${!implicita && act.parcial ? `<span class="stat-nota">de ${nf(act.total, esHora ? 1 : 0)} ${uf} del período — el consumo se mide solo sobre los meses que tienen cargas y GPS (${esc((m.alineacion?.meses || []).join(', '))})</span>` : ''}
+                ${!implicita && declEst ? `<span class="stat-nota">declarado a mano</span>` : ''}
+                ${!implicita && !declEst && act.parcial ? `<span class="stat-nota">de ${nf(act.total, esHora ? 1 : 0)} ${uf} del período — el consumo se mide solo sobre los meses que tienen cargas y GPS (${esc((m.alineacion?.meses || []).join(', '))})</span>` : ''}
               </div>
               <div class="stat">
                 <span class="stat-label">Consumo real</span>
-                <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? `${nf(m.consumo_real, 2)} <small class="stat-unit">${esc(m.tipo_calculo !== 'No Aplica' ? m.tipo_calculo : '')}</small>` : '—'}</span>
+                <span class="stat-value ${m.consumo_real > 0 ? 'stat-highlight' : 'stat-muted'}">${m.consumo_real > 0 ? `${nf(m.consumo_real, 2)} <small class="stat-unit">${esc(m.tipo_calculo !== 'No Aplica' ? m.tipo_calculo : '')}</small>` : (declEst ? `≈ ${nf(declEst.valor, 2)} <small class="stat-unit">${esc(declEst.unidad)}</small>` : '—')}</span>
                 ${implicita ? `<span class="stat-nota">no hay GPS: no se puede medir el consumo real de forma independiente, solo estimar la actividad</span>` : ''}
+                ${!implicita && declEst ? `<span class="stat-nota" title="${esc(declEst.base)}">estimado por actividad declarada: ${esc(declEst.base)}</span>` : ''}
               </div>
             </div>
             ${implicita ? `<div class="overlay-line overlay-implicita-nota"><i class="fa-solid fa-circle-info"></i> No hay dato de GPS para este equipo en el período: la actividad (${uf}) se estimó de forma inversa, dividiendo los litros cargados por la meta cargada. Si el resultado no parece razonable, revisá o ajustá la meta debajo, o los litros cargados en el registro de cargas de este equipo.</div>` : ''}
+            ${!implicita && declEst ? `<div class="overlay-line overlay-implicita-nota"><i class="fa-solid fa-circle-info"></i> No hay dato de GPS ni meta cargada para este equipo: el consumo se estimó a partir de ${esc(declEst.unidad_actividad === 'hs' ? 'las horas' : 'los km')} declarados a mano ("Declarar horas/km estimados"). Si el resultado no parece razonable, revisá la declaración debajo.</div>` : ''}
             ${confirmed ? `
             <div class="card-meta-hero overlay-meta-hero">
               <span class="meta-label"><i class="fa-solid fa-bullseye"></i> Meta ${confirmed.source === 'Maestro' ? '(ajustada)' : '(estimada)'}</span>
@@ -5178,6 +5216,18 @@ function abrirOverlayEquipo(fila, analisis) {
               ${confirmed ? `<span class="fuente-tag fuente-meta"><i class="fa-solid fa-bullseye"></i> Meta</span>` : ''}
               ${implicita ? `<span class="fuente-tag fuente-estimado" title="Cálculo inverso: litros ÷ meta, sin GPS"><i class="fa-solid fa-calculator"></i> Estimado</span>` : ''}
             </div>
+            ${hallazgosEquipo.length ? `
+            <div class="overlay-hallazgos">
+              <h4 class="overlay-edit-title"><i class="fa-solid fa-list-check"></i> Hallazgos de este equipo <small>(${hallazgosEquipo.length})</small></h4>
+              <div class="overlay-hallazgos-lista">
+                ${hallazgosEquipo.map(h => `
+                <button type="button" class="overlay-hallazgo-item ${SEV_CLASE[h.severidad]}" data-hallazgo="${esc(h.id)}">
+                  <i class="fa-solid ${h.icono}"></i>
+                  <span class="overlay-hallazgo-titulo">${esc(h.titulo)}</span>
+                  <span class="diag-badge">${esc(SEV_TEXTO[h.severidad])}</span>
+                </button>`).join('')}
+              </div>
+            </div>` : ''}
           </div>
 
           <!-- EDICIÓN -->
@@ -5297,6 +5347,15 @@ function abrirOverlayEquipo(fila, analisis) {
     // Ver detalle de cálculo
     overlay.querySelector('.btn-overlay-detail')?.addEventListener('click', () => {
         openUnitModal(eq, m, confirmed, fila.cargas, fila.gps, fila.ubicacion, periodoDeAnalisis(analisis));
+    });
+
+    // Hallazgos de este equipo: cada uno abre su propio "Revisar y decidir" — la vista
+    // consolidada solo centraliza dónde se ven, no cambia cómo se resuelven.
+    overlay.querySelectorAll('.overlay-hallazgo-item').forEach(b => {
+        b.addEventListener('click', () => {
+            cerrar();
+            abrirRevisarDecidir(b.dataset.hallazgo, analisis, datosCrudos?.rawRecords || []);
+        });
     });
 }
 

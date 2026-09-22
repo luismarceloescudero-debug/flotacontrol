@@ -40,6 +40,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.getElementById('btn-config')?.addEventListener('click', openConfigModal);
     document.getElementById('btn-reanalizar')?.addEventListener('click', reanalizar);
+    // Delegado porque el botón vive dentro de #db-status, que renderDBStatus() reemplaza
+    // por completo cada vez (subir un archivo, borrar uno, etc.) — atarlo por id una sola
+    // vez acá se perdería en el primer re-render.
+    document.getElementById('db-status')?.addEventListener('click', (e) => {
+        if (e.target.closest('#btn-empezar-cero')) empezarDeCero();
+    });
 
     window.exportTableToXLSX = exportarTablaVisible;
     window.showDataTable = (t) => { irA('datos'); renderDataTable(t); };
@@ -74,47 +80,42 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 /**
- * Re-analizar: da a elegir entre borrar solo los movimientos (conservando el padrón y las
- * correcciones hechas a mano) o borrar absolutamente todo. Lo primero es lo habitual al
- * cargar los archivos de un mes nuevo; lo segundo, para empezar de cero.
+ * Re-analizar: lleva a Carga de Datos, donde el estado de la base ya se ve (equipos, metas,
+ * movimientos, archivos) antes de decidir nada. Antes esto abría dos `confirm()` encadenados
+ * pidiendo elegir qué borrar sin mostrar ese contexto primero — una decisión en una ventana
+ * emergente sin análisis previo. Ahora no borra nada por sí solo: el checkbox "Borrar los
+ * movimientos anteriores antes de procesar" (ya en la pantalla de Carga de Datos) cubre el
+ * caso normal —cargar los archivos de un mes nuevo—, y "Empezar de cero" (ahí mismo, ver
+ * `renderDBStatus` en upload.js) cubre el caso destructivo, con el detalle de lo que hay
+ * guardado ya visible arriba.
  */
-async function reanalizar() {
-    let s;
-    try { s = await getDBStats(); } catch (e) { s = null; }
+function reanalizar() {
+    irA('upload');
+}
 
-    const detalle = s ? `\n\nHoy hay guardados:\n· ${s.equipos} equipos en el maestro (${s.conMeta} con meta)\n· ${s.movimientos} movimientos` : '';
-    const soloMovimientos = confirm(
-        `¿Qué querés borrar?${detalle}\n\n` +
-        `ACEPTAR = borrar solo los movimientos (cargas, GPS, etc.) y conservar el maestro con tus ediciones.\n` +
-        `CANCELAR = elegir borrar todo.`
-    );
+/**
+ * Borra absolutamente todo (maestro de equipos, metas y columnas propias incluidos), no solo
+ * los movimientos. Vive junto al panel que ya muestra qué hay guardado (`db-status`), así que
+ * la decisión se toma viendo el dato, no a ciegas. Es irreversible, por eso el único confirm()
+ * que queda es específico de ESTA acción, no un menú de opciones.
+ */
+async function empezarDeCero() {
+    if (!confirm('¿Borrar TODO, incluido el maestro de equipos, las metas y las columnas propias?\n\nEsta acción no se puede deshacer.')) return;
 
-    let accion;
-    if (soloMovimientos) accion = 'movimientos';
-    else {
-        if (!confirm('¿Borrar TODO, incluido el maestro de equipos, las metas y las columnas propias?\n\nEsta acción no se puede deshacer.')) return;
-        accion = 'todo';
-    }
-
-    const btn = document.getElementById('btn-reanalizar');
-    const prev = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+    const btn = document.getElementById('btn-empezar-cero');
+    const prev = btn?.innerHTML;
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; }
 
     try {
-        if (accion === 'todo') await clearAllData(); else await clearMovimientos();
+        await clearAllData();
         AppState.filesQueue = [];
         await renderDBStatus();
-        irA('upload');
-        alert(accion === 'todo'
-            ? 'Base vacía. Subí las planillas y presioná "Procesar y Analizar".'
-            : 'Movimientos borrados. El maestro quedó intacto: subí las planillas del período y procesá.');
+        alert('Base vacía. Subí las planillas y presioná "Procesar y Analizar".');
     } catch (e) {
         console.error('Error limpiando la base:', e);
         alert('No se pudo limpiar: ' + e.message);
     } finally {
-        btn.disabled = false;
-        btn.innerHTML = prev;
+        if (btn) { btn.disabled = false; btn.innerHTML = prev; }
     }
 }
 

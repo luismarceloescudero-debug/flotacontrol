@@ -170,6 +170,9 @@ export async function renderDBStatus() {
                 <div class="db-status-files">
                     ${archivos.map(a => `<span class="chip">${esc(a.tipo)}: ${esc(a.filename.slice(0, 34))}${a.filename.length > 34 ? '…' : ''}</span>`).join('')}
                 </div>
+                <button class="btn-link-danger" id="btn-empezar-cero" title="Borra también el maestro de equipos, las metas y las columnas propias — no solo los movimientos">
+                    <i class="fa-solid fa-trash-can"></i> Empezar de cero
+                </button>
             </div>`;
     } catch (e) {
         el.innerHTML = '';

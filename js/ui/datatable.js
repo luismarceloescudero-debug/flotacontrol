@@ -35,7 +35,7 @@ import {
 import { periodosDisponibles, filtrarPorPeriodo, indexarMaestro, resolverEquipo } from '../data/analyzer.js';
 import { esDiaHabil } from '../data/feriados.js';
 import { confiabilidad, sugerirMeta, MIN_CARGAS_CONFIABLE, COBERTURA_MINIMA_PCT, consumoDesdeActividadDeclarada } from '../data/diagnostico.js';
-import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR } from '../data/normalizer.js';
+import { MESES, getDenominacion, normalizeEquipoKey, slugCampo, formatFechaAR, clasificarIdentificador } from '../data/normalizer.js';
 
 const PAGINA = 300;
 
@@ -859,20 +859,16 @@ async function renderMovimientos(tipo) {
     const esHuerfanaDe = (r) => !resolverEquipo(r, idxMaestro);
 
     /**
-     * De las cargas que no resuelven contra el maestro, la mayoría NO son un problema.
+     * De las cargas que no resuelven contra el maestro, la mayoría NO son un problema: traen
+     * interno o dominio, solo que el otro dato falta. Regla permanente del proyecto: "INTERNO
+     * SIN DOMINIO no es un error. DOMINIO SIN INTERNO no es un error." — cualquiera de los dos
+     * identifica el gasto y solo necesita centro de costo, no una corrección urgente.
      *
-     * Medido sobre los archivos reales: de 53 sin resolver, **49 traen una patente válida**
-     * (5.283,7 L) y solo 4 son códigos inidentificables (GR01, SURTIDOR, MANTENIMIENTO, 191,4 L).
-     * Una carga con patente está identificada — se sabe qué vehículo la hizo — lo único que le
-     * falta es el interno, y eso es una regla permanente del proyecto: "DOMINIO SIN INTERNO no
-     * es un error. Nunca se marca como advertencia".
-     *
-     * Meter las 49 en un contador naranja que dice "sin asignar" convertía en alarma algo que
-     * está bien. Se separan: lo que tiene patente se informa en gris y sin ícono de peligro
-     * (sigue siendo asignable desde la fila, para quien quiera darle interno), y la advertencia
-     * queda solo para lo que de verdad no se puede identificar.
+     * La advertencia (triángulo) queda solo para lo que de verdad no trae ningún dato: ni
+     * interno ni dominio. Medido sobre los archivos reales: de 53 sin resolver, 49 traen
+     * interno o dominio y solo 4 no traen ninguno (GR01, SURTIDOR, MANTENIMIENTO).
      */
-    const esSinIdentificar = (r) => esHuerfanaDe(r) && !tienePatente(r);
+    const esSinIdentificar = (r) => esHuerfanaDe(r) && !tieneIdentificador(r);
 
     if (esCarga) poblarFiltrosCarga(todos);
 
@@ -946,8 +942,8 @@ async function renderMovimientos(tipo) {
         (esCarga ? '<th class="th-acciones"></th>' : '');
 
     const pagina = filas.slice(estado.pagina * PAGINA, (estado.pagina + 1) * PAGINA);
-    let nHuerfanas = 0;      // sin identificar: ni interno del maestro ni patente
-    let nConPatente = 0;     // con patente, sin interno — no es un error
+    let nHuerfanas = 0;      // sin identificar: ni interno ni dominio
+    let nConPatente = 0;     // con interno o dominio, sin resolver contra el maestro — no es un error
 
     document.getElementById('table-body').innerHTML = pagina.map(r => {
         const h = (r.horas && typeof r.horas === 'object') ? r.horas : { ralenti: 0, movimiento: parseFloat(r.horas) || 0, total: parseFloat(r.horas) || 0 };
@@ -958,7 +954,7 @@ async function renderMovimientos(tipo) {
             esHuerfana = esHuerfanaDe(r);
             yaCorregida = correccionesMap.has(huellaCarga(r));
             if (esHuerfana && !yaCorregida) {
-                if (tienePatente(r)) nConPatente++;
+                if (tieneIdentificador(r)) nConPatente++;
                 else nHuerfanas++;
             }
         }
@@ -966,7 +962,7 @@ async function renderMovimientos(tipo) {
         // El naranja de la fila era indiscriminado: pintaba igual a la carga que no se puede
         // identificar y a la que solo le falta el interno. La segunda no es un error.
         const rowClass = esHuerfana && !yaCorregida
-            ? (tienePatente(r) ? 'carga-sin-interno' : 'carga-huerfana')
+            ? (tieneIdentificador(r) ? 'carga-sin-interno' : 'carga-huerfana')
             : (yaCorregida ? 'carga-corregida' : (r._conflicto_remito ? 'carga-huerfana' : ''));
         const dataAttrs = ` data-recid="${r.id}"`;
         const selTd = esCarga ? `<td class="td-sel"><input type="checkbox" class="chk-fila-mov" data-recid="${r.id}" ${seleccionMasivaMov.has(r.id) ? 'checked' : ''}></td>` : '';
@@ -1012,30 +1008,26 @@ async function renderMovimientos(tipo) {
     let btnHuerfanasHtml = '';
     if (esCarga) {
         const pendientes = todos.filter(r => esHuerfanaDe(r) && !correccionesMap.has(huellaCarga(r)));
-        const nSinIdentificar = pendientes.filter(r => !tienePatente(r)).length;
-        const nPatenteSinInterno = pendientes.length - nSinIdentificar;
+        const nSinIdentificar = pendientes.filter(r => !tieneIdentificador(r)).length;
+        const nConIdentificador = pendientes.length - nSinIdentificar;
         if (pendientes.length > 0) {
             const activo = estado.soloHuerfanas ? ' btn-warn-active' : '';
             // El ícono de peligro y el estilo de advertencia aparecen SOLO si hay algo realmente
-            // sin identificar. Con patente se ofrece igual el filtro, pero como acción neutra.
+            // sin identificar. Con interno o dominio se ofrece igual el filtro, como acción neutra.
             const clase = nSinIdentificar > 0 ? 'btn-warn' : 'btn-secondary';
             const icono = nSinIdentificar > 0 ? 'fa-triangle-exclamation' : 'fa-id-card';
             const etiqueta = estado.soloHuerfanas
                 ? 'Todos'
                 : (nSinIdentificar > 0
                     ? `Sin identificar (${nSinIdentificar})`
-                    : `Con patente, sin interno (${nPatenteSinInterno})`);
-            const titulo = nSinIdentificar > 0
-                ? `${nSinIdentificar} carga${nSinIdentificar === 1 ? '' : 's'} sin interno ni patente reconocible` +
-                  (nPatenteSinInterno ? ` · otras ${nPatenteSinInterno} tienen patente y solo les falta el interno (no es un error)` : '')
-                : `${nPatenteSinInterno} carga${nPatenteSinInterno === 1 ? '' : 's'} con patente válida sin interno asignado. No es un error: se puede asignar interno desde cada fila si se quiere.`;
-            btnHuerfanasHtml = ` <button class="btn-sm ${clase} btn-filtro-huerfanas${activo}" style="margin-left:8px" title="${esc(titulo)}">` +
+                    : `Sin interno (${nConIdentificador})`);
+            btnHuerfanasHtml = ` <button class="btn-sm ${clase} btn-filtro-huerfanas${activo}" style="margin-left:8px">` +
                 `<i class="fa-solid ${icono}"></i> ${etiqueta}</button>`;
         }
     }
     const resExtra = !esCarga || estado.soloHuerfanas ? '' :
         (nHuerfanas > 0 ? ` · <span style="color:#f5a623;font-weight:600">${nHuerfanas} sin identificar</span>` : '') +
-        (nConPatente > 0 ? ` · <span class="cell-muted">${nConPatente} con patente, sin interno</span>` : '');
+        (nConPatente > 0 ? ` · <span class="cell-muted">${nConPatente} sin interno</span>` : '');
     // Para tipos genéricos (cubiertas, filtros, insumos…) que todavía no tienen un análisis
     // propio: un resumen básico igual — cantidad, costo si hay algo que parezca importe, y
     // los equipos con más registros — para que la planilla no quede "muda" hasta que se le
@@ -1208,18 +1200,25 @@ function actualizarSelCountMov() {
  * todavía no tienen un análisis dedicado: cantidad, costo si hay algo que parezca importe
  * entre las columnas numéricas detectadas, y los equipos con más registros. */
 /**
- * ¿La carga trae una patente reconocible, en `dominio` o en el campo donde iría el interno?
+ * ¿La carga trae algún dato que la identifique: interno, dominio, o los dos?
  *
  * Vive a nivel de módulo porque la usan DOS lugares que están en funciones distintas: el
  * contador de arriba de la tabla y el badge de cada fila. Cuando solo la tenía el contador, el
  * badge seguía poniéndole triángulo de peligro a las 49 cargas que únicamente no tienen interno
  * — que es el caso que la regla permanente declara correcto ("DOMINIO SIN INTERNO no es un
  * error"). Duplicarla habría sido una segunda definición del mismo concepto (invariante 2).
+ *
+ * No exige que resuelva contra el maestro, pero sí que tenga FORMA de interno o de dominio
+ * (misma clasificación que usa el resto de la app — `clasificarIdentificador`, normalizer.js).
+ * Un texto suelto como "MANTENIMIENTO" o "CALOVENTOR" en la columna interno no es un dato del
+ * vehículo, es la ausencia de uno — eso sigue siendo huérfano de verdad.
  */
-const ES_PATENTE = /^([A-Z]{3}\d{3}|[A-Z]{2}\d{3}[A-Z]{2})$/;
-export function tienePatente(r) {
-    const limpio = (x) => String(x || '').toUpperCase().replace(/[\s-]/g, '');
-    return ES_PATENTE.test(limpio(r && r.dominio)) || ES_PATENTE.test(limpio(r && r.interno));
+export function tieneIdentificador(r) {
+    const esDatoReal = (v) => {
+        const tipo = clasificarIdentificador(v).tipo;
+        return tipo === 'interno' || tipo === 'dominio';
+    };
+    return esDatoReal(r && r.dominio) || esDatoReal(r && r.interno);
 }
 
 function resumenGenerico(filas) {
@@ -1341,8 +1340,8 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan, correccionExis
         <div class="correc-header">
             ${editando
                 ? '<span class="badge-corregida"><i class="fa-solid fa-pen"></i> Editando corrección</span>'
-                : (tienePatente(record)
-                    // Con patente y sin interno el dato está bien: se ofrece asignarlo, no se
+                : (tieneIdentificador(record)
+                    // Con interno o dominio el dato está bien: se ofrece asignarlo, no se
                     // reclama. Ver regla permanente en CLAUDE.md.
                     ? '<span class="badge-sin-interno"><i class="fa-solid fa-id-card"></i> Sin interno</span>'
                     : '<span class="badge-huerfana"><i class="fa-solid fa-triangle-exclamation"></i> Sin asignar</span>')}
