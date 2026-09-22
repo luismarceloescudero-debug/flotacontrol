@@ -847,6 +847,73 @@ reciben estimación de `actividadImplicita()` desde su propia meta, tres tienen 
 ampliar la búsqueda a potencia o capacidad no cambia nada. Cobertura del maestro para esa búsqueda:
 marca 99%, modelo 97%, año 94%, potencia 76%, capacidad 58%.
 
+### Ronda del 22/09/2026 — lo que reportó el usuario contra las capturas y contra la medición del 22/09
+
+**El km/h dejó de decidir qué unidad se atenúa.** ✅ La tarjeta de cruce (L/Hora · L/100Km) usaba
+`KM_POR_HORA_MINIMO_COMPARABLE = 5` para atenuar la unidad no comparable y marcar la tarjeta
+completa (`cross-check-parcial`). El usuario: *"obviar velocidad, manda control de consumo en
+L/100Km o L/Hora"*. El control YA lo da `tipo_calculo` (la unidad declarada del equipo, resaltada
+con `unidad-principal`) — la velocidad no debe agregar una segunda señal encima. `kmPorHoraDeTrabajo()`
+sigue existiendo tal cual (analyzer.js) y se sigue mostrando en la tarjeta, pero ahora como dato de
+referencia neutro ("2,3 km/h de referencia"), sin dimming ni nota de alerta. `KM_POR_HORA_MINIMO_COMPARABLE`
+queda como constante de referencia (la usa el chequeo de `auditar-declarados.mjs` sobre la función
+pura), pero ya no gobierna ningún estilo.
+
+**"Sin asignar" seguía marcando texto libre como si fuera un dato del vehículo.** ✅ `tienePatente()`
+(datatable.js) aceptaba cualquier valor no vacío en interno o dominio para decidir "no es un error,
+solo le falta el otro dato" — con eso, una carga con `interno: "MANTENIMIENTO"` o `"CALOVENTOR"` (texto
+libre, no un código de equipo) se pintaba gris en vez de con el triángulo de advertencia. Medido en el
+navegador: bajaba el conteo de "sin identificar" de 5 a 2, ocultando 3 casos reales.
+
+Renombrada a `tieneIdentificador()` y reescrita sobre `clasificarIdentificador()` (normalizer.js —
+la misma clasificación interno/dominio/desconocido que usa el resto de la app, invariante 2), no
+sobre un chequeo de "no vacío". Con eso: *"CALOVENTOR"* clasifica `desconocido` → triángulo real;
+*"GR01"* (forma de interno, aunque no esté en el maestro) clasifica `interno` → gris, asignable.
+También recoge el caso que el usuario señaló explícitamente: *"hay internos sin dominio, dominios
+sin internos, uno te da la pauta de que forma parte de la flota, el otro no, pero ambos datos
+generan gastos, y deben tener centro de costo"* — antes un interno-sin-dominio con forma válida
+(p.ej. un typo no reconocido) caía en el triángulo solo porque no matcheaba el regex de patente;
+ahora cualquiera de los dos identificadores alcanza.
+
+**La actividad declarada a mano no llegaba a ningún cálculo posterior.** ✅ El modal "Declarar
+horas/km estimados" (CL02, MT01, TP01 — los tres equipos sin rescate posible por cálculo inverso,
+ver arriba) ya guardaba la declaración y ya la usaba la pestaña Consumo Real de Base de Datos
+(`consumoDesdeActividadDeclarada()`, diagnostico.js), pero la tarjeta y el overlay del Panel —donde
+se abre el propio modal— seguían mostrando "sin medir" después de guardar. `analizarFlota()`
+(analyzer.js) no puede llamar a `consumoDesdeActividadDeclarada()` porque diagnostico.js ya importa
+de analyzer.js (ciclo). Se agregó `consumoDeclaradoDe()` en panel.js, que llama a la MISMA función
+(no una segunda definición) con el período de `ultimoAnalisis` y `actividadEstimadaCache` — el
+mismo patrón que ya usaba datatable.js. Ahora, declarar "2 a 3 hs/día" para MT01 se ve de inmediato
+en su tarjeta: "≈ 56,3 hs · declarado a mano" y "≈ 6,40 L/Hora · estimado por actividad declarada:
+360,0 L ÷ 56,3 hs declaradas" — verificado de punta a punta en el navegador (modal → guardar →
+tarjeta). No pisa `consumo_real` ni `tipo_calculo` (esos siguen significando "medido por GPS");
+es una tercera fuente, mostrada aparte, igual que `actividadImplicita()` (litros ÷ meta) ya lo hacía.
+
+**Un equipo en varios hallazgos: no se ocultan, se centralizan por tarjeta.** ✅ Medido: 49 equipos
+aparecían repartidos en varios hallazgos de *problema* (sobreconsumo + subutilización + ralentí, por
+ejemplo — no son duplicados, son tres problemas distintos y el reparto de "situación" del 08/09 no
+los toca, ver punto A del plan). El usuario: *"centralizar por tarjeta nos ayudaría visualmente, ya
+tenemos la opción de revisar y resolver por separado"* — es decir, agregar visibilidad sin tocar
+`abrirRevisarDecidir()`. Se agregó una sección "Hallazgos de este equipo" al overlay de detalle
+(`abrirOverlayEquipo`, panel.js): corre `generarDiagnostico()` con los mismos argumentos que usa el
+resto del archivo, filtra por `h.equipos`/`h.internos_todos` conteniendo el interno de la tarjeta, y
+cada hallazgo listado es un botón que cierra el overlay y abre su propio "Revisar y decidir" — la
+resolución sigue siendo la misma ventana de siempre, esto solo centraliza dónde se ven todos juntos.
+`SEV_CLASE`/`SEV_TEXTO` (antes locales a `renderDiagnostico`) se subieron a constantes de módulo
+para que la paleta de severidad tenga una sola definición entre la lista principal y esta sección.
+
+**"Re-analizar" pedía decidir en un popup sin mostrar nada antes.** ✅ El botón del header abría dos
+`confirm()` encadenados ("¿Qué querés borrar? ACEPTAR = solo movimientos, CANCELAR = elegir borrar
+todo") antes de que el usuario viera un solo dato de lo que había guardado. El usuario: *"resolver,
+eliminando modal de importación; cualquier acción se hace luego de normalizar datos, realizar
+cálculos, alineando periodos"*. Ahora "Re-analizar" solo navega a Carga de Datos (`irA('upload')`,
+sin popup ni borrado), donde `db-status` ya muestra equipos/metas/movimientos/archivos ANTES de
+cualquier decisión. El caso normal (subir el mes nuevo) lo sigue cubriendo el checkbox "Borrar los
+movimientos anteriores antes de procesar", que ya estaba ahí. El caso destructivo (borrar también
+el maestro) se movió a un botón "Empezar de cero" dentro de ese mismo panel — sigue con un
+`confirm()` propio porque es irreversible y borra ediciones a mano, pero ahora se decide viendo el
+dato, no a ciegas en el primer click.
+
 ### Deuda técnica conocida (medida, no supuesta)
 
 - **`/api/chat` no tiene rate limiting.** El `APP_SECRET_VALUE` viaja en el JS del navegador y está
