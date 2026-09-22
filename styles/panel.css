@@ -1934,3 +1934,25 @@ button.badge-corregida:hover .correc-edit-icon { opacity: 0.8; }
 }
 .rend-vacio i { font-size: 2.5rem; opacity: .5; display: block; margin-bottom: .8rem; }
 .rend-vacio p { max-width: 62ch; margin: .5rem auto; line-height: 1.55; }
+
+/* Carga con patente válida y sin interno: NO es un error (regla permanente del CLAUDE.md).
+   Se informa en gris, con la misma jerarquía que el contador de arriba de la tabla, para que
+   el usuario pueda asignarle interno si quiere sin que se le reclame como si faltara algo. */
+.carga-sin-interno .cell-key { color: var(--text-muted); font-weight: 600; }
+.badge-sin-interno {
+    display: inline-flex; align-items: center; gap: 0.35em;
+    font-size: 0.72rem; font-weight: 700; padding: 0.15em 0.65em;
+    border-radius: 999px;
+    background: var(--bg-input); color: var(--text-muted);
+    border: 1px solid var(--border-color);
+}
+
+/* La unidad que no es comparable para este equipo: se muestra igual (el usuario pidió ver
+   siempre las dos) pero atenuada, con el motivo debajo. Mismo criterio que la "base floja"
+   de la comparativa: un número sin su contexto no es una conclusión. */
+.unidad-no-comparable { color: var(--text-muted); font-weight: 600; }
+.cross-check-parcial { border-left: 2px solid var(--accent-amber); padding-left: .55rem; }
+.cross-check-nota {
+    display: block; color: var(--accent-amber); font-size: .72rem;
+    margin-top: .2rem; line-height: 1.35;
+}

@@ -872,11 +872,6 @@ async function renderMovimientos(tipo) {
      * (sigue siendo asignable desde la fila, para quien quiera darle interno), y la advertencia
      * queda solo para lo que de verdad no se puede identificar.
      */
-    const ES_PATENTE = /^([A-Z]{3}\d{3}|[A-Z]{2}\d{3}[A-Z]{2})$/;
-    const tienePatente = (r) => {
-        const limpio = (x) => String(x || '').toUpperCase().replace(/[\s-]/g, '');
-        return ES_PATENTE.test(limpio(r.dominio)) || ES_PATENTE.test(limpio(r.interno));
-    };
     const esSinIdentificar = (r) => esHuerfanaDe(r) && !tienePatente(r);
 
     if (esCarga) poblarFiltrosCarga(todos);
@@ -968,7 +963,11 @@ async function renderMovimientos(tipo) {
             }
         }
 
-        const rowClass = esHuerfana && !yaCorregida ? 'carga-huerfana' : (yaCorregida ? 'carga-corregida' : (r._conflicto_remito ? 'carga-huerfana' : ''));
+        // El naranja de la fila era indiscriminado: pintaba igual a la carga que no se puede
+        // identificar y a la que solo le falta el interno. La segunda no es un error.
+        const rowClass = esHuerfana && !yaCorregida
+            ? (tienePatente(r) ? 'carga-sin-interno' : 'carga-huerfana')
+            : (yaCorregida ? 'carga-corregida' : (r._conflicto_remito ? 'carga-huerfana' : ''));
         const dataAttrs = ` data-recid="${r.id}"`;
         const selTd = esCarga ? `<td class="td-sel"><input type="checkbox" class="chk-fila-mov" data-recid="${r.id}" ${seleccionMasivaMov.has(r.id) ? 'checked' : ''}></td>` : '';
         const accionTd = esCarga ? `<td class="td-correc">${
@@ -1208,6 +1207,21 @@ function actualizarSelCountMov() {
 /** Resumen básico para tipos de movimiento genéricos (cubiertas, filtros, insumos…) que
  * todavía no tienen un análisis dedicado: cantidad, costo si hay algo que parezca importe
  * entre las columnas numéricas detectadas, y los equipos con más registros. */
+/**
+ * ¿La carga trae una patente reconocible, en `dominio` o en el campo donde iría el interno?
+ *
+ * Vive a nivel de módulo porque la usan DOS lugares que están en funciones distintas: el
+ * contador de arriba de la tabla y el badge de cada fila. Cuando solo la tenía el contador, el
+ * badge seguía poniéndole triángulo de peligro a las 49 cargas que únicamente no tienen interno
+ * — que es el caso que la regla permanente declara correcto ("DOMINIO SIN INTERNO no es un
+ * error"). Duplicarla habría sido una segunda definición del mismo concepto (invariante 2).
+ */
+const ES_PATENTE = /^([A-Z]{3}\d{3}|[A-Z]{2}\d{3}[A-Z]{2})$/;
+export function tienePatente(r) {
+    const limpio = (x) => String(x || '').toUpperCase().replace(/[\s-]/g, '');
+    return ES_PATENTE.test(limpio(r && r.dominio)) || ES_PATENTE.test(limpio(r && r.interno));
+}
+
 function resumenGenerico(filas) {
     if (!filas.length) return '';
     const camposCosto = new Set();
@@ -1327,7 +1341,11 @@ function buildCorrecionRow(record, todasCargas, equipos, colspan, correccionExis
         <div class="correc-header">
             ${editando
                 ? '<span class="badge-corregida"><i class="fa-solid fa-pen"></i> Editando corrección</span>'
-                : '<span class="badge-huerfana"><i class="fa-solid fa-triangle-exclamation"></i> Sin asignar</span>'}
+                : (tienePatente(record)
+                    // Con patente y sin interno el dato está bien: se ofrece asignarlo, no se
+                    // reclama. Ver regla permanente en CLAUDE.md.
+                    ? '<span class="badge-sin-interno"><i class="fa-solid fa-id-card"></i> Sin interno</span>'
+                    : '<span class="badge-huerfana"><i class="fa-solid fa-triangle-exclamation"></i> Sin asignar</span>')}
             <span class="correc-detalle">
                 ${esc(formatFechaAR(record.fecha) || '—')} &nbsp;·&nbsp;
                 ${nf(record.litros, 1)} L &nbsp;·&nbsp;

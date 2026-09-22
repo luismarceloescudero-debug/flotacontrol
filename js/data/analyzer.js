@@ -484,6 +484,33 @@ export function jornadaEsperada(equipo, ubicacion = null) {
 }
 
 /**
+ * Debajo de cuántos km por hora de trabajo un equipo está operando EN EL LUGAR, y su L/100km
+ * deja de ser comparable con el de un vehículo.
+ *
+ * El número sale de la flota, no de la intuición. Medido sobre los 67 equipos que tienen las dos
+ * unidades: los 19 que declaran L/100Km van de 17,0 a 56,9 km/h, y los 48 que declaran L/Hora
+ * van de 0,04 a 25,8. Por debajo de 5 km/h quedan exactamente las máquinas que trabajan paradas
+ * —grupos electrógenos, excavadora, cargadoras, bombas, volcadores—, y ahí el cociente se
+ * dispara sin decir nada: GE03 recorre 0,04 km por hora y su L/100km da 13.187.
+ *
+ * No se oculta el número: el usuario pidió ver las dos unidades siempre. Lo que se agrega es el
+ * contexto que lo vuelve legible, igual que la "base floja" de la comparativa — un número sin su
+ * contexto no es una conclusión (invariante 3).
+ */
+export const KM_POR_HORA_MINIMO_COMPARABLE = 5;
+
+/**
+ * Cuántos km recorre el equipo por hora de trabajo, sobre la misma base alineada con la que se
+ * calculan las dos unidades. Devuelve null cuando no hay horas con las que dividir.
+ */
+export function kmPorHoraDeTrabajo(metrics = {}) {
+    const km = metrics.km_alineados || metrics.total_km || 0;
+    const hs = metrics.horas_alineadas || metrics.total_horas || 0;
+    if (!(hs > 0)) return null;
+    return km / hs;
+}
+
+/**
  * Tramos en que un sector trabajó una jornada distinta de la habitual.
  *
  * JORNADA_REFERENCIA es una sola cifra para todo el año, y eso alcanza mientras la operación no

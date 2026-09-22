@@ -22,7 +22,7 @@
  */
 import { consumoDesdeActividadDeclarada, generarDiagnostico, parIdentico, sugerirMeta, investigarMeta, metaDesdeConsumoReal, diasHabilesDeMeses, confiabilidad } from '../js/data/diagnostico.js';
 import { diasHabiles } from '../js/data/feriados.js';
-import { jornadaEsperada, jornadaDelMes, jornadaPonderada, JORNADA_EXCEPCIONES, mesesEntre, alinearCargasYEntregas, MIN_ENTREGAS_L_M3, mesesCompletosDeFuente, alinearCargasYGps } from '../js/data/analyzer.js';
+import { jornadaEsperada, jornadaDelMes, jornadaPonderada, JORNADA_EXCEPCIONES, mesesEntre, alinearCargasYEntregas, MIN_ENTREGAS_L_M3, mesesCompletosDeFuente, alinearCargasYGps, kmPorHoraDeTrabajo, KM_POR_HORA_MINIMO_COMPARABLE } from '../js/data/analyzer.js';
 import { ultimoDiaHabilDelMes } from '../js/data/feriados.js';
 
 const VERBOSO = process.argv.includes('--verboso');
@@ -679,6 +679,32 @@ const PERIODO_6M = { desde: '2026-01-01', hasta: '2026-06-30' };
     check('mes_completo', 'sin meses incompletos la alineacion no se mueve',
         JSON.stringify(soloCompletos.meses) === JSON.stringify(['2026-08']) && soloCompletos.mesesIncompletosRecortados.length === 0,
         JSON.stringify(soloCompletos.meses));
+}
+
+// ============================================================ UNIDAD NO COMPARABLE
+// Un equipo que trabaja parado casi no recorre km, asi que su L/100km se dispara sin decir nada.
+// Medido sobre los 67 equipos con las dos unidades: GE03 hace 0,04 km/h y da 13.187 L/100km,
+// mientras que los 19 que declaran L/100Km van de 17,0 a 56,9 km/h. El corte de 5 km/h deja de
+// un lado exactamente a las maquinas que trabajan en el lugar.
+{
+    const conBase = (km, hs) => ({ km_alineados: km, horas_alineadas: hs });
+    check('unidad', 'km por hora sale de la base alineada',
+        casi(kmPorHoraDeTrabajo(conBase(1000, 100)), 10), String(kmPorHoraDeTrabajo(conBase(1000, 100))));
+    check('unidad', 'sin horas no se puede dividir y devuelve null',
+        kmPorHoraDeTrabajo(conBase(1000, 0)) === null, String(kmPorHoraDeTrabajo(conBase(1000, 0))));
+    check('unidad', 'cae a los totales cuando no hay base alineada',
+        casi(kmPorHoraDeTrabajo({ total_km: 500, total_horas: 50 }), 10),
+        String(kmPorHoraDeTrabajo({ total_km: 500, total_horas: 50 })));
+
+    // Los casos reales que motivaron el umbral.
+    const ge03 = kmPorHoraDeTrabajo(conBase(120, 2893));
+    check('unidad', 'GE03 (120 km en 2.893 hs) queda por debajo del umbral',
+        ge03 < KM_POR_HORA_MINIMO_COMPARABLE, `${ge03.toFixed(2)} km/h`);
+    const cm44 = kmPorHoraDeTrabajo(conBase(56.94 * 100, 100));
+    check('unidad', 'una camioneta que recorre de verdad queda por encima',
+        cm44 >= KM_POR_HORA_MINIMO_COMPARABLE, `${cm44.toFixed(2)} km/h`);
+    check('unidad', 'el umbral sigue siendo el medido sobre la flota',
+        KM_POR_HORA_MINIMO_COMPARABLE === 5, String(KM_POR_HORA_MINIMO_COMPARABLE));
 }
 
 // ============================================================ REPORTE

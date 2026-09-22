@@ -5,7 +5,7 @@
  * click en cualquier KPI o métrica de una tarjeta se abre el detalle de cómo se obtuvo.
  */
 import { getAllEquipos, getAllRawRecords, getAllEstimados, updateEquipo, editarCampoEquipo, getRalentiEstados, setRalentiEstado, quitarRalentiEstado, crearReclamoGPS, getReclamosGPS, actualizarReclamoGPS, getNoFlotaAceptados, setNoFlotaAceptado, quitarNoFlotaAceptado, getEquiposExcluidos, setEquipoExcluido, quitarEquipoExcluido, updateRawRecord, registrarEdicion, saveCorreccionCarga, huellaCarga, getPrefijosNoFlota, agregarPrefijoNoFlota, quitarPrefijoNoFlota, getSeguimientoEquipos, setSeguimientoEquipo, setSeguimientoRangos, quitarSeguimientoEquipo, getActividadEstimada, setActividadEstimada, quitarActividadEstimada, deleteRawRecord, getAccionesAutomaticas, getReferentesMeta, setReferentesMeta } from '../data/database.js';
-import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro } from '../data/analyzer.js';
+import { analizarFlota, periodosDisponibles, resumirMovimientosGenericos, registroVacio, mesesDeRegistro, kmPorHoraDeTrabajo, KM_POR_HORA_MINIMO_COMPARABLE } from '../data/analyzer.js';
 import { generarDiagnostico, sugerirMeta, evolucionMensual, categoriaRalenti, actividadImplicita, coberturaEquipo, completitudDatos, mesesFueraDeServicio, causaMetaRara, estimacionCreible, NIVELES_COMPLETITUD, coberturaMensual, resolverEquipo, investigarMeta, potenciaEquipo, auditarCalidadCargas, detectarPrefijosNuevos, CLASES_NO_FLOTA, cadenciaCargas, consumoDesdeActividadDeclarada, mediana, utilizacion, metaDesdeConsumoReal, parIdentico } from '../data/diagnostico.js';
 import { TIPO_POR_PREFIJO, MESES, getBandera, tipoLugarCarga, formatFechaAR, normalizeEquipoKey, getDenominacion } from '../data/normalizer.js';
 import { aplicarCorreccionesAutomaticas, deshacerAccionAutomatica } from '../data/autocorreccion.js';
@@ -5000,11 +5000,24 @@ function cardHTML(f, maxLitros, precioPromedio = 0, periodo = 'período seleccio
                 ${m.consumo_real > 0 && m.alineacion && m.alineacion.meses.length < m.alineacion.meses_cargas.length ? `<span class="stat-nota" title="El consumo se calcula sobre ${m.alineacion.meses.length} mes${m.alineacion.meses.length !== 1 ? 'es' : ''} con datos de Cargas Y GPS a la vez. El equipo cargó en ${m.alineacion.meses_cargas.length} mes${m.alineacion.meses_cargas.length !== 1 ? 'es' : ''} en total.">${m.alineacion.meses.length} de ${m.alineacion.meses_cargas.length} meses</span>` : ''}
             </div>
         </div>
-        ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? `<div class="card-cross-check" title="Las dos unidades, calculadas sobre la misma base (${nf(m.litros_alineados || m.total_litros, 1)} L, ${nf(m.horas_alineadas || m.total_horas, 1)} hs, ${nf(m.km_alineados || m.total_km)} km). No son alternativas: donde las distancias son largas pero además hay ralentí en obra —Tunuyán es el caso típico— hace falta mirar las dos para entender el consumo.">
+        ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? (() => {
+            // Un equipo que trabaja parado casi no recorre km, así que su L/100km se dispara sin
+            // decir nada: GE03 hace 0,04 km por hora y da 13.187 L/100km. No se oculta —el
+            // usuario pidió ver siempre las dos— se le agrega el contexto que lo vuelve legible.
+            const kmh = kmPorHoraDeTrabajo(m);
+            const enElLugar = kmh !== null && kmh < KM_POR_HORA_MINIMO_COMPARABLE;
+            const notaKmh = kmh === null ? ''
+                : ` Recorre ${nf(kmh, 1)} km por hora de trabajo` +
+                  (enElLugar
+                    ? `: trabaja en el lugar, así que su L/100km no es comparable con el de un vehículo. Sirve para seguirlo contra sí mismo, no contra la flota.`
+                    : `.`);
+            return `<div class="card-cross-check${enElLugar ? ' cross-check-parcial' : ''}" title="Las dos unidades, calculadas sobre la misma base (${nf(m.litros_alineados || m.total_litros, 1)} L, ${nf(m.horas_alineadas || m.total_horas, 1)} hs, ${nf(m.km_alineados || m.total_km)} km). No son alternativas: donde las distancias son largas pero además hay ralentí en obra —Tunuyán es el caso típico— hace falta mirar las dos para entender el consumo.${esc(notaKmh)}">
             <i class="fa-solid fa-arrows-left-right"></i>
-            <span>Medido de las dos formas: <strong${m.tipo_calculo === 'L/Hora' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong${m.tipo_calculo === 'L/100Km' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_100km, 2)} L/100Km</strong></span>
-            <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs y ${nf(m.km_alineados || m.total_km)} km)</small>
-        </div>` : ''}
+            <span>Medido de las dos formas: <strong class="${m.tipo_calculo === 'L/Hora' ? 'unidad-principal' : ''}">${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong class="${m.tipo_calculo === 'L/100Km' ? 'unidad-principal' : (enElLugar ? 'unidad-no-comparable' : '')}">${nf(m.consumo_l_100km, 2)} L/100Km</strong></span>
+            <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs y ${nf(m.km_alineados || m.total_km)} km${kmh !== null ? ` · ${nf(kmh, 1)} km/h` : ''})</small>
+            ${enElLugar ? `<small class="cross-check-nota">trabaja en el lugar — el L/100km no es comparable con el de un vehículo</small>` : ''}
+        </div>`;
+        })() : ''}
         ${confirmed ? `<div class="card-meta-hero">
             <span class="meta-label"><i class="fa-solid fa-bullseye"></i> Meta ${confirmed.source === 'Maestro' ? '(ajustada)' : '(estimada)'}</span>
             <span class="meta-valor">${nf(confirmed.valor, 2)} <small>${esc(unidadConsumoLabel(confirmed.unidad || m.tipo_calculo))}</small></span>
@@ -5154,7 +5167,7 @@ function abrirOverlayEquipo(fila, analisis) {
                 <span>Meta <strong>${nf(confirmed.valor, 2)}</strong></span>
               </div>
             </div>` : ''}` : (m.consumo_real > 0 ? `<div class="card-meta-hero card-meta-falta overlay-meta-hero"><span class="meta-label"><i class="fa-solid fa-circle-question"></i> Sin meta cargada</span></div>` : '')}
-            ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? `<div class="card-cross-check" style="margin-top:8px" title="Las dos unidades sobre la misma base alineada. Donde las distancias son largas y además hay ralentí en obra (Tunuyán), hace falta mirar las dos."><i class="fa-solid fa-arrows-left-right"></i> Medido de las dos formas: <strong${m.tipo_calculo === 'L/Hora' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong${m.tipo_calculo === 'L/100Km' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_100km, 2)} L/100Km</strong> <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs · ${nf(m.km_alineados || m.total_km)} km)</small></div>` : ''}
+            ${m.consumo_l_hora > 0 && m.consumo_l_100km > 0 ? `<div class="card-cross-check" style="margin-top:8px" title="Las dos unidades sobre la misma base alineada. Donde las distancias son largas y además hay ralentí en obra (Tunuyán), hace falta mirar las dos."><i class="fa-solid fa-arrows-left-right"></i> Medido de las dos formas: <strong class="${m.tipo_calculo === 'L/Hora' ? 'unidad-principal' : ''}">${nf(m.consumo_l_hora, 2)} L/Hora</strong> · <strong${m.tipo_calculo === 'L/100Km' ? ' class="unidad-principal"' : ''}>${nf(m.consumo_l_100km, 2)} L/100Km</strong> <small>(${nf(m.horas_alineadas || m.total_horas, 1)} hs · ${nf(m.km_alineados || m.total_km)} km)</small></div>` : ''}
             ${combustibleLine}
             ${ubi.centroCosto ? `<div class="overlay-line"><i class="fa-solid fa-building"></i> ${esc(ubi.centroCosto)}</div>` : ''}
             ${ubi.provincia && ubi.provincia !== 'SIN DATO' ? `<div class="overlay-line"><i class="fa-solid fa-location-dot"></i> ${esc(ubi.provincia)}</div>` : ''}
