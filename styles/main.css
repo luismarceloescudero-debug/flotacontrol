@@ -24,7 +24,46 @@
     
     --border-color: rgba(148, 163, 184, 0.1);
     --border-active: rgba(59, 130, 246, 0.4);
-    
+
+    /* Escala de radios: consolidada 22/09/2026 contra los valores reales en uso (ver auditoría
+       en el commit) — 13 valores sueltos (3px..16px, 50%, 99px, 999px) sin ningún criterio de
+       cuándo usar cada uno. Los 5 nombrados acá son los que de verdad se repiten; el resto eran
+       variantes sueltas de +-1-2px del vecino más cercano (typos de mantenimiento, no jerarquía
+       intencional) y se consolidan al aplicar la escala. 50% (círculos/avatares) no es parte de
+       esta escala: es geometría, no un tamaño de esquina.
+       Referencia: design system "Synthetic Intelligence System" (Stitch, projects/11874445774519647057),
+       misma familia dark/indigo/cyan/emerald que ya usa esta app — sirvió de referencia de
+       proporción, no se copió literal (esta app usa px, no rem, para no mezclar unidades a mitad
+       de escala existente). */
+    --radius-xs: 4px;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 10px;
+    --radius-xl: 12px;
+    --radius-2xl: 14px;
+    --radius-3xl: 16px;
+    --radius-full: 999px;
+
+    /* Escala tipográfica: consolidada 22/09/2026 contra los valores reales en uso. panel.css
+       tenía 26 valores de font-size distintos solo entre 0.6rem y 1.15rem (252 usos en total),
+       la mayoría a 0.01-0.03rem (0.16-0.48px) de su vecino — deriva de ediciones puntuales
+       ronda a ronda, no jerarquía intencional: nadie percibe la diferencia entre 0.82rem y
+       0.84rem. Se consolidan a una grilla de 0.05rem (0.6 a 1.15) eligiendo el escalón más
+       cercano a cada valor real; los tamaños grandes (>1.15rem: títulos, KPIs, iconos) no se
+       tocan porque ahí sí hay separación real entre escalones y usos bajos (1-2 cada uno). */
+    --text-60: 0.6rem;
+    --text-65: 0.65rem;
+    --text-70: 0.7rem;
+    --text-75: 0.75rem;
+    --text-80: 0.8rem;
+    --text-85: 0.85rem;
+    --text-90: 0.9rem;
+    --text-95: 0.95rem;
+    --text-100: 1rem;
+    --text-105: 1.05rem;
+    --text-110: 1.1rem;
+    --text-115: 1.15rem;
+
     --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
     --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
     --shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
@@ -93,7 +132,7 @@ body.theme-dark {
     font-size: 1rem;
     font-weight: 500;
     padding: 0.5rem 1rem;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     transition: var(--transition-fast);
     display: flex;
@@ -157,7 +196,7 @@ body.theme-dark {
 .upload-container {
     background: var(--bg-card);
     border: 2px dashed var(--border-color);
-    border-radius: 16px;
+    border-radius: var(--radius-3xl);
     padding: 4rem 2rem;
     text-align: center;
     transition: var(--transition-normal);
@@ -188,7 +227,7 @@ body.theme-dark {
 
 .btn-primary, .btn-success, .btn-secondary {
     padding: 0.75rem 1.5rem;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     font-weight: 600;
     cursor: pointer;
     border: none;
@@ -234,7 +273,7 @@ body.theme-dark {
     width: 350px;
     background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: 12px;
+    border-radius: var(--radius-xl);
     box-shadow: var(--shadow-lg);
     display: flex;
     flex-direction: column;
@@ -250,7 +289,7 @@ body.theme-dark {
     padding: 1rem;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-color);
-    border-radius: 12px 12px 0 0;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -315,7 +354,7 @@ body.theme-dark {
     align-items: center;
     background: var(--bg-card);
     padding: 1rem;
-    border-radius: 12px;
+    border-radius: var(--radius-xl);
     border: 1px solid var(--border-color);
 }
 
@@ -324,7 +363,7 @@ input[type="text"], input[type="date"], select {
     border: 1px solid var(--border-color);
     color: var(--text-primary);
     padding: 0.5rem 1rem;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     outline: none;
 }
 

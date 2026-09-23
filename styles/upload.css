@@ -5,7 +5,7 @@
 .upload-container {
     background: var(--bg-card);
     border: 2px dashed var(--border-color);
-    border-radius: 16px;
+    border-radius: var(--radius-3xl);
     padding: 4rem 2rem;
     text-align: center;
     transition: var(--transition-normal);
@@ -58,7 +58,7 @@
     justify-content: space-between;
     background: var(--bg-card);
     padding: 1rem 1.5rem;
-    border-radius: 12px;
+    border-radius: var(--radius-xl);
     border: 1px solid var(--border-color);
     animation: slideIn 0.3s ease;
 }
@@ -103,7 +103,7 @@
 .chip-aporte {
     font-size: 0.7rem;
     padding: 1px 6px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     background: var(--accent-blue-glow, rgba(96,165,250,.12));
     color: var(--accent-blue, #60a5fa);
     white-space: nowrap;
@@ -134,7 +134,7 @@
     cursor: pointer;
     transition: var(--transition-fast);
     padding: 0.5rem;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
 }
 
 .btn-icon:hover {
